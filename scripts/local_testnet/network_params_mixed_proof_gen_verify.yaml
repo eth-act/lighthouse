@@ -14,7 +14,7 @@ participants:
   # TODO(zkproofs): Currently there is no way to add no client here
   # We likely want to use our dummy zkvm EL here
   - el_type: geth
-    el_image: ethereum/client-go:latest
+    el_image: dummy_el:local
     cl_type: lighthouse
     cl_image: lighthouse:local
     cl_extra_params:
