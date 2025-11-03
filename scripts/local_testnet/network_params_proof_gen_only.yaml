@@ -1,0 +1,21 @@
+# Network configuration for testing execution proof generation
+# All nodes have execution layers and are configured to generate proofs
+participants:
+  - el_type: geth
+    el_image: ethereum/client-go:latest
+    cl_type: lighthouse
+    cl_image: lighthouse:local
+    cl_extra_params:
+      - --activate-zkvm
+      - --zkvm-generation-proof-types=0,1
+      - --target-peers=3
+    count: 4
+network_params:
+  electra_fork_epoch: 0
+  fulu_fork_epoch: 1
+  seconds_per_slot: 2
+global_log_level: debug
+snooper_enabled: false
+additional_services:
+  - dora
+  - prometheus_grafana

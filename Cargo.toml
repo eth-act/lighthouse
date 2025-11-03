@@ -65,6 +65,7 @@ members = [
     "crypto/eth2_wallet",
     "crypto/kzg",
     "database_manager",
+    "dummy_el",
     "lcli",
     "lighthouse",
     "lighthouse/environment",
