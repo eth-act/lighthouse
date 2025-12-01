@@ -199,7 +199,7 @@ impl TestRig {
     ) -> (SignedBeaconBlock<E>, Vec<BlobSidecar<E>>) {
         let fork_name = self.fork_name;
         let rng = &mut self.rng;
-        generate_rand_block_and_blobs::<E>(fork_name, num_blobs, rng, &self.spec)
+        generate_rand_block_and_blobs::<E>(fork_name, num_blobs, rng)
     }
 
     fn rand_block_and_data_columns(
@@ -1219,10 +1219,8 @@ impl TestRig {
 
 #[test]
 fn stable_rng() {
-    let spec = types::MainnetEthSpec::default_spec();
     let mut rng = XorShiftRng::from_seed([42; 16]);
-    let (block, _) =
-        generate_rand_block_and_blobs::<E>(ForkName::Base, NumBlobs::None, &mut rng, &spec);
+    let (block, _) = generate_rand_block_and_blobs::<E>(ForkName::Base, NumBlobs::None, &mut rng);
     assert_eq!(
         block.canonical_root(),
         Hash256::from_slice(
