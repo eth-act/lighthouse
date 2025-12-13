@@ -312,9 +312,7 @@ mod tests {
         let proof_id = ExecutionProofId::new(0).unwrap();
 
         // Should return false for a proof that hasn't been observed
-        assert!(
-            !service.check_if_proof_exists(slot, block_root, proof_id)
-        );
+        assert!(!service.check_if_proof_exists(slot, block_root, proof_id));
     }
 
     #[tokio::test]
@@ -339,9 +337,7 @@ mod tests {
             .unwrap();
 
         // Should return true for an observed proof
-        assert!(
-            service.check_if_proof_exists(slot, block_root, proof_id)
-        );
+        assert!(service.check_if_proof_exists(slot, block_root, proof_id));
     }
 
     #[tokio::test]

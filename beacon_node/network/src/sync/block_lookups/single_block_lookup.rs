@@ -262,7 +262,9 @@ impl<T: BeaconChainTypes> SingleBlockLookup<T> {
                 }
 
                 if cx.chain.should_fetch_execution_proofs(block_epoch) {
-                    self.proof_request = cx.chain.min_execution_proofs_required()
+                    self.proof_request = cx
+                        .chain
+                        .min_execution_proofs_required()
                         .map(|min_proofs| ProofRequestState::new(self.block_root, min_proofs));
                 }
             } else {

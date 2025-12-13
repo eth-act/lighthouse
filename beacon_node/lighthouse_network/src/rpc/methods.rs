@@ -17,8 +17,8 @@ use types::light_client_update::MAX_REQUEST_LIGHT_CLIENT_UPDATES;
 use types::{
     ChainSpec, ColumnIndex, DataColumnSidecar, DataColumnsByRootIdentifier, Epoch, EthSpec,
     ExecutionProof, ExecutionProofId, ForkContext, Hash256, LightClientBootstrap,
-    LightClientFinalityUpdate, LightClientOptimisticUpdate, LightClientUpdate,
-    SignedBeaconBlock, Slot, blob_sidecar::BlobSidecar,
+    LightClientFinalityUpdate, LightClientOptimisticUpdate, LightClientUpdate, SignedBeaconBlock,
+    Slot, blob_sidecar::BlobSidecar,
 };
 
 /// Maximum length of error message.

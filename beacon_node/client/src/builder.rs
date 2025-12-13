@@ -215,7 +215,7 @@ where
         let ordered_custody_column_indices =
             compute_ordered_custody_column_indices::<E>(node_id, &spec).map_err(|e| {
                 format!("Failed to compute ordered custody column indices: {:?}", e)
-        })?;
+            })?;
 
         let builder = BeaconChainBuilder::new(eth_spec_instance, Arc::new(kzg))
             .store(store)

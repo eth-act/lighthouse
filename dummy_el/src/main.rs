@@ -1,15 +1,15 @@
 use axum::{
+    Json, Router,
     extract::State,
     http::{Request, StatusCode},
     middleware::{self, Next},
     response::Response,
     routing::post,
-    Json, Router,
 };
 use clap::Parser;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value as JsonValue};
+use serde_json::{Value as JsonValue, json};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -163,7 +163,10 @@ async fn handle_rpc(
             debug!("eth_getBlockByHash: returning null");
             Ok(json!(null))
         }
-        "engine_newPayloadV1" | "engine_newPayloadV2" | "engine_newPayloadV3" | "engine_newPayloadV4" => {
+        "engine_newPayloadV1"
+        | "engine_newPayloadV2"
+        | "engine_newPayloadV3"
+        | "engine_newPayloadV4" => {
             debug!("{}: returning SYNCING status", request.method);
             Ok(json!({
                 "status": "SYNCING",
@@ -171,7 +174,9 @@ async fn handle_rpc(
                 "validationError": null
             }))
         }
-        "engine_forkchoiceUpdatedV1" | "engine_forkchoiceUpdatedV2" | "engine_forkchoiceUpdatedV3" => {
+        "engine_forkchoiceUpdatedV1"
+        | "engine_forkchoiceUpdatedV2"
+        | "engine_forkchoiceUpdatedV3" => {
             debug!("{}: returning SYNCING status", request.method);
             Ok(json!({
                 "payloadStatus": {
@@ -182,8 +187,15 @@ async fn handle_rpc(
                 "payloadId": null
             }))
         }
-        "engine_getPayloadV1" | "engine_getPayloadV2" | "engine_getPayloadV3" | "engine_getPayloadV4" | "engine_getPayloadV5" => {
-            debug!("{}: returning error (payload not available)", request.method);
+        "engine_getPayloadV1"
+        | "engine_getPayloadV2"
+        | "engine_getPayloadV3"
+        | "engine_getPayloadV4"
+        | "engine_getPayloadV5" => {
+            debug!(
+                "{}: returning error (payload not available)",
+                request.method
+            );
             Err(JsonRpcError {
                 code: -38001,
                 message: "Unknown payload".to_string(),
@@ -217,7 +229,10 @@ async fn handle_rpc(
                 "engine_getBlobsV1",
                 "engine_getBlobsV2",
             ];
-            debug!("engine_exchangeCapabilities: returning {} capabilities", capabilities.len());
+            debug!(
+                "engine_exchangeCapabilities: returning {} capabilities",
+                capabilities.len()
+            );
             Ok(json!(capabilities))
         }
         "engine_getClientVersionV1" => {
@@ -262,23 +277,23 @@ async fn handle_rpc(
 }
 
 // Simple RPC handler without JWT auth for non-Engine API ports
-async fn handle_simple_rpc(Json(request): Json<JsonRpcRequest>) -> (StatusCode, Json<JsonRpcResponse>) {
+async fn handle_simple_rpc(
+    Json(request): Json<JsonRpcRequest>,
+) -> (StatusCode, Json<JsonRpcResponse>) {
     debug!(method = %request.method, "Received simple RPC request");
 
     let result: Result<JsonValue, JsonRpcError> = match request.method.as_str() {
-        "admin_nodeInfo" => {
-            Ok(json!({
-                "id": "0ecd4a2c5f7c2a304e3acbec67efea275510d31c304fe47f4e626a2ebd5fb101",
-                "name": "Dummy-EL/v0.1.0",
-                "enode": "enode://dummy@127.0.0.1:30303",
-                "enr": "enr:-Iq4QDummy0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001",
-                "ip": "127.0.0.1",
-                "ports": {
-                    "discovery": 30303,
-                    "listener": 30303
-                }
-            }))
-        }
+        "admin_nodeInfo" => Ok(json!({
+            "id": "0ecd4a2c5f7c2a304e3acbec67efea275510d31c304fe47f4e626a2ebd5fb101",
+            "name": "Dummy-EL/v0.1.0",
+            "enode": "enode://dummy@127.0.0.1:30303",
+            "enr": "enr:-Iq4QDummy0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001",
+            "ip": "127.0.0.1",
+            "ports": {
+                "discovery": 30303,
+                "listener": 30303
+            }
+        })),
         _ => {
             // For any other method, just return a success response
             Ok(json!(null))
@@ -328,18 +343,16 @@ async fn main() -> anyhow::Result<()> {
 
     // Read JWT secret if provided
     let jwt_secret = match &args.jwt_secret {
-        Some(path) => {
-            match read_jwt_secret(path) {
-                Ok(secret) => {
-                    info!("JWT secret loaded from {:?}", path);
-                    Some(secret)
-                }
-                Err(e) => {
-                    error!("Failed to read JWT secret from {:?}: {}", path, e);
-                    return Err(e);
-                }
+        Some(path) => match read_jwt_secret(path) {
+            Ok(secret) => {
+                info!("JWT secret loaded from {:?}", path);
+                Some(secret)
             }
-        }
+            Err(e) => {
+                error!("Failed to read JWT secret from {:?}: {}", path, e);
+                return Err(e);
+            }
+        },
         None => {
             warn!("No JWT secret provided - authentication disabled!");
             warn!("This is insecure and should only be used for testing");
@@ -363,7 +376,10 @@ async fn main() -> anyhow::Result<()> {
     // Engine API server (port 8551) with JWT auth
     let engine_app = Router::new()
         .route("/", post(handle_rpc))
-        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth_middleware,
+        ))
         .with_state(state.clone());
 
     let engine_addr = format!("{}:{}", args.host, args.port)

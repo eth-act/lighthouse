@@ -18,8 +18,8 @@ use tokio_util::codec::{Decoder, Encoder};
 use types::{
     BlobSidecar, ChainSpec, DataColumnSidecar, DataColumnsByRootIdentifier, EthSpec,
     ExecutionProof, ForkContext, ForkName, Hash256, LightClientBootstrap,
-    LightClientFinalityUpdate, LightClientOptimisticUpdate, LightClientUpdate,
-    SignedBeaconBlock, SignedBeaconBlockAltair, SignedBeaconBlockBase, SignedBeaconBlockBellatrix,
+    LightClientFinalityUpdate, LightClientOptimisticUpdate, LightClientUpdate, SignedBeaconBlock,
+    SignedBeaconBlockAltair, SignedBeaconBlockBase, SignedBeaconBlockBellatrix,
     SignedBeaconBlockCapella, SignedBeaconBlockDeneb, SignedBeaconBlockElectra,
     SignedBeaconBlockFulu, SignedBeaconBlockGloas,
 };
@@ -574,9 +574,7 @@ fn handle_rpc_request<E: EthSpec>(
             let request = ExecutionProofsByRootRequest::from_ssz_bytes(decoded_buffer)
                 .map_err(RPCError::SSZDecodeError)?;
 
-            request
-                .validate(spec)
-                .map_err(RPCError::InvalidData)?;
+            request.validate(spec).map_err(RPCError::InvalidData)?;
 
             Ok(Some(RequestType::ExecutionProofsByRoot(request)))
         }

@@ -1,8 +1,8 @@
 use crate::{ExecutionBlockHash, Hash256, Slot};
-use ssz_types::VariableList;
 use serde::{Deserialize, Serialize};
 use ssz::Encode;
 use ssz_derive::{Decode, Encode as DeriveEncode};
+use ssz_types::VariableList;
 use ssz_types::typenum;
 use std::fmt::{self, Debug};
 use tree_hash_derive::TreeHash;
