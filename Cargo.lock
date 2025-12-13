@@ -11028,6 +11028,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "execution_layer",
+ "fixed_bytes",
  "hashbrown 0.15.5",
  "lru 0.12.5",
  "serde",

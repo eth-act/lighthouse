@@ -55,7 +55,8 @@ impl ProofVerifier for DummyVerifier {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use types::{ExecutionBlockHash, FixedBytesExtended};
+    use fixed_bytes::FixedBytesExtended;
+    use types::ExecutionBlockHash;
 
     fn create_test_proof(
         subnet_id: ExecutionProofId,

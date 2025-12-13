@@ -14,3 +14,4 @@ tokio = { version = "1", features = ["full"] }
 types = { path = "../consensus/types" }
 
 [dev-dependencies]
+fixed_bytes = { workspace = true }
