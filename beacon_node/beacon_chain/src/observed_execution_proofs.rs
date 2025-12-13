@@ -165,7 +165,7 @@ impl Default for ObservedExecutionProofs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use types::FixedBytesExtended;
+    use bls::FixedBytesExtended;
 
     fn test_proof_key(slot: u64) -> (Slot, Hash256, ExecutionProofId) {
         (
