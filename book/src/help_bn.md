@@ -8,6 +8,12 @@ beacon chain and publishing messages to the network.
 Usage: lighthouse beacon_node [OPTIONS] --execution-endpoint <EXECUTION-ENDPOINT>
 
 Options:
+      --activate-zkvm
+          Activates ZKVM execution proof mode. Enables the node to subscribe to
+          the execution_proof gossip topic, receive and verify execution proofs
+          from peers, and advertise zkVM support in its ENR for peer discovery.
+          Use --zkvm-generation-proof-types to specify which proof types this
+          node should generate (optional - nodes can verify without generating).
       --auto-compact-db <auto-compact-db>
           Enable or disable automatic compaction of the database on
           finalization. [default: true]
@@ -424,6 +430,10 @@ Options:
           verify the node's sync against. The block root should be 0x-prefixed.
           Note that this flag is for verification only, to perform a checkpoint
           sync from a recent state use --checkpoint-sync-url.
+      --zkvm-generation-proof-types <PROOF_TYPE_IDS>
+          Comma-separated list of proof type IDs to generate (e.g., '0,1' where
+          0=SP1+Reth, 1=Risc0+Geth). Optional - nodes can verify proofs without
+          generating them.
   -V, --version
           Print version
 
