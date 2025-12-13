@@ -1,4 +1,5 @@
-use crate::{ExecutionBlockHash, Hash256, Slot, VariableList};
+use crate::{ExecutionBlockHash, Hash256, Slot};
+use ssz_types::VariableList;
 use serde::{Deserialize, Serialize};
 use ssz::Encode;
 use ssz_derive::{Decode, Encode as DeriveEncode};

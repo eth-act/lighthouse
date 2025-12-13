@@ -30,7 +30,7 @@ use std::str::FromStr;
 use std::time::Duration;
 use tracing::{error, info, warn};
 use types::graffiti::GraffitiString;
-use types::{Checkpoint, Epoch, EthSpec, ExecutionProofId, Hash256, PublicKeyBytes};
+use types::{Checkpoint, Epoch, EthSpec, ExecutionProofId, Hash256};
 use zkvm_execution_layer::ZKVMExecutionLayerConfig;
 
 const PURGE_DB_CONFIRMATION: &str = "confirm";
