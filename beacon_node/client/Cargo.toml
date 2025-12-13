@@ -14,9 +14,6 @@ eth2 = { workspace = true }
 eth2_config = { workspace = true }
 ethereum_ssz = { workspace = true }
 execution_layer = { workspace = true }
-# TODO(zkproofs): add as a workspace dependency
-zkvm_execution_layer = { path = "../../zkvm_execution_layer" }
-proof_generation_service = { path = "../proof_generation_service" }
 futures = { workspace = true }
 genesis = { workspace = true }
 http_api = { workspace = true }
@@ -27,6 +24,8 @@ logging = { workspace = true }
 metrics = { workspace = true }
 monitoring_api = { workspace = true }
 network = { workspace = true }
+# TODO(zkproofs): add as a workspace dependency
+proof_generation_service = { path = "../proof_generation_service" }
 rand = { workspace = true }
 sensitive_url = { workspace = true }
 serde = { workspace = true }
@@ -42,6 +41,8 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 types = { workspace = true }
+# TODO(zkproofs): add as a workspace dependency
+zkvm_execution_layer = { path = "../../zkvm_execution_layer" }
 
 [dev-dependencies]
 operation_pool = { workspace = true }
