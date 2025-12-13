@@ -41,8 +41,8 @@ use slot_clock::{SlotClock, TestingSlotClock};
 use tokio::sync::mpsc;
 use tracing::info;
 use types::{
-    BeaconState, BeaconStateBase, BlobSidecar, BlockImportSource, DataColumnSidecar, EthSpec,
-    ExecutionBlockHash, ExecutionProof, ExecutionProofId, ForkContext, ForkName, Hash256,
+    BeaconState, BeaconStateBase, BlobSidecar, BlockImportSource, ChainSpec, DataColumnSidecar,
+    EthSpec, ExecutionBlockHash, ExecutionProof, ExecutionProofId, ForkContext, ForkName, Hash256,
     MinimalEthSpec as E, SignedBeaconBlock, Slot,
     data_column_sidecar::ColumnIndex,
     test_utils::{SeedableRng, TestRandom, XorShiftRng},
@@ -57,7 +57,10 @@ impl TestRig {
     pub fn test_setup() -> Self {
         // Use `fork_from_env` logic to set correct fork epochs
         let spec = test_spec::<E>();
+        Self::test_setup_with_spec(spec)
+    }
 
+    fn test_setup_with_spec(spec: ChainSpec) -> Self {
         // Initialise a new beacon chain
         let harness = BeaconChainHarness::<EphemeralHarnessType<E>>::builder(E)
             .spec(Arc::new(spec))
@@ -144,6 +147,20 @@ impl TestRig {
 
     pub fn test_setup_after_fulu() -> Option<Self> {
         let r = Self::test_setup();
+        if r.fork_name.fulu_enabled() {
+            Some(r)
+        } else {
+            None
+        }
+    }
+
+    /// Setup test rig for Fulu with zkvm enabled.
+    /// This is needed for execution proof tests since proof requests are only made
+    /// when zkvm mode is enabled in the chain spec.
+    pub fn test_setup_after_fulu_with_zkvm() -> Option<Self> {
+        let mut spec = test_spec::<E>();
+        spec.zkvm_enabled = true;
+        let r = Self::test_setup_with_spec(spec);
         if r.fork_name.fulu_enabled() {
             Some(r)
         } else {

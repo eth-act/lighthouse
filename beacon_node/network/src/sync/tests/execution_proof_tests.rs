@@ -7,7 +7,7 @@ use types::{ExecutionBlockHash, ExecutionProof, ExecutionProofId, Hash256, Slot}
 /// Test successful execution proof fetch and verification
 #[test]
 fn test_proof_lookup_happy_path() {
-    let Some(mut rig) = TestRig::test_setup_after_fulu() else {
+    let Some(mut rig) = TestRig::test_setup_after_fulu_with_zkvm() else {
         return;
     };
 
@@ -57,7 +57,7 @@ fn test_proof_lookup_happy_path() {
 /// Test that empty proof response results in peer penalization
 #[test]
 fn test_proof_lookup_empty_response() {
-    let Some(mut rig) = TestRig::test_setup_after_fulu() else {
+    let Some(mut rig) = TestRig::test_setup_after_fulu_with_zkvm() else {
         return;
     };
 
@@ -87,7 +87,7 @@ fn test_proof_lookup_empty_response() {
 /// Test partial proof response (peer doesn't have all requested proofs)
 #[test]
 fn test_proof_lookup_partial_response() {
-    let Some(mut rig) = TestRig::test_setup_after_fulu() else {
+    let Some(mut rig) = TestRig::test_setup_after_fulu_with_zkvm() else {
         return;
     };
 
@@ -152,7 +152,7 @@ fn test_proof_lookup_partial_response() {
 /// Test unrequested proof triggers penalization
 #[test]
 fn test_proof_lookup_unrequested_proof() {
-    let Some(mut rig) = TestRig::test_setup_after_fulu() else {
+    let Some(mut rig) = TestRig::test_setup_after_fulu_with_zkvm() else {
         return;
     };
 
@@ -200,7 +200,7 @@ fn test_proof_lookup_unrequested_proof() {
 /// Test duplicate proofs triggers penalization
 #[test]
 fn test_proof_lookup_duplicate_proof() {
-    let Some(mut rig) = TestRig::test_setup_after_fulu() else {
+    let Some(mut rig) = TestRig::test_setup_after_fulu_with_zkvm() else {
         return;
     };
 
@@ -261,7 +261,7 @@ fn test_proof_lookup_duplicate_proof() {
 /// Test wrong block root in proof triggers penalization
 #[test]
 fn test_proof_lookup_wrong_block_root() {
-    let Some(mut rig) = TestRig::test_setup_after_fulu() else {
+    let Some(mut rig) = TestRig::test_setup_after_fulu_with_zkvm() else {
         return;
     };
 
@@ -310,7 +310,7 @@ fn test_proof_lookup_wrong_block_root() {
 /// Test proof request timeout
 #[test]
 fn test_proof_lookup_timeout() {
-    let Some(mut rig) = TestRig::test_setup_after_fulu() else {
+    let Some(mut rig) = TestRig::test_setup_after_fulu_with_zkvm() else {
         return;
     };
 
@@ -344,7 +344,7 @@ fn test_proof_lookup_timeout() {
 /// Test peer disconnection during proof request
 #[test]
 fn test_proof_lookup_peer_disconnected() {
-    let Some(mut rig) = TestRig::test_setup_after_fulu() else {
+    let Some(mut rig) = TestRig::test_setup_after_fulu_with_zkvm() else {
         return;
     };
 
@@ -375,7 +375,7 @@ fn test_proof_lookup_peer_disconnected() {
 /// Test multiple retries on failure
 #[test]
 fn test_proof_lookup_multiple_retries() {
-    let Some(mut rig) = TestRig::test_setup_after_fulu() else {
+    let Some(mut rig) = TestRig::test_setup_after_fulu_with_zkvm() else {
         return;
     };
 
@@ -430,7 +430,7 @@ fn test_proof_lookup_multiple_retries() {
 /// Test proof lookup with no peers available
 #[test]
 fn test_proof_lookup_no_peers() {
-    let Some(mut rig) = TestRig::test_setup_after_fulu() else {
+    let Some(mut rig) = TestRig::test_setup_after_fulu_with_zkvm() else {
         return;
     };
 
@@ -464,7 +464,7 @@ fn test_proof_lookup_no_peers() {
 /// Test successful proof verification after block already has blobs
 #[test]
 fn test_proof_lookup_with_existing_blobs() {
-    let Some(mut rig) = TestRig::test_setup_after_fulu() else {
+    let Some(mut rig) = TestRig::test_setup_after_fulu_with_zkvm() else {
         return;
     };
 
