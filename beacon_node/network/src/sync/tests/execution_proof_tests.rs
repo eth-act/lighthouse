@@ -37,8 +37,7 @@ fn test_proof_lookup_happy_path() {
     // Now expect proof request
     let proof_id = rig.expect_proof_lookup_request(block_root);
 
-    // Send all requested proofs
-    // TODO(zkproofs): We should use min_required instead of hardcoding 2 proofs here
+    // Send all requested proofs (minimal spec requires 2)
     let proof_ids = vec![
         ExecutionProofId::new(0).unwrap(),
         ExecutionProofId::new(1).unwrap(),

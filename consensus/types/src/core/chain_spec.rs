@@ -1335,7 +1335,7 @@ impl ChainSpec {
             gloas_fork_epoch: None,
             // zkVM
             zkvm_enabled: false,
-            zkvm_min_proofs_required: 0,
+            zkvm_min_proofs_required: 2,
             min_epochs_for_execution_proof_requests: 2,
             // Other
             network_id: 2, // lighthouse testnet network id
