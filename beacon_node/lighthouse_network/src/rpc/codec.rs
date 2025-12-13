@@ -8,7 +8,7 @@ use libp2p::bytes::BytesMut;
 use snap::read::FrameDecoder;
 use snap::write::FrameEncoder;
 use ssz::{Decode, Encode};
-use ssz_types::VariableList;
+use ssz_types::{RuntimeVariableList, VariableList};
 use std::io::Cursor;
 use std::io::ErrorKind;
 use std::io::{Read, Write};
@@ -18,7 +18,7 @@ use tokio_util::codec::{Decoder, Encoder};
 use types::{
     BlobSidecar, ChainSpec, DataColumnSidecar, DataColumnsByRootIdentifier, EthSpec,
     ExecutionProof, ForkContext, ForkName, Hash256, LightClientBootstrap,
-    LightClientFinalityUpdate, LightClientOptimisticUpdate, LightClientUpdate, RuntimeVariableList,
+    LightClientFinalityUpdate, LightClientOptimisticUpdate, LightClientUpdate,
     SignedBeaconBlock, SignedBeaconBlockAltair, SignedBeaconBlockBase, SignedBeaconBlockBellatrix,
     SignedBeaconBlockCapella, SignedBeaconBlockDeneb, SignedBeaconBlockElectra,
     SignedBeaconBlockFulu, SignedBeaconBlockGloas,
@@ -925,11 +925,13 @@ mod tests {
     use super::*;
     use crate::rpc::protocol::*;
     use crate::types::{EnrAttestationBitfield, EnrSyncCommitteeBitfield};
+    use bls::Signature;
+    use fixed_bytes::FixedBytesExtended;
     use types::{
         BeaconBlock, BeaconBlockAltair, BeaconBlockBase, BeaconBlockBellatrix, BeaconBlockHeader,
-        DataColumnsByRootIdentifier, EmptyBlock, Epoch, ExecutionProofId, FixedBytesExtended,
-        FullPayload, KzgCommitment, KzgProof, Signature, SignedBeaconBlockHeader, Slot,
-        blob_sidecar::BlobIdentifier, data_column_sidecar::Cell,
+        DataColumnsByRootIdentifier, EmptyBlock, Epoch, ExecutionProofId, FullPayload,
+        KzgCommitment, KzgProof, SignedBeaconBlockHeader, Slot, blob_sidecar::BlobIdentifier,
+        data_column_sidecar::Cell,
     };
 
     type Spec = types::MainnetEthSpec;
