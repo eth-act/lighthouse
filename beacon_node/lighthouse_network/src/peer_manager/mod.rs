@@ -3032,7 +3032,8 @@ mod tests {
         use proptest::prelude::*;
         use std::collections::HashSet;
         use tokio::runtime::Runtime;
-        use types::{DataColumnSubnetId, Unsigned};
+        use typenum::Unsigned;
+        use types::DataColumnSubnetId;
         use types::{EthSpec, MainnetEthSpec as E};
 
         #[derive(Clone, Debug)]

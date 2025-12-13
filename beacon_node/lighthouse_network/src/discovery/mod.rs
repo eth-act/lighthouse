@@ -1241,7 +1241,8 @@ mod tests {
     use super::*;
     use crate::rpc::methods::{MetaData, MetaDataV3};
     use libp2p::identity::secp256k1;
-    use types::{BitVector, MinimalEthSpec, SubnetId};
+    use ssz_types::BitVector;
+    use types::{MinimalEthSpec, SubnetId};
 
     type E = MinimalEthSpec;
 
