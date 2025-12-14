@@ -371,6 +371,18 @@ impl TestRig {
             .__add_connected_peer_testing_only(true, &self.harness.spec, key)
     }
 
+    /// Create a new connected peer with zkvm enabled (advertises zkvm=true in ENR)
+    pub fn new_connected_zkvm_peer(&mut self) -> PeerId {
+        let key = self.determinstic_key();
+        let peer_id = self
+            .network_globals
+            .peers
+            .write()
+            .__add_connected_zkvm_peer_testing_only(&self.harness.spec, key);
+        self.log(&format!("Added new zkvm peer for testing {peer_id:?}"));
+        peer_id
+    }
+
     fn determinstic_key(&mut self) -> CombinedKey {
         k256::ecdsa::SigningKey::random(&mut self.rng_08).into()
     }
