@@ -46,8 +46,8 @@ use tokio::time::Duration;
 use tree_hash::TreeHash;
 use types::application_domain::ApplicationDomain;
 use types::{
-    Domain, EthSpec, ExecutionBlockHash, ExecutionProof, ExecutionProofId, Hash256,
-    MainnetEthSpec, RelativeEpoch, SelectionProof, SignedRoot, SingleAttestation, Slot,
+    Domain, EthSpec, ExecutionBlockHash, ExecutionProof, ExecutionProofId, Hash256, MainnetEthSpec,
+    RelativeEpoch, SelectionProof, SignedRoot, SingleAttestation, Slot,
     attestation::AttestationBase,
 };
 
@@ -2801,10 +2801,7 @@ impl ApiTester {
         // Duplicate submission should fail
         let result = self.client.post_beacon_pool_execution_proofs(&proof).await;
 
-        assert!(
-            result.is_err(),
-            "duplicate proof should be rejected"
-        );
+        assert!(result.is_err(), "duplicate proof should be rejected");
 
         assert!(
             self.network_rx.network_recv.recv().now_or_never().is_none(),
@@ -2828,10 +2825,7 @@ impl ApiTester {
 
         let result = self.client.post_beacon_pool_execution_proofs(&proof).await;
 
-        assert!(
-            result.is_err(),
-            "future slot proof should be rejected"
-        );
+        assert!(result.is_err(), "future slot proof should be rejected");
 
         self
     }
@@ -2841,10 +2835,7 @@ impl ApiTester {
         // so this test verifies the endpoint exists and returns an appropriate error.
         // TODO(zkproofs): should we add to the mock el? Also might be good to have this
         // TODO(zkproofs): fail on startup if its needed (or it cna be queried)
-        let result = self
-            .client
-            .get_lighthouse_execution_witness("latest")
-            .await;
+        let result = self.client.get_lighthouse_execution_witness("latest").await;
 
         // The endpoint should return an error since the mock EL doesn't support this method
         assert!(
