@@ -1465,6 +1465,10 @@ pub fn serve<T: BeaconChainTypes>(
     let post_beacon_pool_bls_to_execution_changes =
         post_beacon_pool_bls_to_execution_changes(&network_tx_filter, &beacon_pool_path);
 
+    // POST beacon/pool/execution_proofs
+    let post_beacon_pool_execution_proofs =
+        post_beacon_pool_execution_proofs(&network_tx_filter, &beacon_pool_path);
+
     let beacon_rewards_path = eth_v1
         .clone()
         .and(warp::path("beacon"))
@@ -3098,6 +3102,55 @@ pub fn serve<T: BeaconChainTypes>(
                 })
             },
         );
+    // TODO(zkproofs): I think we want to return a block_with_witness
+    // and note the EL could generate this witness when newPayload is called
+    // it gets saved to disk or in memory and then when the EL is asked for it
+    // it just gets it from disk or memory.
+    //
+    // Also consider adding another endpoint that just 
+    // returns the unverified payload for those who want to generate the witness
+    // themselves quickly, and don't want to pay the latency cost for payload execution.
+    //
+    // GET lighthouse/execution_witness/{block}
+    // Returns the execution witness for a given block from the execution layer.
+    // The block parameter can be a hex block number (e.g., "0x1") or a tag ("latest", "pending").
+    let get_lighthouse_execution_witness = warp::path("lighthouse")
+        .and(warp::path("execution_witness"))
+        .and(warp::path::param::<String>())
+        .and(warp::path::end())
+        .and(task_spawner_filter.clone())
+        .and(chain_filter.clone())
+        .then(
+            |block: String,
+             task_spawner: TaskSpawner<T::EthSpec>,
+             chain: Arc<BeaconChain<T>>| {
+                task_spawner.spawn_async_with_rejection(Priority::P1, async move {
+                    let execution_layer = chain
+                        .execution_layer
+                        .as_ref()
+                        .ok_or_else(|| {
+                            warp_utils::reject::custom_server_error(
+                                "execution layer not configured".to_string(),
+                            )
+                        })?;
+
+                    let witness = execution_layer
+                        .get_execution_witness(&block)
+                        .await
+                        .map_err(|e| {
+                            warp_utils::reject::custom_server_error(format!(
+                                "failed to get execution witness: {:?}",
+                                e
+                            ))
+                        })?;
+
+                    Ok::<_, warp::reject::Rejection>(
+                        warp::reply::json(&api_types::GenericResponse::from(witness))
+                            .into_response(),
+                    )
+                })
+            },
+        );
 
     let get_events = eth_v1
         .clone()
@@ -3330,6 +3383,7 @@ pub fn serve<T: BeaconChainTypes>(
                 .uor(get_beacon_light_client_updates)
                 .uor(get_lighthouse_block_packing_efficiency)
                 .uor(get_lighthouse_merge_readiness)
+                .uor(get_lighthouse_execution_witness)
                 .uor(get_events)
                 .uor(get_expected_withdrawals)
                 .uor(lighthouse_log_events.boxed())
@@ -3356,6 +3410,7 @@ pub fn serve<T: BeaconChainTypes>(
                     .uor(post_beacon_pool_voluntary_exits)
                     .uor(post_beacon_pool_sync_committees)
                     .uor(post_beacon_pool_bls_to_execution_changes)
+                    .uor(post_beacon_pool_execution_proofs)
                     .uor(post_beacon_state_validators)
                     .uor(post_beacon_state_validator_balances)
                     .uor(post_beacon_state_validator_identities)

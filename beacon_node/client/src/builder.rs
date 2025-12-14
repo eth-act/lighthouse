@@ -4,7 +4,6 @@ use crate::compute_light_client_updates::{
 };
 use crate::config::{ClientGenesis, Config as ClientConfig};
 use crate::notifier::spawn_notifier;
-use beacon_chain::ProofGenerationEvent;
 use beacon_chain::attestation_simulator::start_attestation_simulator_service;
 use beacon_chain::data_availability_checker::start_availability_cache_maintenance_service;
 use beacon_chain::graffiti_calculator::start_engine_version_cache_refresh_service;
@@ -33,7 +32,6 @@ use lighthouse_network::identity::Keypair;
 use lighthouse_network::{NetworkGlobals, prometheus_client::registry::Registry};
 use monitoring_api::{MonitoringHttpClient, ProcessType};
 use network::{NetworkConfig, NetworkSenders, NetworkService};
-use proof_generation_service;
 use rand::SeedableRng;
 use rand::rngs::{OsRng, StdRng};
 use slasher::Slasher;
@@ -50,7 +48,6 @@ use types::{
     BeaconState, BlobSidecarList, ChainSpec, EthSpec, ExecutionBlockHash, Hash256,
     SignedBeaconBlock, test_utils::generate_deterministic_keypairs,
 };
-use zkvm_execution_layer;
 
 /// Interval between polling the eth1 node for genesis information.
 pub const ETH1_GENESIS_UPDATE_INTERVAL_MILLIS: u64 = 7_000;
@@ -92,8 +89,6 @@ pub struct ClientBuilder<T: BeaconChainTypes> {
     beacon_processor_config: Option<BeaconProcessorConfig>,
     beacon_processor_channels: Option<BeaconProcessorChannels<T::EthSpec>>,
     light_client_server_rv: Option<Receiver<LightClientProducerEvent<T::EthSpec>>>,
-    proof_generation_rx:
-        Option<tokio::sync::mpsc::UnboundedReceiver<ProofGenerationEvent<T::EthSpec>>>,
     eth_spec_instance: T::EthSpec,
 }
 
@@ -128,7 +123,6 @@ where
             beacon_processor_config: None,
             beacon_processor_channels: None,
             light_client_server_rv: None,
-            proof_generation_rx: None,
         }
     }
 
@@ -249,44 +243,6 @@ where
             );
             self.light_client_server_rv = Some(rv);
             builder.light_client_server_tx(tx)
-        } else {
-            builder
-        };
-
-        // Set up proof generation service if zkVM is configured with generation proof types
-        let builder = if let Some(ref zkvm_config) = config.zkvm_execution_layer {
-            if !zkvm_config.generation_proof_types.is_empty() {
-                // Validate that proof generation requires an execution layer
-                // Proof-generating nodes will validate blocks via EL execution, not proofs
-                if config.execution_layer.is_none() {
-                    return Err(
-                        "Proof generation requires an EL. \
-                        Nodes generating proofs must validate blocks via an execution layer. \
-                        To run a lightweight verifier node (without EL), omit --zkvm-generation-proof-types."
-                            .into(),
-                    );
-                }
-
-                // Create channel for proof generation events
-                let (proof_gen_tx, proof_gen_rx) =
-                    tokio::sync::mpsc::unbounded_channel::<ProofGenerationEvent<E>>();
-
-                // Create generator registry with enabled proof types
-                let registry = Arc::new(
-                    zkvm_execution_layer::GeneratorRegistry::new_with_dummy_generators(
-                        zkvm_config.generation_proof_types.clone(),
-                    ),
-                );
-
-                // Store receiver for later when we spawn the service
-                self.proof_generation_rx = Some(proof_gen_rx);
-
-                builder
-                    .zkvm_generator_registry(registry)
-                    .proof_generation_tx(proof_gen_tx)
-            } else {
-                builder
-            }
         } else {
             builder
         };
@@ -852,26 +808,6 @@ where
                 beacon_chain.task_executor.clone(),
                 beacon_chain.clone(),
             );
-
-            // Start proof generation service if configured
-            if let Some(proof_gen_rx) = self.proof_generation_rx {
-                let network_tx = self
-                    .network_senders
-                    .as_ref()
-                    .ok_or("proof_generation_service requires network_senders")?
-                    .network_send();
-
-                let service = proof_generation_service::ProofGenerationService::new(
-                    beacon_chain.clone(),
-                    proof_gen_rx,
-                    network_tx,
-                );
-
-                runtime_context.executor.spawn(
-                    async move { service.run().await },
-                    "proof_generation_service",
-                );
-            }
         }
 
         Ok(Client {

@@ -133,7 +133,6 @@ use store::{
     KeyValueStore, KeyValueStoreOp, StoreItem, StoreOp,
 };
 use task_executor::{RayonPoolType, ShutdownReason, TaskExecutor};
-use tokio::sync::mpsc::UnboundedSender;
 use tokio_stream::Stream;
 use tracing::{Span, debug, debug_span, error, info, info_span, instrument, trace, warn};
 use tree_hash::TreeHash;
@@ -141,7 +140,6 @@ use types::blob_sidecar::FixedBlobSidecarList;
 use types::data_column_sidecar::ColumnIndex;
 use types::payload::BlockProductionVersion;
 use types::*;
-use zkvm_execution_layer::GeneratorRegistry;
 
 pub type ForkChoiceError = fork_choice::Error<crate::ForkChoiceStoreError>;
 
@@ -352,8 +350,6 @@ pub enum BlockProcessStatus<E: EthSpec> {
 
 pub type LightClientProducerEvent<T> = (Hash256, Slot, SyncAggregate<T>);
 
-pub type ProofGenerationEvent<E> = (Hash256, Slot, Arc<SignedBeaconBlock<E>>);
-
 pub type BeaconForkChoice<T> = ForkChoice<
     BeaconForkChoiceStore<
         <T as BeaconChainTypes>::EthSpec,
@@ -495,10 +491,6 @@ pub struct BeaconChain<T: BeaconChainTypes> {
     pub kzg: Arc<Kzg>,
     /// RNG instance used by the chain. Currently used for shuffling column sidecars in block publishing.
     pub rng: Arc<Mutex<Box<dyn RngCore + Send>>>,
-    /// Registry of zkVM proof generators for altruistic proof generation
-    pub zkvm_generator_registry: Option<Arc<GeneratorRegistry>>,
-    /// Sender to notify proof generation service of blocks needing proofs
-    pub proof_generation_tx: Option<UnboundedSender<ProofGenerationEvent<T::EthSpec>>>,
 }
 
 pub enum BeaconBlockResponseWrapper<E: EthSpec> {
@@ -4190,20 +4182,6 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             payload_verification_status,
             current_slot,
         );
-
-        // Notify proof generation service for altruistic proof generation
-        if let Some(ref proof_gen_tx) = self.proof_generation_tx {
-            let slot = signed_block.slot();
-            let event = (block_root, slot, signed_block.clone());
-
-            if let Err(e) = proof_gen_tx.send(event) {
-                debug!(
-                    error = ?e,
-                    ?block_root,
-                    "Failed to send proof generation event"
-                );
-            }
-        }
 
         Ok(block_root)
     }

@@ -66,7 +66,7 @@ pub use self::beacon_chain::{
     BeaconBlockResponseWrapper, BeaconChain, BeaconChainTypes, BeaconStore, BlockProcessStatus,
     ChainSegmentResult, ForkChoiceError, INVALID_FINALIZED_MERGE_TRANSITION_BLOCK_SHUTDOWN_REASON,
     INVALID_JUSTIFIED_PAYLOAD_SHUTDOWN_REASON, LightClientProducerEvent, OverrideForkchoiceUpdate,
-    ProduceBlockVerification, ProofGenerationEvent, StateSkipConfig, WhenSlotSkipped,
+    ProduceBlockVerification, StateSkipConfig, WhenSlotSkipped,
 };
 pub use self::beacon_snapshot::BeaconSnapshot;
 pub use self::chain_config::ChainConfig;
