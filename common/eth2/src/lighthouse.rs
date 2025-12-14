@@ -313,27 +313,6 @@ impl BeaconNodeHttpClient {
         self.post_with_response(path, &req).await
     }
 
-    /// `GET lighthouse/execution_witness/{block}`
-    ///
-    /// Retrieves the execution witness for a given block, which contains
-    /// the state data needed to re-execute and prove the block's execution.
-    ///
-    /// The block can be specified by number (hex string like "0x1") or tag ("latest", "pending").
-    pub async fn get_lighthouse_execution_witness(
-        &self,
-        block: &str,
-    ) -> Result<GenericResponse<serde_json::Value>, Error> {
-        let mut path = self.server.expose_full().clone();
-
-        path.path_segments_mut()
-            .map_err(|()| Error::InvalidUrl(self.server.clone()))?
-            .push("lighthouse")
-            .push("execution_witness")
-            .push(block);
-
-        self.get(path).await
-    }
-
     /*
      Analysis endpoints.
     */

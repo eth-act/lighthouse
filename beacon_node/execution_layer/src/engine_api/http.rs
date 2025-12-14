@@ -1460,26 +1460,6 @@ impl HttpJsonRpc {
             Err(Error::RequiredMethodUnsupported("engine_forkchoiceUpdated"))
         }
     }
-
-    /// Calls the `debug_executionWitness` method on the execution engine.
-    ///
-    /// This method retrieves the execution witness for a given block, which contains
-    /// the state data needed to re-execute and prove the block's execution.
-    ///
-    /// The block can be specified by number (hex string like "0x1") or tag ("latest", "pending").
-    pub async fn debug_execution_witness(&self, block: &str) -> Result<serde_json::Value, Error> {
-        let params = json!([block]);
-
-        self.rpc_request(
-            "debug_executionWitness",
-            params,
-            // Use a longer timeout since this can be a heavy operation
-            // Though note that this should not take a long time because
-            // we call it near the tip or we can get it from disk.
-            Duration::from_secs(30) * self.execution_timeout_multiplier,
-        )
-        .await
-    }
 }
 
 #[cfg(test)]

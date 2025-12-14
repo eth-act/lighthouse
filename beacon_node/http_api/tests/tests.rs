@@ -2830,22 +2830,6 @@ impl ApiTester {
         self
     }
 
-    pub async fn test_get_lighthouse_execution_witness(self) -> Self {
-        // The mock execution layer doesn't support debug_executionWitness,
-        // so this test verifies the endpoint exists and returns an appropriate error.
-        // TODO(zkproofs): should we add to the mock el? Also might be good to have this
-        // TODO(zkproofs): fail on startup if its needed (or it cna be queried)
-        let result = self.client.get_lighthouse_execution_witness("latest").await;
-
-        // The endpoint should return an error since the mock EL doesn't support this method
-        assert!(
-            result.is_err(),
-            "execution witness endpoint should return error when EL doesn't support the method"
-        );
-
-        self
-    }
-
     pub async fn test_get_config_fork_schedule(self) -> Self {
         let result = self.client.get_config_fork_schedule().await.unwrap().data;
 
@@ -8135,8 +8119,6 @@ async fn lighthouse_endpoints() {
         .test_post_lighthouse_liveness()
         .await
         .test_post_lighthouse_add_remove_peer()
-        .await
-        .test_get_lighthouse_execution_witness()
         .await;
 }
 
