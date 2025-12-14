@@ -3107,7 +3107,7 @@ pub fn serve<T: BeaconChainTypes>(
     // it gets saved to disk or in memory and then when the EL is asked for it
     // it just gets it from disk or memory.
     //
-    // Also consider adding another endpoint that just 
+    // Also consider adding another endpoint that just
     // returns the unverified payload for those who want to generate the witness
     // themselves quickly, and don't want to pay the latency cost for payload execution.
     //
@@ -3121,18 +3121,13 @@ pub fn serve<T: BeaconChainTypes>(
         .and(task_spawner_filter.clone())
         .and(chain_filter.clone())
         .then(
-            |block: String,
-             task_spawner: TaskSpawner<T::EthSpec>,
-             chain: Arc<BeaconChain<T>>| {
+            |block: String, task_spawner: TaskSpawner<T::EthSpec>, chain: Arc<BeaconChain<T>>| {
                 task_spawner.spawn_async_with_rejection(Priority::P1, async move {
-                    let execution_layer = chain
-                        .execution_layer
-                        .as_ref()
-                        .ok_or_else(|| {
-                            warp_utils::reject::custom_server_error(
-                                "execution layer not configured".to_string(),
-                            )
-                        })?;
+                    let execution_layer = chain.execution_layer.as_ref().ok_or_else(|| {
+                        warp_utils::reject::custom_server_error(
+                            "execution layer not configured".to_string(),
+                        )
+                    })?;
 
                     let witness = execution_layer
                         .get_execution_witness(&block)

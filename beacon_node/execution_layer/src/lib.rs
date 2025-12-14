@@ -2079,7 +2079,7 @@ impl<E: EthSpec> ExecutionLayer<E> {
     /// returns the state data needed to re-execute and prove the block's execution.
     ///
     /// The block can be specified by number (hex string like "0x1") or tag ("latest", "pending").
-    /// 
+    ///
     /// TODO(zkproofs): As noted in lighthouse/execution_witness -- we can have the EL
     /// save this information(last 64 blocks) when newPayload is called and so this method is just fetching it.
     pub async fn get_execution_witness(&self, block: &str) -> Result<serde_json::Value, Error> {

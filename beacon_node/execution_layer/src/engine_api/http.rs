@@ -1467,10 +1467,7 @@ impl HttpJsonRpc {
     /// the state data needed to re-execute and prove the block's execution.
     ///
     /// The block can be specified by number (hex string like "0x1") or tag ("latest", "pending").
-    pub async fn debug_execution_witness(
-        &self,
-        block: &str,
-    ) -> Result<serde_json::Value, Error> {
+    pub async fn debug_execution_witness(&self, block: &str) -> Result<serde_json::Value, Error> {
         let params = json!([block]);
 
         self.rpc_request(
