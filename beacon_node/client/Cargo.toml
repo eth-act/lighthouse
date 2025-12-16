@@ -24,8 +24,6 @@ logging = { workspace = true }
 metrics = { workspace = true }
 monitoring_api = { workspace = true }
 network = { workspace = true }
-# TODO(zkproofs): add as a workspace dependency
-proof_generation_service = { path = "../proof_generation_service" }
 rand = { workspace = true }
 sensitive_url = { workspace = true }
 serde = { workspace = true }

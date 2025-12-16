@@ -1465,6 +1465,10 @@ pub fn serve<T: BeaconChainTypes>(
     let post_beacon_pool_bls_to_execution_changes =
         post_beacon_pool_bls_to_execution_changes(&network_tx_filter, &beacon_pool_path);
 
+    // POST beacon/pool/execution_proofs
+    let post_beacon_pool_execution_proofs =
+        post_beacon_pool_execution_proofs(&network_tx_filter, &beacon_pool_path);
+
     let beacon_rewards_path = eth_v1
         .clone()
         .and(warp::path("beacon"))
@@ -3356,6 +3360,7 @@ pub fn serve<T: BeaconChainTypes>(
                     .uor(post_beacon_pool_voluntary_exits)
                     .uor(post_beacon_pool_sync_committees)
                     .uor(post_beacon_pool_bls_to_execution_changes)
+                    .uor(post_beacon_pool_execution_proofs)
                     .uor(post_beacon_state_validators)
                     .uor(post_beacon_state_validator_balances)
                     .uor(post_beacon_state_validator_identities)

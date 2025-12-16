@@ -46,8 +46,9 @@ use tokio::time::Duration;
 use tree_hash::TreeHash;
 use types::application_domain::ApplicationDomain;
 use types::{
-    Domain, EthSpec, ExecutionBlockHash, Hash256, MainnetEthSpec, RelativeEpoch, SelectionProof,
-    SignedRoot, SingleAttestation, Slot, attestation::AttestationBase,
+    Domain, EthSpec, ExecutionBlockHash, ExecutionProof, ExecutionProofId, Hash256, MainnetEthSpec,
+    RelativeEpoch, SelectionProof, SignedRoot, SingleAttestation, Slot,
+    attestation::AttestationBase,
 };
 
 type E = MainnetEthSpec;
@@ -94,6 +95,7 @@ struct ApiTesterConfig {
     spec: ChainSpec,
     retain_historic_states: bool,
     node_custody_type: NodeCustodyType,
+    enable_zkvm: bool,
 }
 
 impl Default for ApiTesterConfig {
@@ -104,6 +106,7 @@ impl Default for ApiTesterConfig {
             spec,
             retain_historic_states: false,
             node_custody_type: NodeCustodyType::Fullnode,
+            enable_zkvm: false,
         }
     }
 }
@@ -111,6 +114,11 @@ impl Default for ApiTesterConfig {
 impl ApiTesterConfig {
     fn retain_historic_states(mut self) -> Self {
         self.retain_historic_states = true;
+        self
+    }
+
+    fn with_zkvm(mut self) -> Self {
+        self.enable_zkvm = true;
         self
     }
 }
@@ -129,10 +137,15 @@ impl ApiTester {
         Self::new_from_config(config).await
     }
 
+    pub async fn new_with_zkvm() -> Self {
+        let config = ApiTesterConfig::default().with_zkvm();
+        Self::new_from_config(config).await
+    }
+
     pub async fn new_from_config(config: ApiTesterConfig) -> Self {
         let spec = Arc::new(config.spec);
 
-        let mut harness = BeaconChainHarness::builder(MainnetEthSpec)
+        let mut builder = BeaconChainHarness::builder(MainnetEthSpec)
             .spec(spec.clone())
             .chain_config(ChainConfig {
                 reconstruct_historic_states: config.retain_historic_states,
@@ -142,8 +155,13 @@ impl ApiTester {
             .deterministic_withdrawal_keypairs(VALIDATOR_COUNT)
             .fresh_ephemeral_store()
             .mock_execution_layer()
-            .node_custody_type(config.node_custody_type)
-            .build();
+            .node_custody_type(config.node_custody_type);
+
+        if config.enable_zkvm {
+            builder = builder.zkvm_with_dummy_verifiers();
+        }
+
+        let mut harness = builder.build();
 
         harness
             .mock_execution_layer
@@ -2728,6 +2746,86 @@ impl ApiTester {
         let expected = self.chain.op_pool.get_all_voluntary_exits();
 
         assert_eq!(result, expected);
+
+        self
+    }
+
+    /// Helper to create a test execution proof for the head block
+    fn create_test_execution_proof(&self) -> ExecutionProof {
+        let head = self.chain.head_snapshot();
+        let block_root = head.beacon_block_root;
+        let slot = head.beacon_block.slot();
+        let block_hash = head
+            .beacon_block
+            .message()
+            .body()
+            .execution_payload()
+            .map(|p| p.block_hash())
+            .unwrap_or_else(|_| ExecutionBlockHash::zero());
+
+        let proof_id = ExecutionProofId::new(0).expect("Valid proof id");
+        let proof_data = vec![0u8; 32]; // Dummy proof data
+
+        ExecutionProof::new(proof_id, slot, block_hash, block_root, proof_data)
+            .expect("Valid test proof")
+    }
+
+    pub async fn test_post_beacon_pool_execution_proofs_valid(mut self) -> Self {
+        let proof = self.create_test_execution_proof();
+
+        self.client
+            .post_beacon_pool_execution_proofs(&proof)
+            .await
+            .unwrap();
+
+        assert!(
+            self.network_rx.network_recv.recv().await.is_some(),
+            "valid proof should be sent to network"
+        );
+
+        self
+    }
+
+    pub async fn test_post_beacon_pool_execution_proofs_invalid_duplicate(mut self) -> Self {
+        let proof = self.create_test_execution_proof();
+
+        // First submission should succeed
+        self.client
+            .post_beacon_pool_execution_proofs(&proof)
+            .await
+            .unwrap();
+
+        // Consume the network message
+        self.network_rx.network_recv.recv().await;
+
+        // Duplicate submission should fail
+        let result = self.client.post_beacon_pool_execution_proofs(&proof).await;
+
+        assert!(result.is_err(), "duplicate proof should be rejected");
+
+        assert!(
+            self.network_rx.network_recv.recv().now_or_never().is_none(),
+            "duplicate proof should not be sent to network"
+        );
+
+        self
+    }
+
+    pub async fn test_post_beacon_pool_execution_proofs_invalid_future_slot(self) -> Self {
+        let head = self.chain.head_snapshot();
+        let block_root = head.beacon_block_root;
+        let future_slot = self.chain.slot().unwrap() + 100u64;
+        let block_hash = ExecutionBlockHash::zero();
+
+        let proof_id = ExecutionProofId::new(0).expect("Valid proof id");
+        let proof_data = vec![0u8; 32];
+
+        let proof = ExecutionProof::new(proof_id, future_slot, block_hash, block_root, proof_data)
+            .expect("Valid test proof");
+
+        let result = self.client.post_beacon_pool_execution_proofs(&proof).await;
+
+        assert!(result.is_err(), "future slot proof should be rejected");
 
         self
     }
@@ -7187,6 +7285,30 @@ async fn beacon_pools_post_voluntary_exits_invalid() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn beacon_pools_post_execution_proofs_valid() {
+    ApiTester::new_with_zkvm()
+        .await
+        .test_post_beacon_pool_execution_proofs_valid()
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn beacon_pools_post_execution_proofs_invalid_duplicate() {
+    ApiTester::new_with_zkvm()
+        .await
+        .test_post_beacon_pool_execution_proofs_invalid_duplicate()
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn beacon_pools_post_execution_proofs_invalid_future_slot() {
+    ApiTester::new_with_zkvm()
+        .await
+        .test_post_beacon_pool_execution_proofs_invalid_future_slot()
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn config_get() {
     ApiTester::new()
         .await
@@ -7899,6 +8021,7 @@ async fn get_blobs_post_fulu_supernode() {
         retain_historic_states: false,
         spec: E::default_spec(),
         node_custody_type: NodeCustodyType::Supernode,
+        enable_zkvm: false,
     };
     config.spec.altair_fork_epoch = Some(Epoch::new(0));
     config.spec.bellatrix_fork_epoch = Some(Epoch::new(0));

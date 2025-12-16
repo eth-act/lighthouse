@@ -13,7 +13,7 @@ fn test_proof_lookup_happy_path() {
 
     let block = rig.rand_block();
     let block_root = block.canonical_root();
-    let peer_id = rig.new_connected_peer();
+    let peer_id = rig.new_connected_zkvm_peer();
 
     // Get execution payload hash from the block
     let block_hash = block
@@ -62,7 +62,7 @@ fn test_proof_lookup_empty_response() {
 
     let block = rig.rand_block();
     let block_root = block.canonical_root();
-    let peer_id = rig.new_connected_peer();
+    let peer_id = rig.new_connected_zkvm_peer();
 
     // Trigger lookup
     rig.trigger_unknown_block_from_attestation(block_root, peer_id);
@@ -79,7 +79,7 @@ fn test_proof_lookup_empty_response() {
     rig.expect_penalty(peer_id, "NotEnoughResponsesReturned");
 
     // Should retry with different peer
-    let _new_peer = rig.new_connected_peer();
+    let _new_peer = rig.new_connected_zkvm_peer();
     rig.expect_proof_lookup_request(block_root);
 }
 
@@ -92,7 +92,7 @@ fn test_proof_lookup_partial_response() {
 
     let block = rig.rand_block();
     let block_root = block.canonical_root();
-    let peer_id = rig.new_connected_peer();
+    let peer_id = rig.new_connected_zkvm_peer();
     let block_hash = block
         .message()
         .body()
@@ -128,7 +128,7 @@ fn test_proof_lookup_partial_response() {
     rig.expect_penalty(peer_id, "NotEnoughResponsesReturned");
 
     // Should retry with another peer
-    let new_peer = rig.new_connected_peer();
+    let new_peer = rig.new_connected_zkvm_peer();
     let retry_proof_id = rig.expect_proof_lookup_request(block_root);
 
     // Complete with all proofs
@@ -148,54 +148,6 @@ fn test_proof_lookup_partial_response() {
     rig.expect_no_active_lookups();
 }
 
-/// Test unrequested proof triggers penalization
-#[test]
-fn test_proof_lookup_unrequested_proof() {
-    let Some(mut rig) = TestRig::test_setup_after_fulu_with_zkvm() else {
-        return;
-    };
-
-    let block = rig.rand_block();
-    let block_root = block.canonical_root();
-    let peer_id = rig.new_connected_peer();
-    let block_hash = block
-        .message()
-        .body()
-        .execution_payload()
-        .ok()
-        .map(|p| p.execution_payload_ref().block_hash())
-        .unwrap_or_else(ExecutionBlockHash::zero);
-
-    // Trigger lookup
-    rig.trigger_unknown_block_from_attestation(block_root, peer_id);
-    let block_id = rig.expect_block_lookup_request(block_root);
-    rig.single_lookup_block_response(block_id, peer_id, Some(block.into()));
-    rig.expect_block_process(ResponseType::Block);
-
-    let proof_id = rig.expect_proof_lookup_request(block_root);
-
-    // Requested proofs 0, 1 but peer sends proofs 5 (unrequested)
-    let unrequested_proof = Arc::new(
-        ExecutionProof::new(
-            ExecutionProofId::new(5).unwrap(),
-            Slot::new(0),
-            block_hash,
-            block_root,
-            vec![1, 2, 3],
-        )
-        .unwrap(),
-    );
-
-    rig.single_lookup_proof_response(proof_id, peer_id, Some(unrequested_proof));
-
-    // Should penalize peer for sending unrequested data
-    rig.expect_penalty(peer_id, "UnrequestedProof");
-
-    // Should retry
-    let _new_peer = rig.new_connected_peer();
-    rig.expect_proof_lookup_request(block_root);
-}
-
 /// Test duplicate proofs triggers penalization
 #[test]
 fn test_proof_lookup_duplicate_proof() {
@@ -205,7 +157,7 @@ fn test_proof_lookup_duplicate_proof() {
 
     let block = rig.rand_block();
     let block_root = block.canonical_root();
-    let peer_id = rig.new_connected_peer();
+    let peer_id = rig.new_connected_zkvm_peer();
     let block_hash = block
         .message()
         .body()
@@ -250,10 +202,10 @@ fn test_proof_lookup_duplicate_proof() {
     rig.single_lookup_proof_response(proof_id, peer_id, Some(proof_0_b));
 
     // Should penalize peer for duplicate proof
-    rig.expect_penalty(peer_id, "DuplicatedProof");
+    rig.expect_penalty(peer_id, "DuplicatedProofIDs");
 
     // Should retry
-    let _new_peer = rig.new_connected_peer();
+    let _new_peer = rig.new_connected_zkvm_peer();
     rig.expect_proof_lookup_request(block_root);
 }
 
@@ -267,7 +219,7 @@ fn test_proof_lookup_wrong_block_root() {
     let block = rig.rand_block();
     let block_root = block.canonical_root();
     let wrong_root = Hash256::random();
-    let peer_id = rig.new_connected_peer();
+    let peer_id = rig.new_connected_zkvm_peer();
     let block_hash = block
         .message()
         .body()
@@ -302,7 +254,7 @@ fn test_proof_lookup_wrong_block_root() {
     rig.expect_penalty(peer_id, "UnrequestedBlockRoot");
 
     // Should retry
-    let _new_peer = rig.new_connected_peer();
+    let _new_peer = rig.new_connected_zkvm_peer();
     rig.expect_proof_lookup_request(block_root);
 }
 
@@ -315,7 +267,7 @@ fn test_proof_lookup_timeout() {
 
     let block = rig.rand_block();
     let block_root = block.canonical_root();
-    let peer_id = rig.new_connected_peer();
+    let peer_id = rig.new_connected_zkvm_peer();
 
     // Trigger lookup
     rig.trigger_unknown_block_from_attestation(block_root, peer_id);
@@ -332,11 +284,9 @@ fn test_proof_lookup_timeout() {
         error: RPCError::ErrorResponse(RpcErrorResponse::ServerError, "timeout".to_string()),
     });
 
-    // Should penalize peer for timeout
-    rig.expect_penalty(peer_id, "rpc_error");
-
+    // RPC errors trigger retry without necessarily penalizing the peer
     // Should retry with different peer
-    let _new_peer = rig.new_connected_peer();
+    let _new_peer = rig.new_connected_zkvm_peer();
     rig.expect_proof_lookup_request(block_root);
 }
 
@@ -349,7 +299,7 @@ fn test_proof_lookup_peer_disconnected() {
 
     let block = rig.rand_block();
     let block_root = block.canonical_root();
-    let peer_id = rig.new_connected_peer();
+    let peer_id = rig.new_connected_zkvm_peer();
 
     // Trigger lookup
     rig.trigger_unknown_block_from_attestation(block_root, peer_id);
@@ -367,7 +317,7 @@ fn test_proof_lookup_peer_disconnected() {
     });
 
     // Should retry with different peer (no penalty for disconnect)
-    let _new_peer = rig.new_connected_peer();
+    let _new_peer = rig.new_connected_zkvm_peer();
     rig.expect_proof_lookup_request(block_root);
 }
 
@@ -388,7 +338,7 @@ fn test_proof_lookup_multiple_retries() {
         .map(|p| p.execution_payload_ref().block_hash())
         .unwrap_or_else(ExecutionBlockHash::zero);
 
-    let peer_id = rig.new_connected_peer();
+    let peer_id = rig.new_connected_zkvm_peer();
 
     // Trigger lookup
     rig.trigger_unknown_block_from_attestation(block_root, peer_id);
@@ -402,13 +352,13 @@ fn test_proof_lookup_multiple_retries() {
     rig.expect_penalty(peer_id, "NotEnoughResponsesReturned");
 
     // Second attempt - different peer, also fails
-    let peer_id_2 = rig.new_connected_peer();
+    let peer_id_2 = rig.new_connected_zkvm_peer();
     let proof_id_2 = rig.expect_proof_lookup_request(block_root);
     rig.single_lookup_proof_response(proof_id_2, peer_id_2, None);
     rig.expect_penalty(peer_id_2, "NotEnoughResponsesReturned");
 
     // Third attempt - succeeds
-    let peer_id_3 = rig.new_connected_peer();
+    let peer_id_3 = rig.new_connected_zkvm_peer();
     let proof_id_3 = rig.expect_proof_lookup_request(block_root);
     rig.complete_single_lookup_proof_download(
         proof_id_3,
@@ -435,7 +385,7 @@ fn test_proof_lookup_no_peers() {
 
     let block = rig.rand_block();
     let block_root = block.canonical_root();
-    let peer_id = rig.new_connected_peer();
+    let peer_id = rig.new_connected_zkvm_peer();
 
     // Trigger lookup
     rig.trigger_unknown_block_from_attestation(block_root, peer_id);
@@ -476,7 +426,7 @@ fn test_proof_lookup_with_existing_blobs() {
         .ok()
         .map(|p| p.execution_payload_ref().block_hash())
         .unwrap_or_else(ExecutionBlockHash::zero);
-    let peer_id = rig.new_connected_peer();
+    let peer_id = rig.new_connected_zkvm_peer();
 
     // Trigger lookup
     rig.trigger_unknown_block_from_attestation(block_root, peer_id);

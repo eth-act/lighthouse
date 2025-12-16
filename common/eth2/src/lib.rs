@@ -1755,6 +1755,24 @@ impl BeaconNodeHttpClient {
         Ok(())
     }
 
+    /// `POST beacon/pool/execution_proofs`
+    pub async fn post_beacon_pool_execution_proofs(
+        &self,
+        proof: &ExecutionProof,
+    ) -> Result<(), Error> {
+        let mut path = self.eth_path(V1)?;
+
+        path.path_segments_mut()
+            .map_err(|()| Error::InvalidUrl(self.server.clone()))?
+            .push("beacon")
+            .push("pool")
+            .push("execution_proofs");
+
+        self.post(path, proof).await?;
+
+        Ok(())
+    }
+
     /// `POST beacon/rewards/sync_committee`
     pub async fn post_beacon_rewards_sync_committee(
         &self,
