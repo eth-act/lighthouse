@@ -3075,14 +3075,35 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         publish_fn: impl FnOnce() -> Result<(), BlockError>,
     ) -> Result<AvailabilityProcessingStatus, BlockError> {
         let block_root = execution_proof.block_root();
+        let proof_id = execution_proof.subnet_id();
+        let slot = execution_proof.slot();
+
+        info!(
+            ?block_root,
+            ?proof_id,
+            %slot,
+            "[ZKVM-DEBUG] process_gossip_execution_proof called"
+        );
 
         // If this block has already been imported to forkchoice it must have been available, so
         // we don't need to process its execution proofs again.
-        if self
+        let in_fork_choice = self
             .canonical_head
             .fork_choice_read_lock()
-            .contains_block(&block_root)
-        {
+            .contains_block(&block_root);
+
+        info!(
+            ?block_root,
+            in_fork_choice = in_fork_choice,
+            "[ZKVM-DEBUG] process_gossip_execution_proof: fork choice check"
+        );
+
+        if in_fork_choice {
+            warn!(
+                ?block_root,
+                ?proof_id,
+                "[ZKVM-DEBUG] process_gossip_execution_proof: REJECTING - block already in fork choice"
+            );
             return Err(BlockError::DuplicateFullyImported(block_root));
         }
 

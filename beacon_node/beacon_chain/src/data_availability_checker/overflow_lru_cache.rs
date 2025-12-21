@@ -16,12 +16,12 @@ use ssz_types::{RuntimeFixedVector, RuntimeVariableList};
 use std::cmp::Ordering;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use tracing::{Span, debug, debug_span};
+use tracing::{Span, debug, debug_span, info};
 use types::beacon_block_body::KzgCommitments;
 use types::blob_sidecar::BlobIdentifier;
 use types::{
     BlobSidecar, BlockImportSource, ChainSpec, ColumnIndex, DataColumnSidecar,
-    DataColumnSidecarList, Epoch, EthSpec, Hash256, SignedBeaconBlock,
+    DataColumnSidecarList, Epoch, EthSpec, ExecPayload, Hash256, SignedBeaconBlock,
 };
 
 #[derive(Clone)]
@@ -280,8 +280,20 @@ impl<E: EthSpec> PendingComponents<E> {
             &Span,
         ) -> Result<AvailabilityPendingExecutedBlock<E>, AvailabilityCheckError>,
     {
+        info!(
+            block_root = ?self.block_root,
+            has_block = self.block.is_some(),
+            num_proofs = self.verified_execution_proofs.len(),
+            num_columns = self.verified_data_columns.len(),
+            "[ZKVM-DEBUG] make_available called"
+        );
+
         let Some(CachedBlock::Executed(block)) = &self.block else {
             // Block not available yet
+            info!(
+                block_root = ?self.block_root,
+                "[ZKVM-DEBUG] make_available: block not executed yet, returning None"
+            );
             return Ok(None);
         };
 
@@ -352,13 +364,36 @@ impl<E: EthSpec> PendingComponents<E> {
         // Check if this node needs execution proofs to validate blocks.
         let needs_execution_proofs = spec.zkvm_min_proofs_required().is_some();
 
+        info!(
+            block_root = ?self.block_root,
+            needs_execution_proofs = needs_execution_proofs,
+            zkvm_min_proofs_required = ?spec.zkvm_min_proofs_required(),
+            "[ZKVM-DEBUG] make_available: checking execution proof requirements"
+        );
+
         if needs_execution_proofs {
             let min_proofs = spec.zkvm_min_proofs_required().unwrap();
             let num_proofs = self.execution_proof_subnet_count();
+            info!(
+                block_root = ?self.block_root,
+                min_proofs = min_proofs,
+                num_proofs = num_proofs,
+                "[ZKVM-DEBUG] make_available: execution proof count check"
+            );
             if num_proofs < min_proofs {
                 // Not enough execution proofs yet
+                info!(
+                    block_root = ?self.block_root,
+                    min_proofs = min_proofs,
+                    num_proofs = num_proofs,
+                    "[ZKVM-DEBUG] make_available: NOT ENOUGH PROOFS, returning None"
+                );
                 return Ok(None);
             }
+            info!(
+                block_root = ?self.block_root,
+                "[ZKVM-DEBUG] make_available: execution proof requirement satisfied!"
+            );
         }
 
         // Block is available, construct `AvailableExecutedBlock`
@@ -661,9 +696,29 @@ impl<T: BeaconChainTypes> DataAvailabilityCheckerInner<T> {
         let mut execution_proofs = execution_proofs.into_iter().peekable();
 
         if execution_proofs.peek().is_none() {
-            // No proofs to process
+            info!(
+                ?block_root,
+                "[ZKVM-DEBUG] put_verified_execution_proofs: no proofs to process"
+            );
             return Ok(Availability::MissingComponents(block_root));
         }
+
+        // Check if block already exists in cache
+        let existing_status = self
+            .critical
+            .read()
+            .peek(&block_root)
+            .map(|pending| {
+                let has_block = pending.block.is_some();
+                let existing_proofs = pending.execution_proof_subnet_count();
+                format!("has_block={}, existing_proofs={}", has_block, existing_proofs)
+            });
+
+        info!(
+            ?block_root,
+            existing_status = ?existing_status,
+            "[ZKVM-DEBUG] put_verified_execution_proofs: checking existing cache entry"
+        );
 
         // Try to get epoch from existing pending components (if block already arrived)
         // Otherwise use Epoch::new(0) as placeholder (will be corrected when block arrives)
@@ -683,6 +738,14 @@ impl<T: BeaconChainTypes> DataAvailabilityCheckerInner<T> {
 
         let num_expected_columns_opt = self.get_num_expected_columns(epoch);
 
+        info!(
+            ?block_root,
+            has_block = pending_components.block.is_some(),
+            num_proofs_after_merge = pending_components.execution_proof_subnet_count(),
+            num_columns = pending_components.verified_data_columns.len(),
+            "[ZKVM-DEBUG] put_verified_execution_proofs: after merge, calling check_availability"
+        );
+
         pending_components.span.in_scope(|| {
             debug!(
                 component = "execution_proofs",
@@ -692,11 +755,19 @@ impl<T: BeaconChainTypes> DataAvailabilityCheckerInner<T> {
             );
         });
 
-        self.check_availability_and_cache_components(
+        let result = self.check_availability_and_cache_components(
             block_root,
             pending_components,
             num_expected_columns_opt,
-        )
+        );
+
+        info!(
+            ?block_root,
+            result = ?result.as_ref().map(|a| format!("{:?}", a)),
+            "[ZKVM-DEBUG] put_verified_execution_proofs: check_availability result"
+        );
+
+        result
     }
 
     fn check_availability_and_cache_components(
@@ -863,6 +934,35 @@ impl<T: BeaconChainTypes> DataAvailabilityCheckerInner<T> {
     ) -> Result<Availability<T::EthSpec>, AvailabilityCheckError> {
         let epoch = executed_block.as_block().epoch();
         let block_root = executed_block.import_data.block_root;
+        let slot = executed_block.as_block().slot();
+        let exec_payload_hash = executed_block.as_block()
+            .message()
+            .body()
+            .execution_payload()
+            .ok()
+            .map(|p| p.block_hash());
+
+        info!(
+            ?block_root,
+            %slot,
+            %epoch,
+            execution_payload_hash = ?exec_payload_hash,
+            "[ZKVM-DEBUG] put_executed_block called"
+        );
+
+        // Check if we already have proofs waiting for this block
+        let existing_proofs = self
+            .critical
+            .read()
+            .peek(&block_root)
+            .map(|pending| pending.execution_proof_subnet_count())
+            .unwrap_or(0);
+
+        info!(
+            ?block_root,
+            existing_proofs = existing_proofs,
+            "[ZKVM-DEBUG] put_executed_block: proofs already cached for this block"
+        );
 
         // register the block to get the diet block
         let diet_executed_block = self
@@ -877,6 +977,14 @@ impl<T: BeaconChainTypes> DataAvailabilityCheckerInner<T> {
 
         let num_expected_columns_opt = self.get_num_expected_columns(epoch);
 
+        info!(
+            ?block_root,
+            has_block = pending_components.block.is_some(),
+            num_proofs = pending_components.execution_proof_subnet_count(),
+            num_columns = pending_components.verified_data_columns.len(),
+            "[ZKVM-DEBUG] put_executed_block: after merge, checking availability"
+        );
+
         pending_components.span.in_scope(|| {
             debug!(
                 component = "block",
@@ -885,11 +993,19 @@ impl<T: BeaconChainTypes> DataAvailabilityCheckerInner<T> {
             );
         });
 
-        self.check_availability_and_cache_components(
+        let result = self.check_availability_and_cache_components(
             block_root,
             pending_components,
             num_expected_columns_opt,
-        )
+        );
+
+        info!(
+            ?block_root,
+            result = ?result.as_ref().map(|a| format!("{:?}", a)),
+            "[ZKVM-DEBUG] put_executed_block: availability check result"
+        );
+
+        result
     }
 
     fn get_num_expected_columns(&self, epoch: Epoch) -> Option<usize> {

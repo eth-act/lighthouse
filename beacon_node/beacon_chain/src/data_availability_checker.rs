@@ -18,7 +18,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 use task_executor::TaskExecutor;
-use tracing::{debug, error, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 use types::blob_sidecar::{BlobIdentifier, BlobSidecar, FixedBlobSidecarList};
 use types::{
     BlobSidecarList, BlockImportSource, ChainSpec, DataColumnSidecar, DataColumnSidecarList, Epoch,
@@ -388,23 +388,44 @@ impl<T: BeaconChainTypes> DataAvailabilityChecker<T> {
         block_root: Hash256,
         proofs: Vec<Arc<types::ExecutionProof>>,
     ) -> Result<Availability<T::EthSpec>, AvailabilityCheckError> {
-        debug!(
+        info!(
             ?block_root,
             num_proofs = proofs.len(),
-            "Verifying and storing execution proofs in DA checker"
+            "[ZKVM-DEBUG] put_rpc_execution_proofs called"
         );
 
         // If no verifier registry is configured, skip verification
         let Some(verifier_registry) = &self.verifier_registry else {
-            debug!(
+            info!(
                 ?block_root,
-                "No verifier registry configured, storing proofs without verification"
+                "[ZKVM-DEBUG] No verifier registry configured, storing proofs without verification"
             );
             let owned_proofs = proofs.iter().map(|p| (**p).clone());
             return self
                 .availability_cache
                 .put_verified_execution_proofs(block_root, owned_proofs);
         };
+
+        // Check what's in the cache for this block
+        let cache_status = self
+            .availability_cache
+            .peek_pending_components(&block_root, |components| {
+                match components {
+                    None => "no_entry".to_string(),
+                    Some(c) => {
+                        let has_block = c.block.is_some();
+                        let has_exec_hash = c.block.as_ref().and_then(|b| b.execution_payload_hash()).is_some();
+                        let num_proofs = c.get_cached_execution_proofs().len();
+                        format!("has_block={}, has_exec_hash={}, cached_proofs={}", has_block, has_exec_hash, num_proofs)
+                    }
+                }
+            });
+        
+        info!(
+            ?block_root,
+            cache_status = %cache_status,
+            "[ZKVM-DEBUG] DA cache status for block"
+        );
 
         // Get the execution payload hash from the block
         let execution_payload_hash = self
@@ -415,20 +436,28 @@ impl<T: BeaconChainTypes> DataAvailabilityChecker<T> {
             .ok_or_else(|| {
                 warn!(
                     ?block_root,
-                    "Cannot verify proofs: block not in cache or has no execution payload"
+                    "[ZKVM-DEBUG] Cannot verify proofs: block not in cache or has no execution payload"
                 );
                 AvailabilityCheckError::MissingExecutionPayload
             })?;
 
-        debug!(
+        info!(
             ?block_root,
             ?execution_payload_hash,
-            "Got execution payload hash for proof verification"
+            "[ZKVM-DEBUG] Got execution payload hash for proof verification"
         );
 
         let mut verified_proofs = Vec::new();
         for proof in proofs {
             let proof_id = proof.proof_id;
+
+            info!(
+                ?block_root,
+                ?proof_id,
+                proof_block_hash = ?proof.block_hash,
+                ?execution_payload_hash,
+                "[ZKVM-DEBUG] Checking proof hash match"
+            );
 
             // Check that the proof's block_hash matches the execution payload hash
             if proof.block_hash != execution_payload_hash {
@@ -437,7 +466,7 @@ impl<T: BeaconChainTypes> DataAvailabilityChecker<T> {
                     ?proof_id,
                     proof_hash = ?proof.block_hash,
                     ?execution_payload_hash,
-                    "Proof execution payload hash mismatch"
+                    "[ZKVM-DEBUG] Proof execution payload hash mismatch"
                 );
                 return Err(AvailabilityCheckError::ExecutionPayloadHashMismatch {
                     proof_hash: proof.block_hash,
@@ -446,21 +475,21 @@ impl<T: BeaconChainTypes> DataAvailabilityChecker<T> {
             }
 
             let verifier = verifier_registry.get_verifier(proof_id).ok_or_else(|| {
-                warn!(?proof_id, "No verifier registered for proof ID");
+                warn!(?proof_id, "[ZKVM-DEBUG] No verifier registered for proof ID");
                 AvailabilityCheckError::UnsupportedProofID(proof_id)
             })?;
 
             // Verify the proof (proof contains block_hash internally)
             match verifier.verify(&proof) {
                 Ok(true) => {
-                    debug!(?proof_id, ?block_root, "Proof verification succeeded");
+                    info!(?proof_id, ?block_root, "[ZKVM-DEBUG] Proof verification succeeded");
                     verified_proofs.push((*proof).clone());
                 }
                 Ok(false) => {
                     warn!(
                         ?proof_id,
                         ?block_root,
-                        "Proof verification failed: proof is invalid"
+                        "[ZKVM-DEBUG] Proof verification failed: proof is invalid"
                     );
                     return Err(AvailabilityCheckError::InvalidProof {
                         proof_id,
@@ -472,7 +501,7 @@ impl<T: BeaconChainTypes> DataAvailabilityChecker<T> {
                         ?proof_id,
                         ?block_root,
                         error = ?e,
-                        "Proof verification error"
+                        "[ZKVM-DEBUG] Proof verification error"
                     );
                     return Err(AvailabilityCheckError::ProofVerificationError(
                         e.to_string(),
@@ -481,14 +510,22 @@ impl<T: BeaconChainTypes> DataAvailabilityChecker<T> {
             }
         }
 
-        debug!(
+        info!(
             ?block_root,
             verified_count = verified_proofs.len(),
-            "All proofs verified successfully"
+            "[ZKVM-DEBUG] All proofs verified, calling put_verified_execution_proofs"
         );
 
-        self.availability_cache
-            .put_verified_execution_proofs(block_root, verified_proofs)
+        let result = self.availability_cache
+            .put_verified_execution_proofs(block_root, verified_proofs);
+        
+        info!(
+            ?block_root,
+            result = ?result.as_ref().map(|a| format!("{:?}", a)),
+            "[ZKVM-DEBUG] put_verified_execution_proofs result"
+        );
+        
+        result
     }
 
     /// Check if we've cached other blobs for this block. If it completes a set and we also
