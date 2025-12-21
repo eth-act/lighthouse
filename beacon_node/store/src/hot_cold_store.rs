@@ -96,6 +96,7 @@ struct BlockCache<E: EthSpec> {
     block_cache: LruCache<Hash256, SignedBeaconBlock<E>>,
     blob_cache: LruCache<Hash256, BlobSidecarList<E>>,
     data_column_cache: LruCache<Hash256, HashMap<ColumnIndex, Arc<DataColumnSidecar<E>>>>,
+    execution_proof_cache: LruCache<Hash256, Vec<Arc<ExecutionProof>>>,
     data_column_custody_info_cache: Option<DataColumnCustodyInfo>,
 }
 
@@ -105,6 +106,7 @@ impl<E: EthSpec> BlockCache<E> {
             block_cache: LruCache::new(size),
             blob_cache: LruCache::new(size),
             data_column_cache: LruCache::new(size),
+            execution_proof_cache: LruCache::new(size),
             data_column_custody_info_cache: None,
         }
     }
@@ -118,6 +120,13 @@ impl<E: EthSpec> BlockCache<E> {
         self.data_column_cache
             .get_or_insert_mut(block_root, Default::default)
             .insert(data_column.index, data_column);
+    }
+    pub fn put_execution_proofs(
+        &mut self,
+        block_root: Hash256,
+        proofs: Vec<Arc<ExecutionProof>>,
+    ) {
+        self.execution_proof_cache.put(block_root, proofs);
     }
     pub fn put_data_column_custody_info(
         &mut self,
@@ -142,6 +151,12 @@ impl<E: EthSpec> BlockCache<E> {
             .get(block_root)
             .and_then(|map| map.get(column_index).cloned())
     }
+    pub fn get_execution_proofs(
+        &mut self,
+        block_root: &Hash256,
+    ) -> Option<Vec<Arc<ExecutionProof>>> {
+        self.execution_proof_cache.get(block_root).cloned()
+    }
     pub fn get_data_column_custody_info(&self) -> Option<DataColumnCustodyInfo> {
         self.data_column_custody_info_cache.clone()
     }
@@ -154,10 +169,14 @@ impl<E: EthSpec> BlockCache<E> {
     pub fn delete_data_columns(&mut self, block_root: &Hash256) {
         let _ = self.data_column_cache.pop(block_root);
     }
+    pub fn delete_execution_proofs(&mut self, block_root: &Hash256) {
+        let _ = self.execution_proof_cache.pop(block_root);
+    }
     pub fn delete(&mut self, block_root: &Hash256) {
         self.delete_block(block_root);
         self.delete_blobs(block_root);
         self.delete_data_columns(block_root);
+        self.delete_execution_proofs(block_root);
     }
 }
 
@@ -1072,6 +1091,15 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
                 &get_execution_proof_key(block_root, proof.proof_id.as_u8()),
                 &proof.as_ssz_bytes(),
             )?;
+        }
+        if !proofs.is_empty() {
+            let cached = proofs
+                .iter()
+                .map(|proof| Arc::new(proof.clone()))
+                .collect::<Vec<_>>();
+            self.block_cache
+                .as_ref()
+                .inspect(|cache| cache.lock().put_execution_proofs(*block_root, cached));
         }
         Ok(())
     }
@@ -2627,7 +2655,15 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
     pub fn get_execution_proofs(
         &self,
         block_root: &Hash256,
-    ) -> Result<Vec<ExecutionProof>, Error> {
+    ) -> Result<Vec<Arc<ExecutionProof>>, Error> {
+        if let Some(proofs) = self
+            .block_cache
+            .as_ref()
+            .and_then(|cache| cache.lock().get_execution_proofs(block_root))
+        {
+            return Ok(proofs);
+        }
+
         let mut proofs = Vec::new();
         let prefix = block_root.as_slice();
 
@@ -2641,8 +2677,14 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
                 // We've moved past this block's proofs
                 break;
             }
-            let proof = ExecutionProof::from_ssz_bytes(&value)?;
+            let proof = Arc::new(ExecutionProof::from_ssz_bytes(&value)?);
             proofs.push(proof);
+        }
+
+        if !proofs.is_empty() {
+            self.block_cache
+                .as_ref()
+                .inspect(|cache| cache.lock().put_execution_proofs(*block_root, proofs.clone()));
         }
 
         Ok(proofs)
@@ -3643,6 +3685,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         };
 
         let mut db_ops = vec![];
+        let mut removed_block_roots = vec![];
         let mut new_oldest_slot: Option<Slot> = None;
 
         // Iterate blocks backwards until we reach blocks older than the boundary.
@@ -3671,6 +3714,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
                     %slot,
                     "Pruning execution proofs for block"
                 );
+                removed_block_roots.push(block_root);
                 new_oldest_slot = Some(slot);
             }
             // Continue iterating even if this block has no proofs - proofs may be sparse
@@ -3683,6 +3727,14 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
                 "Deleting execution proofs from disk"
             );
             self.blobs_db.do_atomically(db_ops)?;
+        }
+
+        if !removed_block_roots.is_empty() {
+            if let Some(mut block_cache) = self.block_cache.as_ref().map(|cache| cache.lock()) {
+                for block_root in removed_block_roots {
+                    block_cache.delete_execution_proofs(&block_root);
+                }
+            }
         }
 
         // Update the execution proof info with the new oldest slot

@@ -585,7 +585,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                             self.send_network_message(NetworkMessage::SendResponse {
                                 peer_id,
                                 inbound_request_id,
-                                response: Response::ExecutionProofsByRange(Some(Arc::new(proof))),
+                                response: Response::ExecutionProofsByRange(Some(proof)),
                             });
                         }
                     }
