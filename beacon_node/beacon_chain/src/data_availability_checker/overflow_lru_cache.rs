@@ -371,6 +371,7 @@ impl<E: EthSpec> PendingComponents<E> {
             "[ZKVM-DEBUG] make_available: checking execution proof requirements"
         );
 
+
         if needs_execution_proofs {
             let min_proofs = spec.zkvm_min_proofs_required().unwrap();
             let num_proofs = self.execution_proof_subnet_count();
