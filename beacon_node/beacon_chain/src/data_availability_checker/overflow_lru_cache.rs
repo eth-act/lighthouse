@@ -272,6 +272,7 @@ impl<E: EthSpec> PendingComponents<E> {
         &self,
         spec: &Arc<ChainSpec>,
         num_expected_columns_opt: Option<usize>,
+        min_proofs_required_opt: Option<usize>,
         recover: R,
     ) -> Result<Option<AvailableExecutedBlock<E>>, AvailabilityCheckError>
     where
@@ -349,11 +350,8 @@ impl<E: EthSpec> PendingComponents<E> {
             return Ok(None);
         };
 
-        // Check if this node needs execution proofs to validate blocks.
-        let needs_execution_proofs = spec.zkvm_min_proofs_required().is_some();
-
-        if needs_execution_proofs {
-            let min_proofs = spec.zkvm_min_proofs_required().unwrap();
+        // Check if this block needs execution proofs.
+        if let Some(min_proofs) = min_proofs_required_opt {
             let num_proofs = self.execution_proof_subnet_count();
             if num_proofs < min_proofs {
                 // Not enough execution proofs yet
@@ -605,7 +603,13 @@ impl<T: BeaconChainTypes> DataAvailabilityCheckerInner<T> {
             );
         });
 
-        self.check_availability_and_cache_components(block_root, pending_components, None)
+        let min_proofs_required_opt = self.get_min_proofs_required(epoch);
+        self.check_availability_and_cache_components(
+            block_root,
+            pending_components,
+            None,
+            min_proofs_required_opt,
+        )
     }
 
     #[allow(clippy::type_complexity)]
@@ -645,10 +649,12 @@ impl<T: BeaconChainTypes> DataAvailabilityCheckerInner<T> {
             );
         });
 
+        let min_proofs_required_opt = self.get_min_proofs_required(epoch);
         self.check_availability_and_cache_components(
             block_root,
             pending_components,
             Some(num_expected_columns),
+            min_proofs_required_opt,
         )
     }
 
@@ -682,6 +688,7 @@ impl<T: BeaconChainTypes> DataAvailabilityCheckerInner<T> {
             })?;
 
         let num_expected_columns_opt = self.get_num_expected_columns(epoch);
+        let min_proofs_required_opt = self.get_min_proofs_required(epoch);
 
         pending_components.span.in_scope(|| {
             debug!(
@@ -696,6 +703,7 @@ impl<T: BeaconChainTypes> DataAvailabilityCheckerInner<T> {
             block_root,
             pending_components,
             num_expected_columns_opt,
+            min_proofs_required_opt,
         )
     }
 
@@ -704,10 +712,12 @@ impl<T: BeaconChainTypes> DataAvailabilityCheckerInner<T> {
         block_root: Hash256,
         pending_components: MappedRwLockReadGuard<'_, PendingComponents<T::EthSpec>>,
         num_expected_columns_opt: Option<usize>,
+        min_proofs_required_opt: Option<usize>,
     ) -> Result<Availability<T::EthSpec>, AvailabilityCheckError> {
         if let Some(available_block) = pending_components.make_available(
             &self.spec,
             num_expected_columns_opt,
+            min_proofs_required_opt,
             |block, span| self.state_cache.recover_pending_executed_block(block, span),
         )? {
             // Explicitly drop read lock before acquiring write lock
@@ -876,6 +886,7 @@ impl<T: BeaconChainTypes> DataAvailabilityCheckerInner<T> {
             })?;
 
         let num_expected_columns_opt = self.get_num_expected_columns(epoch);
+        let min_proofs_required_opt = self.get_min_proofs_required(epoch);
 
         pending_components.span.in_scope(|| {
             debug!(
@@ -889,6 +900,7 @@ impl<T: BeaconChainTypes> DataAvailabilityCheckerInner<T> {
             block_root,
             pending_components,
             num_expected_columns_opt,
+            min_proofs_required_opt,
         )
     }
 
@@ -898,6 +910,16 @@ impl<T: BeaconChainTypes> DataAvailabilityCheckerInner<T> {
                 .custody_context
                 .num_of_data_columns_to_sample(epoch, &self.spec);
             Some(num_of_column_samples)
+        } else {
+            None
+        }
+    }
+
+    /// Returns the minimum number of execution proofs required for a block at the given epoch.
+    /// Returns `None` if proofs are not required (zkVM not enabled for this epoch).
+    fn get_min_proofs_required(&self, epoch: Epoch) -> Option<usize> {
+        if self.spec.is_zkvm_enabled_for_epoch(epoch) {
+            self.spec.zkvm_min_proofs_required()
         } else {
             None
         }
