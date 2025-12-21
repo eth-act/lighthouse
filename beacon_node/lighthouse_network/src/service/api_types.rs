@@ -32,6 +32,8 @@ pub enum SyncRequestId {
     BlobsByRange(BlobsByRangeRequestId),
     /// Data columns by range request
     DataColumnsByRange(DataColumnsByRangeRequestId),
+    /// Execution proofs by range request
+    ExecutionProofsByRange(ExecutionProofsByRangeRequestId),
 }
 
 /// Request ID for data_columns_by_root requests. Block lookups do not issue this request directly.
@@ -69,6 +71,14 @@ pub struct DataColumnsByRangeRequestId {
     /// This is useful to penalize the peer at a later point if it returned data columns that
     /// did not match with the verified block.
     pub peer: PeerId,
+}
+
+#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
+pub struct ExecutionProofsByRangeRequestId {
+    /// Id to identify this attempt at an execution_proofs_by_range request for `parent_request_id`
+    pub id: Id,
+    /// The Id of the overall By Range request for block components.
+    pub parent_request_id: ComponentsByRangeRequestId,
 }
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
@@ -168,6 +178,8 @@ pub enum Response<E: EthSpec> {
     DataColumnsByRoot(Option<Arc<DataColumnSidecar<E>>>),
     /// A response to a get EXECUTION_PROOFS_BY_ROOT request.
     ExecutionProofsByRoot(Option<Arc<ExecutionProof>>),
+    /// A response to a get EXECUTION_PROOFS_BY_RANGE request.
+    ExecutionProofsByRange(Option<Arc<ExecutionProof>>),
     /// A response to a LightClientUpdate request.
     LightClientBootstrap(Arc<LightClientBootstrap<E>>),
     /// A response to a LightClientOptimisticUpdate request.
@@ -209,6 +221,10 @@ impl<E: EthSpec> std::convert::From<Response<E>> for RpcResponse<E> {
                 Some(p) => RpcResponse::Success(RpcSuccessResponse::ExecutionProofsByRoot(p)),
                 None => RpcResponse::StreamTermination(ResponseTermination::ExecutionProofsByRoot),
             },
+            Response::ExecutionProofsByRange(r) => match r {
+                Some(p) => RpcResponse::Success(RpcSuccessResponse::ExecutionProofsByRange(p)),
+                None => RpcResponse::StreamTermination(ResponseTermination::ExecutionProofsByRange),
+            },
             Response::Status(s) => RpcResponse::Success(RpcSuccessResponse::Status(s)),
             Response::LightClientBootstrap(b) => {
                 RpcResponse::Success(RpcSuccessResponse::LightClientBootstrap(b))
@@ -245,6 +261,7 @@ macro_rules! impl_display {
 impl_display!(BlocksByRangeRequestId, "{}/{}", id, parent_request_id);
 impl_display!(BlobsByRangeRequestId, "{}/{}", id, parent_request_id);
 impl_display!(DataColumnsByRangeRequestId, "{}/{}", id, parent_request_id);
+impl_display!(ExecutionProofsByRangeRequestId, "{}/{}", id, parent_request_id);
 impl_display!(ComponentsByRangeRequestId, "{}/{}", id, requester);
 impl_display!(DataColumnsByRootRequestId, "{}/{}", id, requester);
 impl_display!(SingleLookupReqId, "{}/Lookup/{}", req_id, lookup_id);

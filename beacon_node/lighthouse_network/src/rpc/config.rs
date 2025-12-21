@@ -94,6 +94,7 @@ pub struct RateLimiterConfig {
     pub(super) data_columns_by_root_quota: Quota,
     pub(super) data_columns_by_range_quota: Quota,
     pub(super) execution_proofs_by_root_quota: Quota,
+    pub(super) execution_proofs_by_range_quota: Quota,
     pub(super) light_client_bootstrap_quota: Quota,
     pub(super) light_client_optimistic_update_quota: Quota,
     pub(super) light_client_finality_update_quota: Quota,
@@ -126,6 +127,9 @@ impl RateLimiterConfig {
     // TODO(zkproofs): Configure this to be less arbitrary
     pub const DEFAULT_EXECUTION_PROOFS_BY_ROOT_QUOTA: Quota =
         Quota::n_every(NonZeroU64::new(128).unwrap(), 10);
+    // TODO(zkproofs): Configure this to be less arbitrary
+    pub const DEFAULT_EXECUTION_PROOFS_BY_RANGE_QUOTA: Quota =
+        Quota::n_every(NonZeroU64::new(128).unwrap(), 10);
     pub const DEFAULT_LIGHT_CLIENT_BOOTSTRAP_QUOTA: Quota = Quota::one_every(10);
     pub const DEFAULT_LIGHT_CLIENT_OPTIMISTIC_UPDATE_QUOTA: Quota = Quota::one_every(10);
     pub const DEFAULT_LIGHT_CLIENT_FINALITY_UPDATE_QUOTA: Quota = Quota::one_every(10);
@@ -146,6 +150,7 @@ impl Default for RateLimiterConfig {
             data_columns_by_root_quota: Self::DEFAULT_DATA_COLUMNS_BY_ROOT_QUOTA,
             data_columns_by_range_quota: Self::DEFAULT_DATA_COLUMNS_BY_RANGE_QUOTA,
             execution_proofs_by_root_quota: Self::DEFAULT_EXECUTION_PROOFS_BY_ROOT_QUOTA,
+            execution_proofs_by_range_quota: Self::DEFAULT_EXECUTION_PROOFS_BY_RANGE_QUOTA,
             light_client_bootstrap_quota: Self::DEFAULT_LIGHT_CLIENT_BOOTSTRAP_QUOTA,
             light_client_optimistic_update_quota:
                 Self::DEFAULT_LIGHT_CLIENT_OPTIMISTIC_UPDATE_QUOTA,
@@ -207,6 +212,7 @@ impl FromStr for RateLimiterConfig {
         let mut data_columns_by_root_quota = None;
         let mut data_columns_by_range_quota = None;
         let mut execution_proofs_by_root_quota = None;
+        let mut execution_proofs_by_range_quota = None;
         let mut light_client_bootstrap_quota = None;
         let mut light_client_optimistic_update_quota = None;
         let mut light_client_finality_update_quota = None;
@@ -230,6 +236,9 @@ impl FromStr for RateLimiterConfig {
                 }
                 Protocol::ExecutionProofsByRoot => {
                     execution_proofs_by_root_quota = execution_proofs_by_root_quota.or(quota)
+                }
+                Protocol::ExecutionProofsByRange => {
+                    execution_proofs_by_range_quota = execution_proofs_by_range_quota.or(quota)
                 }
                 Protocol::Ping => ping_quota = ping_quota.or(quota),
                 Protocol::MetaData => meta_data_quota = meta_data_quota.or(quota),
@@ -268,6 +277,8 @@ impl FromStr for RateLimiterConfig {
                 .unwrap_or(Self::DEFAULT_DATA_COLUMNS_BY_RANGE_QUOTA),
             execution_proofs_by_root_quota: execution_proofs_by_root_quota
                 .unwrap_or(Self::DEFAULT_EXECUTION_PROOFS_BY_ROOT_QUOTA),
+            execution_proofs_by_range_quota: execution_proofs_by_range_quota
+                .unwrap_or(Self::DEFAULT_EXECUTION_PROOFS_BY_RANGE_QUOTA),
             light_client_bootstrap_quota: light_client_bootstrap_quota
                 .unwrap_or(Self::DEFAULT_LIGHT_CLIENT_BOOTSTRAP_QUOTA),
             light_client_optimistic_update_quota: light_client_optimistic_update_quota

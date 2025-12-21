@@ -323,6 +323,9 @@ impl<T: BeaconChainTypes> Router<T> {
             Response::ExecutionProofsByRoot(execution_proof) => {
                 self.on_execution_proofs_by_root_response(peer_id, app_request_id, execution_proof);
             }
+            Response::ExecutionProofsByRange(execution_proof) => {
+                self.on_execution_proofs_by_range_response(peer_id, app_request_id, execution_proof);
+            }
             // Light client responses should not be received
             Response::LightClientBootstrap(_)
             | Response::LightClientOptimisticUpdate(_)
@@ -725,6 +728,22 @@ impl<T: BeaconChainTypes> Router<T> {
             execution_proof,
             seen_timestamp: timestamp_now(),
         });
+    }
+
+    /// Handle an `ExecutionProofsByRange` response from the peer.
+    ///
+    /// TODO(zkproofs): The full implementation should integrate
+    /// with range sync to couple proofs with blocks during batch sync.
+    pub fn on_execution_proofs_by_range_response(
+        &mut self,
+        peer_id: PeerId,
+        _app_request_id: AppRequestId,
+        _execution_proof: Option<Arc<ExecutionProof>>,
+    ) {
+        trace!(
+            %peer_id,
+            "Received ExecutionProofsByRange Response"
+        );
     }
 
     /// Handle a `DataColumnsByRoot` response from the peer.

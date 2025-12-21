@@ -107,6 +107,8 @@ pub struct RPCRateLimiter {
     dcbrange_rl: Limiter<PeerId>,
     /// ExecutionProofsByRoot rate limiter.
     execution_proofs_by_root_rl: Limiter<PeerId>,
+    /// ExecutionProofsByRange rate limiter.
+    execution_proofs_by_range_rl: Limiter<PeerId>,
     /// LightClientBootstrap rate limiter.
     lc_bootstrap_rl: Limiter<PeerId>,
     /// LightClientOptimisticUpdate rate limiter.
@@ -152,6 +154,8 @@ pub struct RPCRateLimiterBuilder {
     dcbrange_quota: Option<Quota>,
     /// Quota for the ExecutionProofsByRoot protocol.
     execution_proofs_by_root_quota: Option<Quota>,
+    /// Quota for the ExecutionProofsByRange protocol.
+    execution_proofs_by_range_quota: Option<Quota>,
     /// Quota for the LightClientBootstrap protocol.
     lcbootstrap_quota: Option<Quota>,
     /// Quota for the LightClientOptimisticUpdate protocol.
@@ -178,6 +182,7 @@ impl RPCRateLimiterBuilder {
             Protocol::DataColumnsByRoot => self.dcbroot_quota = q,
             Protocol::DataColumnsByRange => self.dcbrange_quota = q,
             Protocol::ExecutionProofsByRoot => self.execution_proofs_by_root_quota = q,
+            Protocol::ExecutionProofsByRange => self.execution_proofs_by_range_quota = q,
             Protocol::LightClientBootstrap => self.lcbootstrap_quota = q,
             Protocol::LightClientOptimisticUpdate => self.lc_optimistic_update_quota = q,
             Protocol::LightClientFinalityUpdate => self.lc_finality_update_quota = q,
@@ -230,6 +235,10 @@ impl RPCRateLimiterBuilder {
             .execution_proofs_by_root_quota
             .ok_or("ExecutionProofsByRoot quota not specified")?;
 
+        let execution_proofs_by_range_quota = self
+            .execution_proofs_by_range_quota
+            .ok_or("ExecutionProofsByRange quota not specified")?;
+
         // create the rate limiters
         let ping_rl = Limiter::from_quota(ping_quota)?;
         let metadata_rl = Limiter::from_quota(metadata_quota)?;
@@ -242,6 +251,7 @@ impl RPCRateLimiterBuilder {
         let dcbroot_rl = Limiter::from_quota(dcbroot_quota)?;
         let dcbrange_rl = Limiter::from_quota(dcbrange_quota)?;
         let execution_proofs_by_root_rl = Limiter::from_quota(execution_proofs_by_root_quota)?;
+        let execution_proofs_by_range_rl = Limiter::from_quota(execution_proofs_by_range_quota)?;
         let lc_bootstrap_rl = Limiter::from_quota(lc_bootstrap_quota)?;
         let lc_optimistic_update_rl = Limiter::from_quota(lc_optimistic_update_quota)?;
         let lc_finality_update_rl = Limiter::from_quota(lc_finality_update_quota)?;
@@ -266,6 +276,7 @@ impl RPCRateLimiterBuilder {
             dcbroot_rl,
             dcbrange_rl,
             execution_proofs_by_root_rl,
+            execution_proofs_by_range_rl,
             lc_bootstrap_rl,
             lc_optimistic_update_rl,
             lc_finality_update_rl,
@@ -320,6 +331,7 @@ impl RPCRateLimiter {
             data_columns_by_root_quota,
             data_columns_by_range_quota,
             execution_proofs_by_root_quota,
+            execution_proofs_by_range_quota,
             light_client_bootstrap_quota,
             light_client_optimistic_update_quota,
             light_client_finality_update_quota,
@@ -340,6 +352,10 @@ impl RPCRateLimiter {
             .set_quota(
                 Protocol::ExecutionProofsByRoot,
                 execution_proofs_by_root_quota,
+            )
+            .set_quota(
+                Protocol::ExecutionProofsByRange,
+                execution_proofs_by_range_quota,
             )
             .set_quota(Protocol::LightClientBootstrap, light_client_bootstrap_quota)
             .set_quota(
@@ -389,6 +405,7 @@ impl RPCRateLimiter {
             Protocol::DataColumnsByRoot => &mut self.dcbroot_rl,
             Protocol::DataColumnsByRange => &mut self.dcbrange_rl,
             Protocol::ExecutionProofsByRoot => &mut self.execution_proofs_by_root_rl,
+            Protocol::ExecutionProofsByRange => &mut self.execution_proofs_by_range_rl,
             Protocol::LightClientBootstrap => &mut self.lc_bootstrap_rl,
             Protocol::LightClientOptimisticUpdate => &mut self.lc_optimistic_update_rl,
             Protocol::LightClientFinalityUpdate => &mut self.lc_finality_update_rl,
@@ -414,6 +431,7 @@ impl RPCRateLimiter {
             dcbroot_rl,
             dcbrange_rl,
             execution_proofs_by_root_rl,
+            execution_proofs_by_range_rl,
             lc_bootstrap_rl,
             lc_optimistic_update_rl,
             lc_finality_update_rl,
@@ -432,6 +450,7 @@ impl RPCRateLimiter {
         dcbrange_rl.prune(time_since_start);
         dcbroot_rl.prune(time_since_start);
         execution_proofs_by_root_rl.prune(time_since_start);
+        execution_proofs_by_range_rl.prune(time_since_start);
         lc_bootstrap_rl.prune(time_since_start);
         lc_optimistic_update_rl.prune(time_since_start);
         lc_finality_update_rl.prune(time_since_start);

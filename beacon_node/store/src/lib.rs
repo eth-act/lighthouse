@@ -266,6 +266,12 @@ pub enum DBColumn {
     BeaconDataColumn,
     #[strum(serialize = "bdi")]
     BeaconDataColumnCustodyInfo,
+    /// Execution proofs for zkVM validation.
+    ///
+    /// - Key: `Hash256` block root.
+    /// - Value: SSZ-encoded list of execution proofs.
+    #[strum(serialize = "bep")]
+    BeaconExecutionProof,
     /// For full `BeaconState`s in the hot database (finalized or fork-boundary states).
     ///
     /// DEPRECATED.
@@ -409,6 +415,7 @@ impl DBColumn {
             | Self::BeaconBlock
             | Self::BeaconState
             | Self::BeaconBlob
+            | Self::BeaconExecutionProof
             | Self::BeaconStateSummary
             | Self::BeaconStateHotDiff
             | Self::BeaconStateHotSnapshot

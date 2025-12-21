@@ -961,6 +961,58 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         ));
     }
 
+    /// Store execution proofs for a block.
+    pub fn put_execution_proofs(
+        &self,
+        block_root: &Hash256,
+        proofs: &[ExecutionProof],
+    ) -> Result<(), Error> {
+        let proofs_vec: Vec<ExecutionProof> = proofs.to_vec();
+        self.blobs_db.put_bytes(
+            DBColumn::BeaconExecutionProof,
+            block_root.as_slice(),
+            &proofs_vec.as_ssz_bytes(),
+        )
+    }
+
+    /// Fetch execution proofs for a given block from the store.
+    pub fn get_execution_proofs(
+        &self,
+        block_root: &Hash256,
+    ) -> Result<Option<Vec<ExecutionProof>>, Error> {
+        match self
+            .blobs_db
+            .get_bytes(DBColumn::BeaconExecutionProof, block_root.as_slice())?
+        {
+            Some(ref bytes) => {
+                let proofs = Vec::<ExecutionProof>::from_ssz_bytes(bytes)?;
+                Ok(Some(proofs))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Generate key-value store ops for execution proofs (for batch operations).
+    pub fn execution_proofs_as_kv_store_ops(
+        &self,
+        key: &Hash256,
+        proofs: &[ExecutionProof],
+        ops: &mut Vec<KeyValueStoreOp>,
+    ) {
+        let proofs_vec: Vec<ExecutionProof> = proofs.to_vec();
+        ops.push(KeyValueStoreOp::PutKeyValue(
+            DBColumn::BeaconExecutionProof,
+            key.as_slice().to_vec(),
+            proofs_vec.as_ssz_bytes(),
+        ));
+    }
+
+    /// Delete execution proofs for a given block root.
+    pub fn delete_execution_proofs(&self, block_root: &Hash256) -> Result<(), Error> {
+        self.blobs_db
+            .key_delete(DBColumn::BeaconExecutionProof, block_root.as_slice())
+    }
+
     pub fn data_column_as_kv_store_ops(
         &self,
         block_root: &Hash256,

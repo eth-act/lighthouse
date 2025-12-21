@@ -603,6 +603,25 @@ impl ExecutionProofsByRootRequest {
     }
 }
 
+/// Request execution proofs for a range of slots.
+#[derive(Encode, Decode, Clone, Debug, PartialEq)]
+pub struct ExecutionProofsByRangeRequest {
+    /// The starting slot to request execution proofs.
+    pub start_slot: Slot,
+    /// The number of slots to request proofs for.
+    pub count: u64,
+}
+
+impl ExecutionProofsByRangeRequest {
+    pub fn new(start_slot: Slot, count: u64) -> Self {
+        Self { start_slot, count }
+    }
+
+    pub fn max_requested(&self) -> u64 {
+        self.count
+    }
+}
+
 /// Request a number of beacon data columns from a peer.
 #[derive(Encode, Decode, Clone, Debug, PartialEq)]
 pub struct LightClientUpdatesByRangeRequest {
@@ -673,6 +692,9 @@ pub enum RpcSuccessResponse<E: EthSpec> {
     /// A response to a get EXECUTION_PROOFS_BY_ROOT request.
     ExecutionProofsByRoot(Arc<ExecutionProof>),
 
+    /// A response to a get EXECUTION_PROOFS_BY_RANGE request.
+    ExecutionProofsByRange(Arc<ExecutionProof>),
+
     /// A PONG response to a PING request.
     Pong(Ping),
 
@@ -704,6 +726,9 @@ pub enum ResponseTermination {
     /// Execution proofs by root stream termination.
     ExecutionProofsByRoot,
 
+    /// Execution proofs by range stream termination.
+    ExecutionProofsByRange,
+
     /// Light client updates by range stream termination.
     LightClientUpdatesByRange,
 }
@@ -718,6 +743,7 @@ impl ResponseTermination {
             ResponseTermination::DataColumnsByRoot => Protocol::DataColumnsByRoot,
             ResponseTermination::DataColumnsByRange => Protocol::DataColumnsByRange,
             ResponseTermination::ExecutionProofsByRoot => Protocol::ExecutionProofsByRoot,
+            ResponseTermination::ExecutionProofsByRange => Protocol::ExecutionProofsByRange,
             ResponseTermination::LightClientUpdatesByRange => Protocol::LightClientUpdatesByRange,
         }
     }
@@ -814,6 +840,7 @@ impl<E: EthSpec> RpcSuccessResponse<E> {
             RpcSuccessResponse::DataColumnsByRoot(_) => Protocol::DataColumnsByRoot,
             RpcSuccessResponse::DataColumnsByRange(_) => Protocol::DataColumnsByRange,
             RpcSuccessResponse::ExecutionProofsByRoot(_) => Protocol::ExecutionProofsByRoot,
+            RpcSuccessResponse::ExecutionProofsByRange(_) => Protocol::ExecutionProofsByRange,
             RpcSuccessResponse::Pong(_) => Protocol::Ping,
             RpcSuccessResponse::MetaData(_) => Protocol::MetaData,
             RpcSuccessResponse::LightClientBootstrap(_) => Protocol::LightClientBootstrap,
@@ -840,6 +867,7 @@ impl<E: EthSpec> RpcSuccessResponse<E> {
             Self::LightClientUpdatesByRange(r) => Some(r.attested_header_slot()),
             // TODO(zkproofs): Change this when we add Slot to ExecutionProof
             Self::ExecutionProofsByRoot(_)
+            | Self::ExecutionProofsByRange(_)
             | Self::MetaData(_)
             | Self::Status(_)
             | Self::Pong(_) => None,
@@ -904,6 +932,9 @@ impl<E: EthSpec> std::fmt::Display for RpcSuccessResponse<E> {
             }
             RpcSuccessResponse::ExecutionProofsByRoot(proof) => {
                 write!(f, "ExecutionProofsByRoot: Block root: {}", proof.block_root)
+            }
+            RpcSuccessResponse::ExecutionProofsByRange(proof) => {
+                write!(f, "ExecutionProofsByRange: Block root: {}", proof.block_root)
             }
             RpcSuccessResponse::Pong(ping) => write!(f, "Pong: {}", ping.data),
             RpcSuccessResponse::MetaData(metadata) => {
@@ -1024,6 +1055,16 @@ impl std::fmt::Display for ExecutionProofsByRootRequest {
             self.block_root,
             self.already_have.len(),
             self.count_needed
+        )
+    }
+}
+
+impl std::fmt::Display for ExecutionProofsByRangeRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Request: ExecutionProofsByRange: Start Slot: {}, Count: {}",
+            self.start_slot, self.count
         )
     }
 }

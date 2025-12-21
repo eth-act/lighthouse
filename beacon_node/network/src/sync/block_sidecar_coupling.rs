@@ -5,6 +5,7 @@ use lighthouse_network::{
     PeerId,
     service::api_types::{
         BlobsByRangeRequestId, BlocksByRangeRequestId, DataColumnsByRangeRequestId,
+        ExecutionProofsByRangeRequestId,
     },
 };
 use ssz_types::RuntimeVariableList;
@@ -12,7 +13,7 @@ use std::{collections::HashMap, sync::Arc};
 use tracing::{Span, debug};
 use types::{
     BlobSidecar, ChainSpec, ColumnIndex, DataColumnSidecar, DataColumnSidecarList, EthSpec,
-    Hash256, SignedBeaconBlock,
+    ExecutionProof, Hash256, SignedBeaconBlock,
 };
 
 use crate::sync::network_context::MAX_COLUMN_RETRIES;
@@ -33,6 +34,9 @@ pub struct RangeBlockComponentsRequest<E: EthSpec> {
     blocks_request: ByRangeRequest<BlocksByRangeRequestId, Vec<Arc<SignedBeaconBlock<E>>>>,
     /// Sidecars we have received awaiting for their corresponding block.
     block_data_request: RangeBlockDataRequest<E>,
+    /// Execution proofs request (optional, only when zkVM verification is enabled).
+    execution_proofs_request:
+        Option<ByRangeRequest<ExecutionProofsByRangeRequestId, Vec<Arc<ExecutionProof>>>>,
     /// Span to track the range request and all children range requests.
     pub(crate) request_span: Span,
 }
@@ -76,6 +80,7 @@ impl<E: EthSpec> RangeBlockComponentsRequest<E> {
     /// * `blocks_req_id` - Request ID for the blocks
     /// * `blobs_req_id` - Optional request ID for blobs (pre-Fulu fork)
     /// * `data_columns` - Optional tuple of (request_id->column_indices pairs, expected_custody_columns) for Fulu fork
+    /// * `execution_proofs_req_id` - Optional request ID for execution proofs (zkVM verification)
     #[allow(clippy::type_complexity)]
     pub fn new(
         blocks_req_id: BlocksByRangeRequestId,
@@ -84,6 +89,7 @@ impl<E: EthSpec> RangeBlockComponentsRequest<E> {
             Vec<(DataColumnsByRangeRequestId, Vec<ColumnIndex>)>,
             Vec<ColumnIndex>,
         )>,
+        execution_proofs_req_id: Option<ExecutionProofsByRangeRequestId>,
         request_span: Span,
     ) -> Self {
         let block_data_request = if let Some(blobs_req_id) = blobs_req_id {
@@ -103,9 +109,13 @@ impl<E: EthSpec> RangeBlockComponentsRequest<E> {
             RangeBlockDataRequest::NoData
         };
 
+        let execution_proofs_request =
+            execution_proofs_req_id.map(ByRangeRequest::Active);
+
         Self {
             blocks_request: ByRangeRequest::Active(blocks_req_id),
             block_data_request,
+            execution_proofs_request,
             request_span,
         }
     }
@@ -187,6 +197,29 @@ impl<E: EthSpec> RangeBlockComponentsRequest<E> {
         }
     }
 
+    /// Adds received execution proofs to the request.
+    ///
+    /// Returns an error if this request does not expect execution proofs,
+    /// or if the request ID doesn't match.
+    pub fn add_execution_proofs(
+        &mut self,
+        req_id: ExecutionProofsByRangeRequestId,
+        proofs: Vec<Arc<ExecutionProof>>,
+    ) -> Result<(), String> {
+        match &mut self.execution_proofs_request {
+            None => Err("received execution proofs but none expected".to_owned()),
+            Some(req) => req.finish(req_id, proofs),
+        }
+    }
+
+    /// Returns the execution proofs if the request is complete.
+    /// TODO(zkproofs): currently unused because everything is not hooked up
+    pub fn get_execution_proofs(&self) -> Option<&Vec<Arc<ExecutionProof>>> {
+        self.execution_proofs_request
+            .as_ref()
+            .and_then(|req| req.to_finished())
+    }
+
     /// Attempts to construct RPC blocks from all received components.
     ///
     /// Returns `None` if not all expected requests have completed.
@@ -199,6 +232,13 @@ impl<E: EthSpec> RangeBlockComponentsRequest<E> {
         let Some(blocks) = self.blocks_request.to_finished() else {
             return None;
         };
+
+        // If execution proofs are expected, check if they have been received
+        if let Some(proofs_request) = &self.execution_proofs_request {
+            if proofs_request.to_finished().is_none() {
+                return None;
+            }
+        }
 
         // Increment the attempt once this function returns the response or errors
         match &mut self.block_data_request {
@@ -529,7 +569,7 @@ mod tests {
 
         let blocks_req_id = blocks_id(components_id());
         let mut info =
-            RangeBlockComponentsRequest::<E>::new(blocks_req_id, None, None, Span::none());
+            RangeBlockComponentsRequest::<E>::new(blocks_req_id, None, None, None, Span::none());
 
         // Send blocks and complete terminate response
         info.add_blocks(blocks_req_id, blocks).unwrap();
@@ -557,6 +597,7 @@ mod tests {
             blocks_req_id,
             Some(blobs_req_id),
             None,
+            None,
             Span::none(),
         );
 
@@ -567,7 +608,7 @@ mod tests {
 
         // Assert response is finished and RpcBlocks can be constructed, even if blobs weren't returned.
         // This makes sure we don't expect blobs here when they have expired. Checking this logic should
-        // be hendled elsewhere.
+        // be handled elsewhere.
         info.responses(&test_spec::<E>()).unwrap().unwrap();
     }
 
@@ -606,6 +647,7 @@ mod tests {
             blocks_req_id,
             None,
             Some((columns_req_id.clone(), expects_custody_columns.clone())),
+            None,
             Span::none(),
         );
         // Send blocks and complete terminate response
@@ -674,6 +716,7 @@ mod tests {
             blocks_req_id,
             None,
             Some((columns_req_id.clone(), expects_custody_columns.clone())),
+            None,
             Span::none(),
         );
 
@@ -762,6 +805,7 @@ mod tests {
             blocks_req_id,
             None,
             Some((columns_req_id.clone(), expected_custody_columns.clone())),
+            None,
             Span::none(),
         );
 
@@ -848,6 +892,7 @@ mod tests {
             blocks_req_id,
             None,
             Some((columns_req_id.clone(), expected_custody_columns.clone())),
+            None,
             Span::none(),
         );
 
@@ -941,6 +986,7 @@ mod tests {
             blocks_req_id,
             None,
             Some((columns_req_id.clone(), expected_custody_columns.clone())),
+            None,
             Span::none(),
         );
 

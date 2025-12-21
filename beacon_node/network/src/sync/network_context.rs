@@ -28,7 +28,8 @@ use lighthouse_network::service::api_types::{
     AppRequestId, BlobsByRangeRequestId, BlocksByRangeRequestId, ComponentsByRangeRequestId,
     CustodyBackFillBatchRequestId, CustodyBackfillBatchId, CustodyId, CustodyRequester,
     DataColumnsByRangeRequestId, DataColumnsByRangeRequester, DataColumnsByRootRequestId,
-    DataColumnsByRootRequester, Id, SingleLookupReqId, SyncRequestId,
+    DataColumnsByRootRequester, ExecutionProofsByRangeRequestId, Id, SingleLookupReqId,
+    SyncRequestId,
 };
 use lighthouse_network::{Client, NetworkGlobals, PeerAction, PeerId, ReportSource, Subnet};
 use lighthouse_tracing::{SPAN_OUTGOING_BLOCK_BY_ROOT_REQUEST, SPAN_OUTGOING_RANGE_REQUEST};
@@ -37,7 +38,8 @@ pub use requests::LookupVerifyError;
 use requests::{
     ActiveRequests, BlobsByRangeRequestItems, BlobsByRootRequestItems, BlocksByRangeRequestItems,
     BlocksByRootRequestItems, DataColumnsByRangeRequestItems, DataColumnsByRootRequestItems,
-    ExecutionProofsByRootRequestItems, ExecutionProofsByRootSingleBlockRequest,
+    ExecutionProofsByRangeRequestItems, ExecutionProofsByRootRequestItems,
+    ExecutionProofsByRootSingleBlockRequest,
 };
 #[cfg(test)]
 use slot_clock::SlotClock;
@@ -217,6 +219,9 @@ pub struct SyncNetworkContext<T: BeaconChainTypes> {
     /// A mapping of active DataColumnsByRange requests
     data_columns_by_range_requests:
         ActiveRequests<DataColumnsByRangeRequestId, DataColumnsByRangeRequestItems<T::EthSpec>>,
+    /// A mapping of active ExecutionProofsByRange requests
+    execution_proofs_by_range_requests:
+        ActiveRequests<ExecutionProofsByRangeRequestId, ExecutionProofsByRangeRequestItems>,
     /// Mapping of active custody column requests for a block root
     custody_by_root_requests: FnvHashMap<CustodyRequester, ActiveCustodyRequest<T>>,
 
@@ -253,6 +258,10 @@ pub enum RangeBlockComponent<E: EthSpec> {
     CustodyColumns(
         DataColumnsByRangeRequestId,
         RpcResponseResult<Vec<Arc<DataColumnSidecar<E>>>>,
+    ),
+    ExecutionProofs(
+        ExecutionProofsByRangeRequestId,
+        RpcResponseResult<Vec<Arc<ExecutionProof>>>,
     ),
 }
 
@@ -303,6 +312,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             blocks_by_range_requests: ActiveRequests::new("blocks_by_range"),
             blobs_by_range_requests: ActiveRequests::new("blobs_by_range"),
             data_columns_by_range_requests: ActiveRequests::new("data_columns_by_range"),
+            execution_proofs_by_range_requests: ActiveRequests::new("execution_proofs_by_range"),
             custody_by_root_requests: <_>::default(),
             components_by_range_requests: FnvHashMap::default(),
             custody_backfill_data_column_batch_requests: FnvHashMap::default(),
@@ -332,6 +342,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             blocks_by_range_requests,
             blobs_by_range_requests,
             data_columns_by_range_requests,
+            execution_proofs_by_range_requests,
             // custody_by_root_requests is a meta request of data_columns_by_root_requests
             custody_by_root_requests: _,
             // components_by_range_requests is a meta request of various _by_range requests
@@ -371,6 +382,10 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             .active_requests_of_peer(peer_id)
             .into_iter()
             .map(|req_id| SyncRequestId::DataColumnsByRange(*req_id));
+        let execution_proofs_by_range_ids = execution_proofs_by_range_requests
+            .active_requests_of_peer(peer_id)
+            .into_iter()
+            .map(|req_id| SyncRequestId::ExecutionProofsByRange(*req_id));
         blocks_by_root_ids
             .chain(blobs_by_root_ids)
             .chain(data_column_by_root_ids)
@@ -378,6 +393,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             .chain(blocks_by_range_ids)
             .chain(blobs_by_range_ids)
             .chain(data_column_by_range_ids)
+            .chain(execution_proofs_by_range_ids)
             .collect()
     }
 
@@ -435,6 +451,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             blocks_by_range_requests,
             blobs_by_range_requests,
             data_columns_by_range_requests,
+            execution_proofs_by_range_requests,
             // custody_by_root_requests is a meta request of data_columns_by_root_requests
             custody_by_root_requests: _,
             // components_by_range_requests is a meta request of various _by_range requests
@@ -458,6 +475,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             .chain(blocks_by_range_requests.iter_request_peers())
             .chain(blobs_by_range_requests.iter_request_peers())
             .chain(data_columns_by_range_requests.iter_request_peers())
+            .chain(execution_proofs_by_range_requests.iter_request_peers())
         {
             *active_request_count_by_peer.entry(peer_id).or_default() += 1;
         }
@@ -672,6 +690,8 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             .transpose()?;
 
         let epoch = Slot::new(*request.start_slot()).epoch(T::EthSpec::slots_per_epoch());
+        // TODO(zkproofs): Add execution proofs by range request when zkVM verification is enabled
+        let execution_proofs_req_id: Option<ExecutionProofsByRangeRequestId> = None;
         let info = RangeBlockComponentsRequest::new(
             blocks_req_id,
             blobs_req_id,
@@ -681,6 +701,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
                     self.chain.sampling_columns_for_epoch(epoch).to_vec(),
                 )
             }),
+            execution_proofs_req_id,
             range_request_span,
         );
         self.components_by_range_requests.insert(id, info);
@@ -776,6 +797,17 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
                     resp.and_then(|(custody_columns, _)| {
                         request
                             .add_custody_columns(req_id, custody_columns)
+                            .map_err(|e| {
+                                RpcResponseError::BlockComponentCouplingError(
+                                    CouplingError::InternalError(e),
+                                )
+                            })
+                    })
+                }
+                RangeBlockComponent::ExecutionProofs(req_id, resp) => {
+                    resp.and_then(|(proofs, _)| {
+                        request
+                            .add_execution_proofs(req_id, proofs)
                             .map_err(|e| {
                                 RpcResponseError::BlockComponentCouplingError(
                                     CouplingError::InternalError(e),
@@ -1638,6 +1670,18 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             .data_columns_by_range_requests
             .on_response(id, rpc_event);
         self.on_rpc_response_result(id, "DataColumnsByRange", resp, peer_id, |d| d.len())
+    }
+
+    pub(crate) fn on_execution_proofs_by_range_response(
+        &mut self,
+        id: ExecutionProofsByRangeRequestId,
+        peer_id: PeerId,
+        rpc_event: RpcEvent<Arc<ExecutionProof>>,
+    ) -> Option<RpcResponseResult<Vec<Arc<ExecutionProof>>>> {
+        let resp = self
+            .execution_proofs_by_range_requests
+            .on_response(id, rpc_event);
+        self.on_rpc_response_result(id, "ExecutionProofsByRange", resp, peer_id, |d| d.len())
     }
 
     fn on_rpc_response_result<I: std::fmt::Display, R, F: FnOnce(&R) -> usize>(
