@@ -2,7 +2,6 @@ use crate::ChainConfig;
 use crate::CustodyContext;
 use crate::beacon_chain::{
     BEACON_CHAIN_DB_KEY, CanonicalHead, LightClientProducerEvent, OP_POOL_DB_KEY,
-    ProofGenerationEvent,
 };
 use crate::beacon_proposer_cache::BeaconProposerCache;
 use crate::custody_context::NodeCustodyType;
@@ -43,7 +42,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use store::{Error as StoreError, HotColdDB, ItemStore, KeyValueStoreOp};
 use task_executor::{ShutdownReason, TaskExecutor};
-use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, error, info};
 use types::data_column_custody_group::CustodyIndex;
 use types::{
@@ -116,10 +114,6 @@ pub struct BeaconChainBuilder<T: BeaconChainTypes> {
     /// be replaced with ZkVmEngineApi from zkvm_execution_layer. This would allow the
     /// --execution-endpoint CLI flag to be optional when running in ZK-VM mode.
     zkvm_execution_layer_config: Option<zkvm_execution_layer::ZKVMExecutionLayerConfig>,
-    /// Registry of zkVM proof generators for currently altruistic proof generation
-    zkvm_generator_registry: Option<Arc<zkvm_execution_layer::GeneratorRegistry>>,
-    /// Sender to notify proof generation service of blocks needing proofs
-    proof_generation_tx: Option<UnboundedSender<ProofGenerationEvent<T::EthSpec>>>,
 }
 
 impl<TSlotClock, E, THotStore, TColdStore>
@@ -161,8 +155,6 @@ where
             ordered_custody_column_indices: None,
             rng: None,
             zkvm_execution_layer_config: None,
-            zkvm_generator_registry: None,
-            proof_generation_tx: None,
         }
     }
 
@@ -723,21 +715,6 @@ where
         self
     }
 
-    /// Sets the zkVM generator registry for altruistic proof generation.
-    pub fn zkvm_generator_registry(
-        mut self,
-        registry: Arc<zkvm_execution_layer::GeneratorRegistry>,
-    ) -> Self {
-        self.zkvm_generator_registry = Some(registry);
-        self
-    }
-
-    /// Sets a `Sender` to notify the proof generation service of new blocks.
-    pub fn proof_generation_tx(mut self, sender: UnboundedSender<ProofGenerationEvent<E>>) -> Self {
-        self.proof_generation_tx = Some(sender);
-        self
-    }
-
     /// Creates a new, empty operation pool.
     fn empty_op_pool(mut self) -> Self {
         self.op_pool = Some(OperationPool::new());
@@ -1016,9 +993,6 @@ where
         };
         debug!(?custody_context, "Loaded persisted custody context");
 
-        let has_execution_layer_and_proof_gen =
-            self.execution_layer.is_some() && self.zkvm_generator_registry.is_some();
-
         let beacon_chain = BeaconChain {
             spec: self.spec.clone(),
             config: self.chain_config,
@@ -1102,17 +1076,11 @@ where
                     self.zkvm_execution_layer_config
                         .as_ref()
                         .map(|_| Arc::new(zkvm_execution_layer::registry_proof_verification::VerifierRegistry::new_with_dummy_verifiers())),
-                    // Pass whether this node has an execution layer AND generates proofs
-                    // Nodes with EL+proof-gen validate via traditional execution
-                    // Nodes with EL but no proof-gen wait for proofs (lightweight verifier)
-                    has_execution_layer_and_proof_gen,
                 )
                 .map_err(|e| format!("Error initializing DataAvailabilityChecker: {:?}", e))?,
             ),
             kzg: self.kzg.clone(),
             rng: Arc::new(Mutex::new(rng)),
-            zkvm_generator_registry: self.zkvm_generator_registry,
-            proof_generation_tx: self.proof_generation_tx,
         };
 
         let head = beacon_chain.head_snapshot();

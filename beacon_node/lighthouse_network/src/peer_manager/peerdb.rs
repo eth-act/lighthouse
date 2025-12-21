@@ -1,5 +1,5 @@
 use crate::discovery::CombinedKey;
-use crate::discovery::enr::PEERDAS_CUSTODY_GROUP_COUNT_ENR_KEY;
+use crate::discovery::enr::{PEERDAS_CUSTODY_GROUP_COUNT_ENR_KEY, ZKVM_ENABLED_ENR_KEY};
 use crate::{Enr, Gossipsub, PeerId, SyncInfo, metrics, multiaddr::Multiaddr, types::Subnet};
 use itertools::Itertools;
 use logging::crit;
@@ -800,6 +800,26 @@ impl<E: EthSpec> PeerDB<E> {
         spec: &ChainSpec,
         enr_key: CombinedKey,
     ) -> PeerId {
+        self.__add_connected_peer_with_opts_testing_only(supernode, false, spec, enr_key)
+    }
+
+    /// Updates the connection state with zkvm option. MUST ONLY BE USED IN TESTS.
+    pub fn __add_connected_zkvm_peer_testing_only(
+        &mut self,
+        spec: &ChainSpec,
+        enr_key: CombinedKey,
+    ) -> PeerId {
+        self.__add_connected_peer_with_opts_testing_only(false, true, spec, enr_key)
+    }
+
+    /// Updates the connection state with options. MUST ONLY BE USED IN TESTS.
+    fn __add_connected_peer_with_opts_testing_only(
+        &mut self,
+        supernode: bool,
+        zkvm_enabled: bool,
+        spec: &ChainSpec,
+        enr_key: CombinedKey,
+    ) -> PeerId {
         let mut enr = Enr::builder().build(&enr_key).unwrap();
         let peer_id = enr.peer_id();
 
@@ -810,6 +830,11 @@ impl<E: EthSpec> PeerDB<E> {
                 &enr_key,
             )
             .expect("u64 can be encoded");
+        }
+
+        if zkvm_enabled {
+            enr.insert(ZKVM_ENABLED_ENR_KEY, &true, &enr_key)
+                .expect("bool can be encoded");
         }
 
         self.update_connection_state(

@@ -30,7 +30,7 @@ use lighthouse_network::service::api_types::{
     DataColumnsByRangeRequestId, DataColumnsByRangeRequester, DataColumnsByRootRequestId,
     DataColumnsByRootRequester, Id, SingleLookupReqId, SyncRequestId,
 };
-use lighthouse_network::{Client, NetworkGlobals, PeerAction, PeerId, ReportSource};
+use lighthouse_network::{Client, NetworkGlobals, PeerAction, PeerId, ReportSource, Subnet};
 use lighthouse_tracing::{SPAN_OUTGOING_BLOCK_BY_ROOT_REQUEST, SPAN_OUTGOING_RANGE_REQUEST};
 use parking_lot::RwLock;
 pub use requests::LookupVerifyError;
@@ -1048,9 +1048,18 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
         min_proofs_required: usize,
     ) -> Result<LookupRequestResult, RpcRequestSendError> {
         let active_request_count_by_peer = self.active_request_count_by_peer();
+        let peers_db = self.network_globals().peers.read();
+
+        // Filter to only zkvm-enabled peers
         let Some(peer_id) = lookup_peers
             .read()
             .iter()
+            .filter(|peer| {
+                peers_db
+                    .peer_info(peer)
+                    .map(|info| info.on_subnet_metadata(&Subnet::ExecutionProof))
+                    .unwrap_or(false)
+            })
             .map(|peer| {
                 (
                     // Prefer peers with less overall requests
@@ -1063,8 +1072,10 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             .min()
             .map(|(_, _, peer)| *peer)
         else {
-            return Ok(LookupRequestResult::Pending("no peers"));
+            return Ok(LookupRequestResult::Pending("no zkvm-enabled peers"));
         };
+
+        drop(peers_db);
 
         // Query DA checker for proofs we already have
         let already_have = self
@@ -1124,8 +1135,8 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
         self.execution_proofs_by_root_requests.insert(
             id,
             peer_id,
-            // Don't expect max responses since peer might not have all the proofs we need
-            false,
+            // Expect peer to provide all requested proofs - if they can't, penalize
+            true,
             ExecutionProofsByRootRequestItems::new(request),
             Span::none(),
         );

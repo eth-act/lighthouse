@@ -272,7 +272,6 @@ impl<E: EthSpec> PendingComponents<E> {
         &self,
         spec: &Arc<ChainSpec>,
         num_expected_columns_opt: Option<usize>,
-        has_execution_layer_and_proof_gen: bool,
         recover: R,
     ) -> Result<Option<AvailableExecutedBlock<E>>, AvailabilityCheckError>
     where
@@ -351,12 +350,7 @@ impl<E: EthSpec> PendingComponents<E> {
         };
 
         // Check if this node needs execution proofs to validate blocks.
-        // Nodes that have EL and generate proofs validate via EL execution.
-        // Nodes that have EL but DON'T generate proofs are lightweight verifiers and wait for proofs.
-        // TODO(zkproofs): This is a technicality mainly because we cannot remove the EL on kurtosis
-        // ie each CL is coupled with an EL
-        let needs_execution_proofs =
-            spec.zkvm_min_proofs_required().is_some() && !has_execution_layer_and_proof_gen;
+        let needs_execution_proofs = spec.zkvm_min_proofs_required().is_some();
 
         if needs_execution_proofs {
             let min_proofs = spec.zkvm_min_proofs_required().unwrap();
@@ -488,10 +482,6 @@ pub struct DataAvailabilityCheckerInner<T: BeaconChainTypes> {
     state_cache: StateLRUCache<T>,
     custody_context: Arc<CustodyContext<T::EthSpec>>,
     spec: Arc<ChainSpec>,
-    /// Whether this node has an execution layer AND generates proofs.
-    /// - true: Node has EL and generates proofs → validates via EL execution
-    /// - false: Node either has no EL, or has EL but doesn't generate → waits for proofs (lightweight verifier)
-    has_execution_layer_and_proof_gen: bool,
 }
 
 // This enum is only used internally within the crate in the reconstruction function to improve
@@ -509,14 +499,12 @@ impl<T: BeaconChainTypes> DataAvailabilityCheckerInner<T> {
         beacon_store: BeaconStore<T>,
         custody_context: Arc<CustodyContext<T::EthSpec>>,
         spec: Arc<ChainSpec>,
-        has_execution_layer_and_proof_gen: bool,
     ) -> Result<Self, AvailabilityCheckError> {
         Ok(Self {
             critical: RwLock::new(LruCache::new(capacity)),
             state_cache: StateLRUCache::new(beacon_store, spec.clone()),
             custody_context,
             spec,
-            has_execution_layer_and_proof_gen,
         })
     }
 
@@ -720,7 +708,6 @@ impl<T: BeaconChainTypes> DataAvailabilityCheckerInner<T> {
         if let Some(available_block) = pending_components.make_available(
             &self.spec,
             num_expected_columns_opt,
-            self.has_execution_layer_and_proof_gen,
             |block, span| self.state_cache.recover_pending_executed_block(block, span),
         )? {
             // Explicitly drop read lock before acquiring write lock
@@ -1172,7 +1159,6 @@ mod test {
                 test_store,
                 custody_context,
                 spec.clone(),
-                false,
             )
             .expect("should create cache"),
         );

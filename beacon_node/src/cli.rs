@@ -939,21 +939,8 @@ pub fn cli_app() -> Command {
                 .long("activate-zkvm")
                 .help("Activates ZKVM execution proof mode. Enables the node to subscribe to the \
                        execution_proof gossip topic, receive and verify execution proofs from peers, \
-                       and advertise zkVM support in its ENR for peer discovery. \
-                       Use --zkvm-generation-proof-types to specify which proof types this node \
-                       should generate (optional - nodes can verify without generating).")
+                       and advertise zkVM support in its ENR for peer discovery.")
                 .action(ArgAction::SetTrue)
-                .display_order(0)
-        )
-        .arg(
-            Arg::new("zkvm-generation-proof-types")
-                .long("zkvm-generation-proof-types")
-                .value_name("PROOF_TYPE_IDS")
-                .help("Comma-separated list of proof type IDs to generate \
-                       (e.g., '0,1' where 0=SP1+Reth, 1=Risc0+Geth). \
-                       Optional - nodes can verify proofs without generating them.")
-                .requires("activate-zkvm")
-                .action(ArgAction::Set)
                 .display_order(0)
         )
         /* Deneb settings */

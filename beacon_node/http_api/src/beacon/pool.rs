@@ -5,6 +5,10 @@ use crate::version::{
     unsupported_version_rejection,
 };
 use crate::{sync_committees, utils};
+use beacon_chain::execution_proof_verification::{
+    GossipExecutionProofError, GossipVerifiedExecutionProof,
+};
+use beacon_chain::observed_data_sidecars::Observe;
 use beacon_chain::observed_operations::ObservationOutcome;
 use beacon_chain::{BeaconChain, BeaconChainTypes};
 use eth2::types::{AttestationPoolQuery, EndpointVersion, Failure, GenericResponse};
@@ -17,7 +21,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, info, warn};
 use types::{
-    Attestation, AttestationData, AttesterSlashing, ForkName, ProposerSlashing,
+    Attestation, AttestationData, AttesterSlashing, ExecutionProof, ForkName, ProposerSlashing,
     SignedBlsToExecutionChange, SignedVoluntaryExit, SingleAttestation, SyncCommitteeMessage,
 };
 use warp::filters::BoxedFilter;
@@ -516,6 +520,101 @@ pub fn post_beacon_pool_attestations_v2<T: BeaconChainTypes>(
                 .await
                 .map(|()| warp::reply::json(&()));
                 convert_rejection(result).await
+            },
+        )
+        .boxed()
+}
+
+/// POST beacon/pool/execution_proofs
+///
+/// Submits an execution proof to the beacon node.
+/// The proof will be validated and stored in the data availability checker.
+/// If valid, the proof will be published to the gossip network.
+pub fn post_beacon_pool_execution_proofs<T: BeaconChainTypes>(
+    network_tx_filter: &NetworkTxFilter<T>,
+    beacon_pool_path: &BeaconPoolPathFilter<T>,
+) -> ResponseFilter {
+    beacon_pool_path
+        .clone()
+        .and(warp::path("execution_proofs"))
+        .and(warp::path::end())
+        .and(warp_utils::json::json())
+        .and(network_tx_filter.clone())
+        .then(
+            |task_spawner: TaskSpawner<T::EthSpec>,
+             chain: Arc<BeaconChain<T>>,
+             proof: ExecutionProof,
+             network_tx: UnboundedSender<NetworkMessage<T::EthSpec>>| {
+                task_spawner.blocking_json_task(Priority::P0, move || {
+                    let proof = Arc::new(proof);
+
+                    // Validate the proof using the same logic as gossip validation
+                    let verified_proof: GossipVerifiedExecutionProof<T, Observe> =
+                        GossipVerifiedExecutionProof::new(proof.clone(), &chain).map_err(|e| {
+                            match e {
+                                GossipExecutionProofError::PriorKnown {
+                                    slot,
+                                    block_root,
+                                    proof_id,
+                                } => {
+                                    debug!(
+                                        %slot,
+                                        %block_root,
+                                        %proof_id,
+                                        "Execution proof already known"
+                                    );
+                                    warp_utils::reject::custom_bad_request(format!(
+                                        "proof already known for slot {} block_root {} proof_id {}",
+                                        slot, block_root, proof_id
+                                    ))
+                                }
+                                GossipExecutionProofError::PriorKnownUnpublished => {
+                                    // Proof is valid but was received via non-gossip source
+                                    // It's in the DA checker, so we should publish it to gossip
+                                    warp_utils::reject::custom_bad_request(
+                                        "proof already received but not yet published".to_string(),
+                                    )
+                                }
+                                _ => warp_utils::reject::object_invalid(format!(
+                                    "proof verification failed: {:?}",
+                                    e
+                                )),
+                            }
+                        })?;
+
+                    let slot = verified_proof.slot();
+                    let block_root = verified_proof.block_root();
+                    let proof_id = verified_proof.subnet_id();
+
+                    // Publish the proof to the gossip network
+                    utils::publish_pubsub_message(
+                        &network_tx,
+                        PubsubMessage::ExecutionProof(verified_proof.clone().into_inner()),
+                    )?;
+
+                    // Store the proof in the data availability checker
+                    if let Err(e) = chain
+                        .data_availability_checker
+                        .put_rpc_execution_proofs(block_root, vec![verified_proof.into_inner()])
+                    {
+                        warn!(
+                            %slot,
+                            %block_root,
+                            %proof_id,
+                            error = ?e,
+                            "Failed to store execution proof in DA checker"
+                        );
+                    }
+
+                    info!(
+                        %slot,
+                        %block_root,
+                        %proof_id,
+                        "Execution proof submitted and published"
+                    );
+
+                    Ok(())
+                })
             },
         )
         .boxed()

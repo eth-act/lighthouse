@@ -30,7 +30,7 @@ use std::str::FromStr;
 use std::time::Duration;
 use tracing::{error, info, warn};
 use types::graffiti::GraffitiString;
-use types::{Checkpoint, Epoch, EthSpec, ExecutionProofId, Hash256};
+use types::{Checkpoint, Epoch, EthSpec, Hash256};
 use zkvm_execution_layer::ZKVMExecutionLayerConfig;
 
 const PURGE_DB_CONFIRMATION: &str = "confirm";
@@ -340,43 +340,13 @@ pub fn get_config<E: EthSpec>(
 
     // Parse ZK-VM execution layer config if provided
     if cli_args.get_flag("activate-zkvm") {
-        let generation_proof_types = if let Some(gen_types_str) =
-            clap_utils::parse_optional::<String>(cli_args, "zkvm-generation-proof-types")?
-        {
-            gen_types_str
-                .split(',')
-                .map(|s| s.trim().parse::<u8>())
-                .collect::<Result<Vec<u8>, _>>()
-                .map_err(|e| {
-                    format!(
-                        "Invalid proof type ID in --zkvm-generation-proof-types: {}",
-                        e
-                    )
-                })?
-                .into_iter()
-                .map(ExecutionProofId::new)
-                .collect::<Result<HashSet<_>, _>>()
-                .map_err(|e| format!("Invalid subnet ID: {}", e))?
-        } else {
-            HashSet::new()
-        };
-
-        // Build and validate the config
         let zkvm_config = ZKVMExecutionLayerConfig::builder()
-            .generation_proof_types(generation_proof_types)
             .build()
             .map_err(|e| format!("Invalid ZK-VM configuration: {}", e))?;
 
         client_config.zkvm_execution_layer = Some(zkvm_config);
 
-        info!(
-            "ZKVM mode activated with generation_proof_types={:?}",
-            client_config
-                .zkvm_execution_layer
-                .as_ref()
-                .unwrap()
-                .generation_proof_types
-        );
+        info!("ZKVM mode activated");
     }
 
     // Override default trusted setup file if required

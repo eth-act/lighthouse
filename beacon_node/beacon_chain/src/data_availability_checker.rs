@@ -130,14 +130,12 @@ impl<T: BeaconChainTypes> DataAvailabilityChecker<T> {
         custody_context: Arc<CustodyContext<T::EthSpec>>,
         spec: Arc<ChainSpec>,
         verifier_registry: Option<Arc<VerifierRegistry>>,
-        has_execution_layer_and_proof_gen: bool,
     ) -> Result<Self, AvailabilityCheckError> {
         let inner = DataAvailabilityCheckerInner::new(
             OVERFLOW_LRU_CAPACITY_NON_ZERO,
             store,
             custody_context.clone(),
             spec.clone(),
-            has_execution_layer_and_proof_gen,
         )?;
         Ok(Self {
             complete_blob_backfill,
@@ -1473,7 +1471,6 @@ mod test {
             custody_context,
             spec,
             None,
-            false,
         )
         .expect("should initialise data availability checker")
     }
