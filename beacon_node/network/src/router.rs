@@ -283,6 +283,15 @@ impl<T: BeaconChainTypes> Router<T> {
                             request,
                         ),
                 ),
+            RequestType::ExecutionProofsByRange(request) => self
+                .handle_beacon_processor_send_result(
+                    self.network_beacon_processor
+                        .send_execution_proofs_by_range_request(
+                            peer_id,
+                            inbound_request_id,
+                            request,
+                        ),
+                ),
             _ => {}
         }
     }
@@ -322,6 +331,15 @@ impl<T: BeaconChainTypes> Router<T> {
             }
             Response::ExecutionProofsByRoot(execution_proof) => {
                 self.on_execution_proofs_by_root_response(peer_id, app_request_id, execution_proof);
+            }
+            Response::ExecutionProofsByRange(execution_proof) => {
+                // ExecutionProofsByRange responses are not currently used by sync
+                // This is primarily for serving range requests to peers
+                debug!(
+                    %peer_id,
+                    ?execution_proof,
+                    "Received ExecutionProofsByRange Response (not processed)"
+                );
             }
             // Light client responses should not be received
             Response::LightClientBootstrap(_)

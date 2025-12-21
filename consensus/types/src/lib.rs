@@ -61,7 +61,7 @@ pub mod chain_spec {
 }
 
 // Re-export execution_proof types for backwards compatibility
-pub use crate::execution_proof::{ExecutionProof, MAX_PROOF_DATA_BYTES};
+pub use crate::execution_proof::{ExecutionProof, MAX_PROOFS, MAX_PROOF_DATA_BYTES};
 pub use crate::execution_proof_id::{EXECUTION_PROOF_TYPE_COUNT, ExecutionProofId};
 
 pub mod beacon_block {

@@ -1580,6 +1580,17 @@ impl<E: EthSpec> Network<E> {
                             request_type,
                         })
                     }
+                    RequestType::ExecutionProofsByRange(_) => {
+                        metrics::inc_counter_vec(
+                            &metrics::TOTAL_RPC_REQUESTS,
+                            &["execution_proofs_by_range"],
+                        );
+                        Some(NetworkEvent::RequestReceived {
+                            peer_id,
+                            inbound_request_id,
+                            request_type,
+                        })
+                    }
                     RequestType::LightClientBootstrap(_) => {
                         metrics::inc_counter_vec(
                             &metrics::TOTAL_RPC_REQUESTS,
@@ -1670,6 +1681,11 @@ impl<E: EthSpec> Network<E> {
                         peer_id,
                         Response::ExecutionProofsByRoot(Some(resp)),
                     ),
+                    RpcSuccessResponse::ExecutionProofsByRange(resp) => self.build_response(
+                        id,
+                        peer_id,
+                        Response::ExecutionProofsByRange(Some(resp)),
+                    ),
                     // Should never be reached
                     RpcSuccessResponse::LightClientBootstrap(bootstrap) => {
                         self.build_response(id, peer_id, Response::LightClientBootstrap(bootstrap))
@@ -1701,6 +1717,9 @@ impl<E: EthSpec> Network<E> {
                     ResponseTermination::DataColumnsByRange => Response::DataColumnsByRange(None),
                     ResponseTermination::ExecutionProofsByRoot => {
                         Response::ExecutionProofsByRoot(None)
+                    }
+                    ResponseTermination::ExecutionProofsByRange => {
+                        Response::ExecutionProofsByRange(None)
                     }
                     ResponseTermination::LightClientUpdatesByRange => {
                         Response::LightClientUpdatesByRange(None)

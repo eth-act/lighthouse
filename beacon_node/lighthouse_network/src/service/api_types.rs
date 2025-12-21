@@ -168,6 +168,8 @@ pub enum Response<E: EthSpec> {
     DataColumnsByRoot(Option<Arc<DataColumnSidecar<E>>>),
     /// A response to a get EXECUTION_PROOFS_BY_ROOT request.
     ExecutionProofsByRoot(Option<Arc<ExecutionProof>>),
+    /// A response to a get EXECUTION_PROOFS_BY_RANGE request.
+    ExecutionProofsByRange(Option<Arc<ExecutionProof>>),
     /// A response to a LightClientUpdate request.
     LightClientBootstrap(Arc<LightClientBootstrap<E>>),
     /// A response to a LightClientOptimisticUpdate request.
@@ -208,6 +210,10 @@ impl<E: EthSpec> std::convert::From<Response<E>> for RpcResponse<E> {
             Response::ExecutionProofsByRoot(r) => match r {
                 Some(p) => RpcResponse::Success(RpcSuccessResponse::ExecutionProofsByRoot(p)),
                 None => RpcResponse::StreamTermination(ResponseTermination::ExecutionProofsByRoot),
+            },
+            Response::ExecutionProofsByRange(r) => match r {
+                Some(p) => RpcResponse::Success(RpcSuccessResponse::ExecutionProofsByRange(p)),
+                None => RpcResponse::StreamTermination(ResponseTermination::ExecutionProofsByRange),
             },
             Response::Status(s) => RpcResponse::Success(RpcSuccessResponse::Status(s)),
             Response::LightClientBootstrap(b) => {
