@@ -425,8 +425,14 @@ impl SupportedProtocol {
         }
         if fork_context.spec.is_zkvm_enabled() {
             supported.extend_from_slice(&[
-                ProtocolId::new(SupportedProtocol::ExecutionProofsByRootV1, Encoding::SSZSnappy),
-                ProtocolId::new(SupportedProtocol::ExecutionProofsByRangeV1, Encoding::SSZSnappy),
+                ProtocolId::new(
+                    SupportedProtocol::ExecutionProofsByRootV1,
+                    Encoding::SSZSnappy,
+                ),
+                ProtocolId::new(
+                    SupportedProtocol::ExecutionProofsByRangeV1,
+                    Encoding::SSZSnappy,
+                ),
             ]);
         }
         supported

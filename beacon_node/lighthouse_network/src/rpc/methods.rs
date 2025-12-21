@@ -945,7 +945,11 @@ impl<E: EthSpec> std::fmt::Display for RpcSuccessResponse<E> {
                 write!(f, "ExecutionProofsByRoot: Block root: {}", proof.block_root)
             }
             RpcSuccessResponse::ExecutionProofsByRange(proof) => {
-                write!(f, "ExecutionProofsByRange: Block root: {}", proof.block_root)
+                write!(
+                    f,
+                    "ExecutionProofsByRange: Block root: {}",
+                    proof.block_root
+                )
             }
             RpcSuccessResponse::Pong(ping) => write!(f, "Pong: {}", ping.data),
             RpcSuccessResponse::MetaData(metadata) => {

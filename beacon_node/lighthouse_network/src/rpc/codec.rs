@@ -580,9 +580,11 @@ fn handle_rpc_request<E: EthSpec>(
 
             Ok(Some(RequestType::ExecutionProofsByRoot(request)))
         }
-        SupportedProtocol::ExecutionProofsByRangeV1 => Ok(Some(RequestType::ExecutionProofsByRange(
-            ExecutionProofsByRangeRequest::from_ssz_bytes(decoded_buffer)?,
-        ))),
+        SupportedProtocol::ExecutionProofsByRangeV1 => {
+            Ok(Some(RequestType::ExecutionProofsByRange(
+                ExecutionProofsByRangeRequest::from_ssz_bytes(decoded_buffer)?,
+            )))
+        }
         SupportedProtocol::PingV1 => Ok(Some(RequestType::Ping(Ping {
             data: u64::from_ssz_bytes(decoded_buffer)?,
         }))),

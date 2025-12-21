@@ -121,11 +121,7 @@ impl<E: EthSpec> BlockCache<E> {
             .get_or_insert_mut(block_root, Default::default)
             .insert(data_column.index, data_column);
     }
-    pub fn put_execution_proofs(
-        &mut self,
-        block_root: Hash256,
-        proofs: Vec<Arc<ExecutionProof>>,
-    ) {
+    pub fn put_execution_proofs(&mut self, block_root: Hash256, proofs: Vec<Arc<ExecutionProof>>) {
         self.execution_proof_cache.put(block_root, proofs);
     }
     pub fn put_data_column_custody_info(
@@ -2682,9 +2678,11 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         }
 
         if !proofs.is_empty() {
-            self.block_cache
-                .as_ref()
-                .inspect(|cache| cache.lock().put_execution_proofs(*block_root, proofs.clone()));
+            self.block_cache.as_ref().inspect(|cache| {
+                cache
+                    .lock()
+                    .put_execution_proofs(*block_root, proofs.clone())
+            });
         }
 
         Ok(proofs)
@@ -3017,10 +3015,7 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
     }
 
     /// Initialize the `ExecutionProofInfo` when starting from genesis or a checkpoint.
-    pub fn init_execution_proof_info(
-        &self,
-        anchor_slot: Slot,
-    ) -> Result<KeyValueStoreOp, Error> {
+    pub fn init_execution_proof_info(&self, anchor_slot: Slot) -> Result<KeyValueStoreOp, Error> {
         let oldest_execution_proof_slot = self.spec.zkvm_fork_epoch().map(|fork_epoch| {
             std::cmp::max(anchor_slot, fork_epoch.start_slot(E::slots_per_epoch()))
         });
@@ -3621,7 +3616,10 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
 
         let pruning_enabled = self.get_config().prune_blobs; // Use same config as blobs for now
         if !force && !pruning_enabled {
-            debug!(prune_blobs = pruning_enabled, "Execution proof pruning is disabled");
+            debug!(
+                prune_blobs = pruning_enabled,
+                "Execution proof pruning is disabled"
+            );
             return Ok(());
         }
 
@@ -3699,7 +3697,10 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
             // Check if any proofs exist for this block
             let mut block_has_proofs = false;
             for key in keys {
-                if self.blobs_db.key_exists(DBColumn::BeaconExecutionProof, &key)? {
+                if self
+                    .blobs_db
+                    .key_exists(DBColumn::BeaconExecutionProof, &key)?
+                {
                     block_has_proofs = true;
                     db_ops.push(KeyValueStoreOp::DeleteKey(
                         DBColumn::BeaconExecutionProof,
