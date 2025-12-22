@@ -17,6 +17,7 @@ members = [
     "beacon_node/store",
     "beacon_node/timer",
     "boot_node",
+    "execution-witness-sentry",
     "common/account_utils",
     "common/clap_utils",
     "common/deposit_contract",

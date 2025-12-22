@@ -1,12 +1,11 @@
 # Mixed configuration: 3 normal nodes, 1 node with dummy EL
 participants:
   # Nodes with real execution layer (nodes 1-3)
-  - el_type: geth
-    el_image: ethereum/client-go:latest
+  - el_type: reth
+    el_image: ghcr.io/paradigmxyz/reth:latest
     cl_type: lighthouse
     cl_image: lighthouse:local
     cl_extra_params:
-      - --activate-zkvm
       - --target-peers=3
     count: 3
   # Node with dummy execution layer (node 4)
@@ -19,7 +18,7 @@ participants:
     cl_extra_params:
       - --activate-zkvm
       - --target-peers=3
-    count: 1
+    count: 3
 network_params:
   electra_fork_epoch: 0
   fulu_fork_epoch: 1
