@@ -16,8 +16,8 @@ use tracing::{debug, error, info, warn};
 use url::Url;
 
 use execution_witness_sentry::{
-    subscribe_blocks, subscribe_cl_events, BlockInfo, BlockStorage, ClClient, ClEvent, Config,
-    ElClient, ExecutionProof, SavedProof, generate_random_proof,
+    subscribe_blocks, subscribe_cl_events, BlockStorage, ClClient, ClEvent, Config, ElClient,
+    ExecutionProof, SavedProof, generate_random_proof,
 };
 
 /// Execution witness sentry - monitors EL nodes and fetches witnesses.
@@ -32,9 +32,7 @@ struct Cli {
 
 /// Cached EL block data waiting for CL correlation.
 struct CachedElBlock {
-    block_hash: String,
     block_number: u64,
-    endpoint_name: String,
     timestamp: Instant,
 }
 
@@ -52,13 +50,11 @@ impl ElBlockCache {
         }
     }
 
-    fn insert(&mut self, block_hash: String, block_number: u64, endpoint_name: String) {
+    fn insert(&mut self, block_hash: String, block_number: u64, _endpoint_name: String) {
         self.blocks.insert(
-            block_hash.clone(),
+            block_hash,
             CachedElBlock {
-                block_hash,
                 block_number,
-                endpoint_name,
                 timestamp: Instant::now(),
             },
         );
@@ -187,7 +183,7 @@ async fn backfill_proofs(
     for slot in (zkvm_head + 1)..=(zkvm_head + slots_to_check) {
         // First try to load saved proofs from disk
         if let Some(storage) = storage {
-            if let Ok(Some((metadata, saved_proofs))) = storage.load_proofs_by_slot(slot) {
+            if let Ok(Some((_metadata, saved_proofs))) = storage.load_proofs_by_slot(slot) {
                 if !saved_proofs.is_empty() {
                     debug!(slot = slot, num_proofs = saved_proofs.len(), "Using saved proofs from disk");
                     
@@ -425,9 +421,11 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    let (es_name, es_url, es_client) = event_source;
+    let source_client_for_monitor = es_client.clone();
+
     // Spawn CL subscription task for the event source (non-zkvm CL)
     {
-        let (es_name, es_url, es_client) = event_source;
         let tx = cl_tx.clone();
 
         tokio::spawn(async move {
@@ -447,7 +445,18 @@ async fn main() -> anyhow::Result<()> {
             while let Some(result) = stream.next().await {
                 match result {
                     Ok(ClEvent::Head(head)) => {
-                        let slot: u64 = head.slot.parse().unwrap_or(0);
+                        let slot: u64 = match head.slot.parse() {
+                            Ok(slot) => slot,
+                            Err(e) => {
+                                warn!(
+                                    name = %es_name,
+                                    error = %e,
+                                    slot = %head.slot,
+                                    "Invalid head slot value"
+                                );
+                                continue;
+                            }
+                        };
                         let block_root = head.block.clone();
 
                         // Fetch the execution block hash for this beacon block
@@ -491,11 +500,6 @@ async fn main() -> anyhow::Result<()> {
     // Create a timer for periodic monitoring and backfill (500ms for fast catch-up)
     let mut monitor_interval = tokio::time::interval(Duration::from_millis(500));
     monitor_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-    // Clone what we need for the monitoring
-    let source_client_for_monitor = ClClient::new(
-        Url::parse(&config.cl_endpoints.as_ref().unwrap()[0].url).unwrap(),
-    );
 
     info!("Waiting for events (with monitoring every 500ms)");
 
