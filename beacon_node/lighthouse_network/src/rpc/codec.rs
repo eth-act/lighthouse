@@ -1308,7 +1308,10 @@ mod tests {
                 assert_eq!(decoded, RequestType::ExecutionProofsByRoot(exec_proofs))
             }
             RequestType::ExecutionProofsByRange(exec_proofs_range) => {
-                assert_eq!(decoded, RequestType::ExecutionProofsByRange(exec_proofs_range))
+                assert_eq!(
+                    decoded,
+                    RequestType::ExecutionProofsByRange(exec_proofs_range)
+                )
             }
             RequestType::Ping(ping) => {
                 assert_eq!(decoded, RequestType::Ping(ping))
