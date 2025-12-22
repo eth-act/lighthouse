@@ -4154,17 +4154,16 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         if let Some(proofs) = self
             .data_availability_checker
             .get_execution_proofs(&block_root)
+            && !proofs.is_empty()
         {
-            if !proofs.is_empty() {
-                let proofs_owned: Vec<_> = proofs.iter().map(|p| (**p).clone()).collect();
-                if let Err(e) = self.store.put_execution_proofs(&block_root, &proofs_owned) {
-                    // Log but don't fail block import - proofs can still be served from cache
-                    warn!(
-                        %block_root,
-                        error = ?e,
-                        "Failed to persist execution proofs to database"
-                    );
-                }
+            let proofs_owned: Vec<_> = proofs.iter().map(|p| (**p).clone()).collect();
+            if let Err(e) = self.store.put_execution_proofs(&block_root, &proofs_owned) {
+                // Log but don't fail block import - proofs can still be served from cache
+                warn!(
+                    %block_root,
+                    error = ?e,
+                    "Failed to persist execution proofs to database"
+                );
             }
         }
 

@@ -3730,11 +3730,12 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
             self.blobs_db.do_atomically(db_ops)?;
         }
 
-        if !removed_block_roots.is_empty() {
-            if let Some(mut block_cache) = self.block_cache.as_ref().map(|cache| cache.lock()) {
-                for block_root in removed_block_roots {
-                    block_cache.delete_execution_proofs(&block_root);
-                }
+        // TODO(zkproofs): Fix this to make it more readable
+        if !removed_block_roots.is_empty()
+            && let Some(mut block_cache) = self.block_cache.as_ref().map(|cache| cache.lock())
+        {
+            for block_root in removed_block_roots {
+                block_cache.delete_execution_proofs(&block_root);
             }
         }
 
