@@ -4,9 +4,9 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use alloy_rpc_types_eth::Block;
+use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
-use flate2::Compression;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
@@ -72,7 +72,11 @@ pub struct BlockStorage {
 
 impl BlockStorage {
     /// Create a new block storage manager.
-    pub fn new(output_dir: impl Into<PathBuf>, chain: impl Into<String>, retain: Option<u64>) -> Self {
+    pub fn new(
+        output_dir: impl Into<PathBuf>,
+        chain: impl Into<String>,
+        retain: Option<u64>,
+    ) -> Self {
         Self {
             output_dir: output_dir.into(),
             chain: chain.into(),
@@ -113,10 +117,10 @@ impl BlockStorage {
         std::fs::write(data_path, combined_data)?;
 
         // Clean up old blocks if retention is configured
-        if let Some(retain) = self.retain {
-            if block_number > retain {
-                self.delete_old_block(block_number - retain)?;
-            }
+        if let Some(retain) = self.retain
+            && block_number > retain
+        {
+            self.delete_old_block(block_number - retain)?;
         }
 
         Ok(())
@@ -133,7 +137,7 @@ impl BlockStorage {
         proofs: &[SavedProof],
     ) -> Result<()> {
         let block_dir = self.block_dir(block_number);
-        
+
         // Create dir if it doesn't exist (in case block wasn't saved yet)
         std::fs::create_dir_all(&block_dir)?;
 
@@ -170,7 +174,10 @@ impl BlockStorage {
 
     /// Load proofs for a given slot.
     /// Searches for a block directory that has matching slot in metadata.
-    pub fn load_proofs_by_slot(&self, slot: u64) -> Result<Option<(BlockMetadata, Vec<SavedProof>)>> {
+    pub fn load_proofs_by_slot(
+        &self,
+        slot: u64,
+    ) -> Result<Option<(BlockMetadata, Vec<SavedProof>)>> {
         let chain_dir = self.output_dir.join(&self.chain);
         if !chain_dir.exists() {
             return Ok(None);
@@ -180,7 +187,7 @@ impl BlockStorage {
         for entry in std::fs::read_dir(&chain_dir)? {
             let entry = entry?;
             let block_dir = entry.path();
-            
+
             if !block_dir.is_dir() {
                 continue;
             }
@@ -216,7 +223,7 @@ impl BlockStorage {
     pub fn load_metadata(&self, block_number: u64) -> Result<Option<BlockMetadata>> {
         let block_dir = self.block_dir(block_number);
         let metadata_path = block_dir.join("metadata.json");
-        
+
         if !metadata_path.exists() {
             return Ok(None);
         }

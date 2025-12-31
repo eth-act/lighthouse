@@ -32,6 +32,8 @@ pub enum Error {
     BlobInfoConcurrentMutation,
     /// The store's `data_column_info` was mutated concurrently, the latest modification wasn't applied.
     DataColumnInfoConcurrentMutation,
+    /// The store's `execution_proof_info` was mutated concurrently, the latest modification wasn't applied.
+    ExecutionProofInfoConcurrentMutation,
     /// The block or state is unavailable due to weak subjectivity sync.
     HistoryUnavailable,
     /// State reconstruction cannot commence because not all historic blocks are known.
@@ -92,6 +94,7 @@ pub enum Error {
     LoadSplit(Box<Error>),
     LoadBlobInfo(Box<Error>),
     LoadDataColumnInfo(Box<Error>),
+    LoadExecutionProofInfo(Box<Error>),
     LoadConfig(Box<Error>),
     LoadHotStateSummary(Hash256, Box<Error>),
     LoadHotStateSummaryForSplit(Box<Error>),

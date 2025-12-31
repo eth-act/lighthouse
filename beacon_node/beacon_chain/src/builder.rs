@@ -1159,6 +1159,13 @@ where
                 .process_prune_blobs(data_availability_boundary);
         }
 
+        // Prune execution proofs older than the execution proof boundary in the background.
+        if let Some(execution_proof_boundary) = beacon_chain.execution_proof_boundary() {
+            beacon_chain
+                .store_migrator
+                .process_prune_execution_proofs(execution_proof_boundary);
+        }
+
         Ok(beacon_chain)
     }
 }

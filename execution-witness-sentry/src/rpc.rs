@@ -280,7 +280,9 @@ impl ClClient {
 
     /// Get the execution block hash for a beacon block.
     pub async fn get_block_execution_hash(&self, block_root: &str) -> Result<Option<String>> {
-        let url = self.url.join(&format!("eth/v2/beacon/blocks/{}", block_root))?;
+        let url = self
+            .url
+            .join(&format!("eth/v2/beacon/blocks/{}", block_root))?;
         let response = self.http_client.get(url).send().await?;
 
         if response.status() == reqwest::StatusCode::NOT_FOUND {
@@ -288,7 +290,12 @@ impl ClClient {
         }
 
         let block_response: BlockResponse = response.json().await?;
-        Ok(block_response.data.message.body.execution_payload.map(|p| p.block_hash))
+        Ok(block_response
+            .data
+            .message
+            .body
+            .execution_payload
+            .map(|p| p.block_hash))
     }
 
     /// Get the current head slot.

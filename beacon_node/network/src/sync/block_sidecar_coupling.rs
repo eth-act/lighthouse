@@ -5,6 +5,7 @@ use lighthouse_network::{
     PeerId,
     service::api_types::{
         BlobsByRangeRequestId, BlocksByRangeRequestId, DataColumnsByRangeRequestId,
+        ExecutionProofsByRangeRequestId,
     },
 };
 use ssz_types::RuntimeVariableList;
@@ -12,7 +13,7 @@ use std::{collections::HashMap, sync::Arc};
 use tracing::{Span, debug};
 use types::{
     BlobSidecar, ChainSpec, ColumnIndex, DataColumnSidecar, DataColumnSidecarList, EthSpec,
-    Hash256, SignedBeaconBlock,
+    ExecutionProof, Hash256, SignedBeaconBlock,
 };
 
 use crate::sync::network_context::MAX_COLUMN_RETRIES;
@@ -24,6 +25,7 @@ use crate::sync::network_context::MAX_COLUMN_RETRIES;
 /// - Blocks themselves (always required)
 /// - Blob sidecars (pre-Fulu fork)
 /// - Data columns (Fulu fork and later)
+/// - Execution proofs (for zkvm-enabled nodes)
 ///
 /// It accumulates responses until all expected components are received, then couples
 /// them together and returns complete `RpcBlock`s ready for processing. Handles validation
@@ -33,8 +35,23 @@ pub struct RangeBlockComponentsRequest<E: EthSpec> {
     blocks_request: ByRangeRequest<BlocksByRangeRequestId, Vec<Arc<SignedBeaconBlock<E>>>>,
     /// Sidecars we have received awaiting for their corresponding block.
     block_data_request: RangeBlockDataRequest<E>,
+    /// Execution proofs request (for zkvm-enabled nodes).
+    execution_proofs_request: Option<ExecutionProofsRequest<E>>,
     /// Span to track the range request and all children range requests.
     pub(crate) request_span: Span,
+}
+
+/// Tracks execution proofs requests during range sync.
+struct ExecutionProofsRequest<E: EthSpec> {
+    /// The request tracking state.
+    request: ByRangeRequest<ExecutionProofsByRangeRequestId, Vec<Arc<ExecutionProof>>>,
+    /// The peer we requested proofs from.
+    peer: PeerId,
+    /// Number of proofs required per block.
+    min_proofs_required: usize,
+    /// Number of proof attempts completed for this batch.
+    attempt: usize,
+    _phantom: std::marker::PhantomData<E>,
 }
 
 pub enum ByRangeRequest<I: PartialEq + std::fmt::Display, T> {
@@ -67,6 +84,12 @@ pub(crate) enum CouplingError {
         exceeded_retries: bool,
     },
     BlobPeerFailure(String),
+    /// The peer we requested execution proofs from was faulty/malicious
+    ExecutionProofPeerFailure {
+        error: String,
+        peer: PeerId,
+        exceeded_retries: bool,
+    },
 }
 
 impl<E: EthSpec> RangeBlockComponentsRequest<E> {
@@ -76,6 +99,7 @@ impl<E: EthSpec> RangeBlockComponentsRequest<E> {
     /// * `blocks_req_id` - Request ID for the blocks
     /// * `blobs_req_id` - Optional request ID for blobs (pre-Fulu fork)
     /// * `data_columns` - Optional tuple of (request_id->column_indices pairs, expected_custody_columns) for Fulu fork
+    /// * `execution_proofs` - Optional tuple of (request_id, peer, min_proofs_required) for zkvm-enabled nodes
     #[allow(clippy::type_complexity)]
     pub fn new(
         blocks_req_id: BlocksByRangeRequestId,
@@ -84,6 +108,7 @@ impl<E: EthSpec> RangeBlockComponentsRequest<E> {
             Vec<(DataColumnsByRangeRequestId, Vec<ColumnIndex>)>,
             Vec<ColumnIndex>,
         )>,
+        execution_proofs: Option<(ExecutionProofsByRangeRequestId, usize)>,
         request_span: Span,
     ) -> Self {
         let block_data_request = if let Some(blobs_req_id) = blobs_req_id {
@@ -103,9 +128,19 @@ impl<E: EthSpec> RangeBlockComponentsRequest<E> {
             RangeBlockDataRequest::NoData
         };
 
+        let execution_proofs_request =
+            execution_proofs.map(|(req_id, min_proofs_required)| ExecutionProofsRequest {
+                request: ByRangeRequest::Active(req_id),
+                peer: req_id.peer,
+                min_proofs_required,
+                attempt: 0,
+                _phantom: std::marker::PhantomData,
+            });
+
         Self {
             blocks_request: ByRangeRequest::Active(blocks_req_id),
             block_data_request,
+            execution_proofs_request,
             request_span,
         }
     }
@@ -187,6 +222,30 @@ impl<E: EthSpec> RangeBlockComponentsRequest<E> {
         }
     }
 
+    /// Adds received execution proofs to the request.
+    ///
+    /// Returns an error if this request doesn't expect execution proofs,
+    /// or if the request ID doesn't match.
+    pub fn add_execution_proofs(
+        &mut self,
+        req_id: ExecutionProofsByRangeRequestId,
+        proofs: Vec<Arc<ExecutionProof>>,
+    ) -> Result<(), String> {
+        match &mut self.execution_proofs_request {
+            Some(exec_proofs_req) => {
+                exec_proofs_req.request.finish(req_id, proofs)?;
+                exec_proofs_req.attempt += 1;
+                Ok(())
+            }
+            None => Err("received execution proofs but none were expected".to_owned()),
+        }
+    }
+
+    /// Returns true if this request expects execution proofs.
+    pub fn expects_execution_proofs(&self) -> bool {
+        self.execution_proofs_request.is_some()
+    }
+
     /// Attempts to construct RPC blocks from all received components.
     ///
     /// Returns `None` if not all expected requests have completed.
@@ -199,6 +258,13 @@ impl<E: EthSpec> RangeBlockComponentsRequest<E> {
         let Some(blocks) = self.blocks_request.to_finished() else {
             return None;
         };
+
+        // Check if execution proofs are required but not yet complete
+        if let Some(exec_proofs_req) = &self.execution_proofs_request
+            && exec_proofs_req.request.to_finished().is_none()
+        {
+            return None;
+        }
 
         // Increment the attempt once this function returns the response or errors
         match &mut self.block_data_request {
@@ -266,6 +332,50 @@ impl<E: EthSpec> RangeBlockComponentsRequest<E> {
 
                 Some(resp)
             }
+        }
+    }
+
+    /// Returns the collected execution proofs if available.
+    /// This should be called after `responses()` returns `Some`.
+    pub fn get_execution_proofs(&self) -> Option<Vec<Arc<ExecutionProof>>> {
+        self.execution_proofs_request
+            .as_ref()
+            .and_then(|req| req.request.to_finished().cloned())
+    }
+
+    /// Returns the peer that was responsible for providing execution proofs.
+    pub fn execution_proofs_peer(&self) -> Option<PeerId> {
+        self.execution_proofs_request.as_ref().map(|req| req.peer)
+    }
+
+    /// Returns the minimum number of execution proofs required per block, if any.
+    pub fn min_execution_proofs_required(&self) -> Option<usize> {
+        self.execution_proofs_request
+            .as_ref()
+            .map(|req| req.min_proofs_required)
+    }
+
+    /// Returns the number of completed proof attempts for this batch, if any.
+    pub fn execution_proofs_attempt(&self) -> Option<usize> {
+        self.execution_proofs_request
+            .as_ref()
+            .map(|req| req.attempt)
+    }
+
+    /// Resets the execution proofs request to retry with a new peer.
+    pub fn reinsert_execution_proofs_request(
+        &mut self,
+        req_id: ExecutionProofsByRangeRequestId,
+        min_proofs_required: usize,
+    ) -> Result<(), String> {
+        match &mut self.execution_proofs_request {
+            Some(exec_proofs_req) => {
+                exec_proofs_req.request = ByRangeRequest::Active(req_id);
+                exec_proofs_req.peer = req_id.peer;
+                exec_proofs_req.min_proofs_required = min_proofs_required;
+                Ok(())
+            }
+            None => Err("execution proofs request not present".to_owned()),
         }
     }
 
@@ -529,7 +639,7 @@ mod tests {
 
         let blocks_req_id = blocks_id(components_id());
         let mut info =
-            RangeBlockComponentsRequest::<E>::new(blocks_req_id, None, None, Span::none());
+            RangeBlockComponentsRequest::<E>::new(blocks_req_id, None, None, None, Span::none());
 
         // Send blocks and complete terminate response
         info.add_blocks(blocks_req_id, blocks).unwrap();
@@ -556,6 +666,7 @@ mod tests {
         let mut info = RangeBlockComponentsRequest::<E>::new(
             blocks_req_id,
             Some(blobs_req_id),
+            None,
             None,
             Span::none(),
         );
@@ -606,6 +717,7 @@ mod tests {
             blocks_req_id,
             None,
             Some((columns_req_id.clone(), expects_custody_columns.clone())),
+            None,
             Span::none(),
         );
         // Send blocks and complete terminate response
@@ -674,6 +786,7 @@ mod tests {
             blocks_req_id,
             None,
             Some((columns_req_id.clone(), expects_custody_columns.clone())),
+            None,
             Span::none(),
         );
 
@@ -762,6 +875,7 @@ mod tests {
             blocks_req_id,
             None,
             Some((columns_req_id.clone(), expected_custody_columns.clone())),
+            None,
             Span::none(),
         );
 
@@ -848,6 +962,7 @@ mod tests {
             blocks_req_id,
             None,
             Some((columns_req_id.clone(), expected_custody_columns.clone())),
+            None,
             Span::none(),
         );
 
@@ -941,6 +1056,7 @@ mod tests {
             blocks_req_id,
             None,
             Some((columns_req_id.clone(), expected_custody_columns.clone())),
+            None,
             Span::none(),
         );
 

@@ -120,6 +120,7 @@ pub enum Notification {
     Finalization(FinalizationNotification),
     Reconstruction,
     PruneBlobs(Epoch),
+    PruneExecutionProofs(Epoch),
     ManualFinalization(ManualFinalizationNotification),
     ManualCompaction,
 }
@@ -247,6 +248,28 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> BackgroundMigrator<E, Ho
             error!(
                 error = ?e,
                 "Blob pruning failed"
+            );
+        }
+    }
+
+    pub fn process_prune_execution_proofs(&self, execution_proof_boundary: Epoch) {
+        if let Some(Notification::PruneExecutionProofs(execution_proof_boundary)) = self
+            .send_background_notification(Notification::PruneExecutionProofs(
+                execution_proof_boundary,
+            ))
+        {
+            Self::run_prune_execution_proofs(self.db.clone(), execution_proof_boundary);
+        }
+    }
+
+    pub fn run_prune_execution_proofs(
+        db: Arc<HotColdDB<E, Hot, Cold>>,
+        execution_proof_boundary: Epoch,
+    ) {
+        if let Err(e) = db.try_prune_execution_proofs(false, execution_proof_boundary) {
+            error!(
+                error = ?e,
+                "Execution proof pruning failed"
             );
         }
     }
@@ -440,11 +463,15 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> BackgroundMigrator<E, Ho
                 let mut manual_finalization_notif = None;
                 let mut manual_compaction_notif = None;
                 let mut prune_blobs_notif = None;
+                let mut prune_execution_proofs_notif = None;
                 match notif {
                     Notification::Reconstruction => reconstruction_notif = Some(notif),
                     Notification::Finalization(fin) => finalization_notif = Some(fin),
                     Notification::ManualFinalization(fin) => manual_finalization_notif = Some(fin),
                     Notification::PruneBlobs(dab) => prune_blobs_notif = Some(dab),
+                    Notification::PruneExecutionProofs(epb) => {
+                        prune_execution_proofs_notif = Some(epb)
+                    }
                     Notification::ManualCompaction => manual_compaction_notif = Some(notif),
                 }
                 // Read the rest of the messages in the channel, taking the best of each type.
@@ -475,6 +502,10 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> BackgroundMigrator<E, Ho
                         Notification::PruneBlobs(dab) => {
                             prune_blobs_notif = std::cmp::max(prune_blobs_notif, Some(dab));
                         }
+                        Notification::PruneExecutionProofs(epb) => {
+                            prune_execution_proofs_notif =
+                                std::cmp::max(prune_execution_proofs_notif, Some(epb));
+                        }
                     }
                 }
                 // Run finalization and blob pruning migrations first, then a reconstruction batch.
@@ -488,6 +519,9 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> BackgroundMigrator<E, Ho
                 }
                 if let Some(dab) = prune_blobs_notif {
                     Self::run_prune_blobs(db.clone(), dab);
+                }
+                if let Some(epb) = prune_execution_proofs_notif {
+                    Self::run_prune_execution_proofs(db.clone(), epb);
                 }
                 if reconstruction_notif.is_some() {
                     Self::run_reconstruction(db.clone(), Some(inner_tx.clone()));

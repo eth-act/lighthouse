@@ -19,6 +19,7 @@ pub const ANCHOR_INFO_KEY: Hash256 = Hash256::repeat_byte(5);
 pub const BLOB_INFO_KEY: Hash256 = Hash256::repeat_byte(6);
 pub const DATA_COLUMN_INFO_KEY: Hash256 = Hash256::repeat_byte(7);
 pub const DATA_COLUMN_CUSTODY_INFO_KEY: Hash256 = Hash256::repeat_byte(8);
+pub const EXECUTION_PROOF_INFO_KEY: Hash256 = Hash256::repeat_byte(9);
 
 /// State upper limit value used to indicate that a node is not storing historic states.
 pub const STATE_UPPER_LIMIT_NO_RETAIN: Slot = Slot::new(u64::MAX);
@@ -243,6 +244,33 @@ pub struct DataColumnInfo {
 }
 
 impl StoreItem for DataColumnInfo {
+    fn db_column() -> DBColumn {
+        DBColumn::BeaconMeta
+    }
+
+    fn as_store_bytes(&self) -> Vec<u8> {
+        self.as_ssz_bytes()
+    }
+
+    fn from_store_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        Ok(Self::from_ssz_bytes(bytes)?)
+    }
+}
+
+/// Database parameters relevant to execution proof sync.
+#[derive(Debug, PartialEq, Eq, Clone, Encode, Decode, Serialize, Deserialize, Default)]
+pub struct ExecutionProofInfo {
+    /// The slot after which execution proofs are or *will be* available (>=).
+    ///
+    /// If this slot is in the future, then it is the first slot of the ZKVM fork, from which
+    /// execution proofs will be available.
+    ///
+    /// If the `oldest_execution_proof_slot` is `None` then this means that the ZKVM fork epoch
+    /// is not yet known.
+    pub oldest_execution_proof_slot: Option<Slot>,
+}
+
+impl StoreItem for ExecutionProofInfo {
     fn db_column() -> DBColumn {
         DBColumn::BeaconMeta
     }

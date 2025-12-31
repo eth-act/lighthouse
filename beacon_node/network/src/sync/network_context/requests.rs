@@ -15,6 +15,7 @@ pub use data_columns_by_range::DataColumnsByRangeRequestItems;
 pub use data_columns_by_root::{
     DataColumnsByRootRequestItems, DataColumnsByRootSingleBlockRequest,
 };
+pub use execution_proofs_by_range::ExecutionProofsByRangeRequestItems;
 pub use execution_proofs_by_root::{
     ExecutionProofsByRootRequestItems, ExecutionProofsByRootSingleBlockRequest,
 };
@@ -29,6 +30,7 @@ mod blocks_by_range;
 mod blocks_by_root;
 mod data_columns_by_range;
 mod data_columns_by_root;
+mod execution_proofs_by_range;
 mod execution_proofs_by_root;
 
 #[derive(Debug, PartialEq, Eq, IntoStaticStr)]

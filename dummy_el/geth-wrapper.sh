@@ -18,6 +18,32 @@ if echo "$@" | grep -qE "^(version|--version|-v|help|--help|-h)$"; then
     exit 0
 fi
 
+# Filter out flags that we don't need for dummy_el
+# These are geth-specific flags that kurtosis may pass
+FILTERED_ARGS=""
+for arg in "$@"; do
+    case "$arg" in
+        --override.*|--override*|-override.*|-override*)
+            echo "[dummy_el geth-wrapper] Ignoring geth flag: $arg"
+            ;;
+        --datadir=*|--datadir)
+            echo "[dummy_el geth-wrapper] Ignoring geth flag: $arg"
+            ;;
+        --syncmode=*|--syncmode)
+            echo "[dummy_el geth-wrapper] Ignoring geth flag: $arg"
+            ;;
+        --gcmode=*|--gcmode)
+            echo "[dummy_el geth-wrapper] Ignoring geth flag: $arg"
+            ;;
+        --networkid=*|--networkid)
+            echo "[dummy_el geth-wrapper] Ignoring geth flag: $arg"
+            ;;
+        *)
+            FILTERED_ARGS="$FILTERED_ARGS $arg"
+            ;;
+    esac
+done
+
 # For any other command, we start dummy_el
 # Parse geth arguments to extract what we need
 

@@ -16,8 +16,8 @@ use tracing::{debug, error, info, warn};
 use url::Url;
 
 use execution_witness_sentry::{
-    subscribe_blocks, subscribe_cl_events, BlockInfo, BlockStorage, ClClient, ClEvent, Config,
-    ElClient, ExecutionProof, SavedProof, generate_random_proof,
+    BlockStorage, ClClient, ClEvent, Config, ElClient, ExecutionProof, SavedProof,
+    generate_random_proof, subscribe_blocks, subscribe_cl_events,
 };
 
 /// Execution witness sentry - monitors EL nodes and fetches witnesses.
@@ -32,9 +32,7 @@ struct Cli {
 
 /// Cached EL block data waiting for CL correlation.
 struct CachedElBlock {
-    block_hash: String,
     block_number: u64,
-    endpoint_name: String,
     timestamp: Instant,
 }
 
@@ -52,13 +50,11 @@ impl ElBlockCache {
         }
     }
 
-    fn insert(&mut self, block_hash: String, block_number: u64, endpoint_name: String) {
+    fn insert(&mut self, block_hash: String, block_number: u64, _endpoint_name: String) {
         self.blocks.insert(
-            block_hash.clone(),
+            block_hash,
             CachedElBlock {
-                block_hash,
                 block_number,
-                endpoint_name,
                 timestamp: Instant::now(),
             },
         );
@@ -186,47 +182,50 @@ async fn backfill_proofs(
     // Iterate through slots from zkvm_head + 1 to zkvm_head + slots_to_check
     for slot in (zkvm_head + 1)..=(zkvm_head + slots_to_check) {
         // First try to load saved proofs from disk
-        if let Some(storage) = storage {
-            if let Ok(Some((metadata, saved_proofs))) = storage.load_proofs_by_slot(slot) {
-                if !saved_proofs.is_empty() {
-                    debug!(slot = slot, num_proofs = saved_proofs.len(), "Using saved proofs from disk");
-                    
-                    for saved_proof in &saved_proofs {
-                        let proof = ExecutionProof {
-                            proof_id: saved_proof.proof_id,
-                            slot: saved_proof.slot,
-                            block_hash: saved_proof.block_hash.clone(),
-                            block_root: saved_proof.block_root.clone(),
-                            proof_data: saved_proof.proof_data.clone(),
-                        };
+        if let Some(storage) = storage
+            && let Ok(Some((_metadata, saved_proofs))) = storage.load_proofs_by_slot(slot)
+            && !saved_proofs.is_empty()
+        {
+            debug!(
+                slot = slot,
+                num_proofs = saved_proofs.len(),
+                "Using saved proofs from disk"
+            );
 
-                        match zkvm_client.submit_execution_proof(&proof).await {
-                            Ok(()) => {
-                                debug!(
-                                    name = %zkvm_name,
-                                    slot = slot,
-                                    proof_id = saved_proof.proof_id,
-                                    "Backfill proof submitted (from disk)"
-                                );
-                                proofs_submitted += 1;
-                            }
-                            Err(e) => {
-                                let msg = e.to_string();
-                                if !msg.contains("already known") {
-                                    debug!(
-                                        name = %zkvm_name,
-                                        slot = slot,
-                                        proof_id = saved_proof.proof_id,
-                                        error = %e,
-                                        "Backfill proof failed"
-                                    );
-                                }
-                            }
+            for saved_proof in &saved_proofs {
+                let proof = ExecutionProof {
+                    proof_id: saved_proof.proof_id,
+                    slot: saved_proof.slot,
+                    block_hash: saved_proof.block_hash.clone(),
+                    block_root: saved_proof.block_root.clone(),
+                    proof_data: saved_proof.proof_data.clone(),
+                };
+
+                match zkvm_client.submit_execution_proof(&proof).await {
+                    Ok(()) => {
+                        debug!(
+                            name = %zkvm_name,
+                            slot = slot,
+                            proof_id = saved_proof.proof_id,
+                            "Backfill proof submitted (from disk)"
+                        );
+                        proofs_submitted += 1;
+                    }
+                    Err(e) => {
+                        let msg = e.to_string();
+                        if !msg.contains("already known") {
+                            debug!(
+                                name = %zkvm_name,
+                                slot = slot,
+                                proof_id = saved_proof.proof_id,
+                                error = %e,
+                                "Backfill proof failed"
+                            );
                         }
                     }
-                    continue; // Move to next slot
                 }
             }
+            continue; // Move to next slot
         }
 
         // No saved proofs, fetch block info and generate new proofs
@@ -243,12 +242,9 @@ async fn backfill_proofs(
         };
 
         // Only submit proofs for blocks with execution payloads
-        let exec_hash = match block_info.execution_block_hash {
-            Some(hash) => hash,
-            None => {
-                debug!(slot = slot, "No execution payload, skipping");
-                continue;
-            }
+        let Some(exec_hash) = block_info.execution_block_hash else {
+            debug!(slot = slot, "No execution payload, skipping");
+            continue;
         };
 
         // Generate and submit proofs
@@ -323,7 +319,7 @@ async fn main() -> anyhow::Result<()> {
     // Set up CL clients - separate zkvm targets from event sources
     let mut zkvm_clients: Vec<(String, ClClient)> = Vec::new(); // zkvm-enabled nodes for proof submission
     let mut event_source_client: Option<(String, String, ClClient)> = None; // First available CL for events
-    
+
     if let Some(endpoints) = config.cl_endpoints.as_ref() {
         for endpoint in endpoints {
             let url = match Url::parse(&endpoint.url) {
@@ -345,7 +341,8 @@ async fn main() -> anyhow::Result<()> {
                     // Use first non-zkvm CL as event source
                     if event_source_client.is_none() {
                         info!(name = %endpoint.name, "Using as event source");
-                        event_source_client = Some((endpoint.name.clone(), endpoint.url.clone(), client));
+                        event_source_client =
+                            Some((endpoint.name.clone(), endpoint.url.clone(), client));
                     }
                 }
                 Err(e) => {
@@ -355,14 +352,14 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    info!(zkvm_targets = zkvm_clients.len(), "zkvm-enabled CL endpoints configured");
+    info!(
+        zkvm_targets = zkvm_clients.len(),
+        "zkvm-enabled CL endpoints configured"
+    );
 
-    let event_source = match event_source_client {
-        Some(es) => es,
-        None => {
-            error!("No non-zkvm CL endpoint available for event source");
-            return Ok(());
-        }
+    let Some(event_source) = event_source_client else {
+        error!("No non-zkvm CL endpoint available for event source");
+        return Ok(());
     };
     info!(name = %event_source.0, "CL event source configured");
 
@@ -425,9 +422,11 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    let (es_name, es_url, es_client) = event_source;
+    let source_client_for_monitor = es_client.clone();
+
     // Spawn CL subscription task for the event source (non-zkvm CL)
     {
-        let (es_name, es_url, es_client) = event_source;
         let tx = cl_tx.clone();
 
         tokio::spawn(async move {
@@ -447,11 +446,23 @@ async fn main() -> anyhow::Result<()> {
             while let Some(result) = stream.next().await {
                 match result {
                     Ok(ClEvent::Head(head)) => {
-                        let slot: u64 = head.slot.parse().unwrap_or(0);
+                        let slot: u64 = match head.slot.parse() {
+                            Ok(slot) => slot,
+                            Err(e) => {
+                                warn!(
+                                    name = %es_name,
+                                    error = %e,
+                                    slot = %head.slot,
+                                    "Invalid head slot value"
+                                );
+                                continue;
+                            }
+                        };
                         let block_root = head.block.clone();
 
                         // Fetch the execution block hash for this beacon block
-                        let exec_hash = match es_client.get_block_execution_hash(&block_root).await {
+                        let exec_hash = match es_client.get_block_execution_hash(&block_root).await
+                        {
                             Ok(Some(hash)) => hash,
                             Ok(None) => {
                                 debug!(name = %es_name, slot = slot, "No execution hash for block");
@@ -492,11 +503,6 @@ async fn main() -> anyhow::Result<()> {
     let mut monitor_interval = tokio::time::interval(Duration::from_millis(500));
     monitor_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    // Clone what we need for the monitoring
-    let source_client_for_monitor = ClClient::new(
-        Url::parse(&config.cl_endpoints.as_ref().unwrap()[0].url).unwrap(),
-    );
-
     info!("Waiting for events (with monitoring every 500ms)");
 
     // Process events from both EL and CL
@@ -506,7 +512,7 @@ async fn main() -> anyhow::Result<()> {
             _ = monitor_interval.tick() => {
                 // Monitor zkvm CL status
                 let statuses = monitor_zkvm_status(&source_client_for_monitor, &zkvm_clients).await;
-                
+
                 for status in &statuses {
                     if status.gap < -5 {
                         // More than 5 slots behind - log warning and backfill
@@ -516,7 +522,7 @@ async fn main() -> anyhow::Result<()> {
                             gap = status.gap,
                             "zkvm CL is behind, starting backfill"
                         );
-                        
+
                         // Find the client and backfill
                         if let Some((_, client)) = zkvm_clients.iter().find(|(n, _)| n == &status.name) {
                             backfill_proofs(
@@ -557,14 +563,12 @@ async fn main() -> anyhow::Result<()> {
                 );
 
                 // Find the endpoint and fetch block + witness
-                let endpoint = match config.endpoints.iter().find(|e| e.name == el_event.endpoint_name) {
-                    Some(e) => e,
-                    None => continue,
+                let Some(endpoint) = config.endpoints.iter().find(|e| e.name == el_event.endpoint_name) else {
+                    continue;
                 };
 
-                let el_url = match Url::parse(&endpoint.el_url) {
-                    Ok(u) => u,
-                    Err(_) => continue,
+                let Ok(el_url) = Url::parse(&endpoint.el_url) else {
+                    continue;
                 };
                 let el_client = ElClient::new(el_url);
 

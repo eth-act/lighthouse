@@ -129,6 +129,7 @@ pub struct BeaconProcessorQueueLengths {
     block_broots_queue: usize,
     blob_broots_queue: usize,
     execution_proof_broots_queue: usize,
+    execution_proof_brange_queue: usize,
     blob_brange_queue: usize,
     dcbroots_queue: usize,
     dcbrange_queue: usize,
@@ -198,6 +199,7 @@ impl BeaconProcessorQueueLengths {
             block_broots_queue: 1024,
             blob_broots_queue: 1024,
             execution_proof_broots_queue: 1024,
+            execution_proof_brange_queue: 1024,
             blob_brange_queue: 1024,
             dcbroots_queue: 1024,
             dcbrange_queue: 1024,
@@ -620,6 +622,7 @@ pub enum Work<E: EthSpec> {
     BlobsByRangeRequest(BlockingFn),
     BlobsByRootsRequest(BlockingFn),
     ExecutionProofsByRootsRequest(BlockingFn),
+    ExecutionProofsByRangeRequest(BlockingFn),
     DataColumnsByRootsRequest(BlockingFn),
     DataColumnsByRangeRequest(BlockingFn),
     GossipBlsToExecutionChange(BlockingFn),
@@ -675,6 +678,7 @@ pub enum WorkType {
     BlobsByRangeRequest,
     BlobsByRootsRequest,
     ExecutionProofsByRootsRequest,
+    ExecutionProofsByRangeRequest,
     DataColumnsByRootsRequest,
     DataColumnsByRangeRequest,
     GossipBlsToExecutionChange,
@@ -728,6 +732,7 @@ impl<E: EthSpec> Work<E> {
             Work::BlobsByRangeRequest(_) => WorkType::BlobsByRangeRequest,
             Work::BlobsByRootsRequest(_) => WorkType::BlobsByRootsRequest,
             Work::ExecutionProofsByRootsRequest(_) => WorkType::ExecutionProofsByRootsRequest,
+            Work::ExecutionProofsByRangeRequest(_) => WorkType::ExecutionProofsByRangeRequest,
             Work::DataColumnsByRootsRequest(_) => WorkType::DataColumnsByRootsRequest,
             Work::DataColumnsByRangeRequest(_) => WorkType::DataColumnsByRangeRequest,
             Work::LightClientBootstrapRequest(_) => WorkType::LightClientBootstrapRequest,
@@ -901,6 +906,8 @@ impl<E: EthSpec> BeaconProcessor<E> {
         let mut blob_broots_queue = FifoQueue::new(queue_lengths.blob_broots_queue);
         let mut execution_proof_broots_queue =
             FifoQueue::new(queue_lengths.execution_proof_broots_queue);
+        let mut execution_proof_brange_queue =
+            FifoQueue::new(queue_lengths.execution_proof_brange_queue);
         let mut blob_brange_queue = FifoQueue::new(queue_lengths.blob_brange_queue);
         let mut dcbroots_queue = FifoQueue::new(queue_lengths.dcbroots_queue);
         let mut dcbrange_queue = FifoQueue::new(queue_lengths.dcbrange_queue);
@@ -1226,6 +1233,8 @@ impl<E: EthSpec> BeaconProcessor<E> {
                                 Some(item)
                             } else if let Some(item) = execution_proof_broots_queue.pop() {
                                 Some(item)
+                            } else if let Some(item) = execution_proof_brange_queue.pop() {
+                                Some(item)
                             } else if let Some(item) = dcbroots_queue.pop() {
                                 Some(item)
                             } else if let Some(item) = dcbrange_queue.pop() {
@@ -1430,6 +1439,9 @@ impl<E: EthSpec> BeaconProcessor<E> {
                             Work::ExecutionProofsByRootsRequest { .. } => {
                                 execution_proof_broots_queue.push(work, work_id)
                             }
+                            Work::ExecutionProofsByRangeRequest { .. } => {
+                                execution_proof_brange_queue.push(work, work_id)
+                            }
                             Work::DataColumnsByRootsRequest { .. } => {
                                 dcbroots_queue.push(work, work_id)
                             }
@@ -1488,6 +1500,9 @@ impl<E: EthSpec> BeaconProcessor<E> {
                         WorkType::BlobsByRootsRequest => blob_broots_queue.len(),
                         WorkType::ExecutionProofsByRootsRequest => {
                             execution_proof_broots_queue.len()
+                        }
+                        WorkType::ExecutionProofsByRangeRequest => {
+                            execution_proof_brange_queue.len()
                         }
                         WorkType::DataColumnsByRootsRequest => dcbroots_queue.len(),
                         WorkType::DataColumnsByRangeRequest => dcbrange_queue.len(),
@@ -1649,6 +1664,7 @@ impl<E: EthSpec> BeaconProcessor<E> {
             Work::BlobsByRangeRequest(process_fn)
             | Work::BlobsByRootsRequest(process_fn)
             | Work::ExecutionProofsByRootsRequest(process_fn)
+            | Work::ExecutionProofsByRangeRequest(process_fn)
             | Work::DataColumnsByRootsRequest(process_fn)
             | Work::DataColumnsByRangeRequest(process_fn) => {
                 task_spawner.spawn_blocking(process_fn)

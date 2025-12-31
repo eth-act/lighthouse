@@ -61,8 +61,16 @@ impl TestRig {
     }
 
     fn test_setup_with_spec(spec: ChainSpec) -> Self {
+        Self::test_setup_with_spec_and_zkvm(spec, false, None)
+    }
+
+    fn test_setup_with_spec_and_zkvm(
+        spec: ChainSpec,
+        zkvm_dummy_verifiers: bool,
+        anchor_oldest_slot: Option<Slot>,
+    ) -> Self {
         // Initialise a new beacon chain
-        let harness = BeaconChainHarness::<EphemeralHarnessType<E>>::builder(E)
+        let mut builder = BeaconChainHarness::<EphemeralHarnessType<E>>::builder(E)
             .spec(Arc::new(spec))
             .deterministic_keypairs(1)
             .fresh_ephemeral_store()
@@ -71,8 +79,23 @@ impl TestRig {
                 Slot::new(0),
                 Duration::from_secs(0),
                 Duration::from_secs(12),
-            ))
-            .build();
+            ));
+
+        if zkvm_dummy_verifiers {
+            // TODO(zkproofs): For unit tests, we likely always want dummy verifiers
+            builder = builder.zkvm_with_dummy_verifiers();
+        }
+
+        let harness = builder.build();
+        if let Some(oldest_slot) = anchor_oldest_slot {
+            let store = &harness.chain.store;
+            let prev_anchor = store.get_anchor_info();
+            let mut new_anchor = prev_anchor.clone();
+            new_anchor.oldest_block_slot = oldest_slot;
+            store
+                .compare_and_set_anchor_info_with_write(prev_anchor, new_anchor)
+                .expect("anchor info updated");
+        }
 
         let chain = harness.chain.clone();
         let fork_context = Arc::new(ForkContext::new::<E>(
@@ -160,7 +183,20 @@ impl TestRig {
     pub fn test_setup_after_fulu_with_zkvm() -> Option<Self> {
         let mut spec = test_spec::<E>();
         spec.zkvm_enabled = true;
-        let r = Self::test_setup_with_spec(spec);
+        let r = Self::test_setup_with_spec_and_zkvm(spec, true, None);
+        if r.fork_name.fulu_enabled() {
+            Some(r)
+        } else {
+            None
+        }
+    }
+
+    /// Setup test rig for Fulu with zkvm enabled and backfill required.
+    pub fn test_setup_after_fulu_with_zkvm_backfill() -> Option<Self> {
+        let mut spec = test_spec::<E>();
+        spec.zkvm_enabled = true;
+        let backfill_start_slot = Slot::new(E::slots_per_epoch());
+        let r = Self::test_setup_with_spec_and_zkvm(spec, true, Some(backfill_start_slot));
         if r.fork_name.fulu_enabled() {
             Some(r)
         } else {

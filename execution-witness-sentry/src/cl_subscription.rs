@@ -6,6 +6,7 @@ use std::task::{Context, Poll};
 use eventsource_client::{Client, SSE};
 use futures::Stream;
 use serde::Deserialize;
+use url::Url;
 
 use crate::error::{Error, Result};
 
@@ -65,10 +66,10 @@ impl Stream for ClEventStream {
                     let result = match event.event_type.as_str() {
                         "head" => serde_json::from_str::<HeadEvent>(&event.data)
                             .map(ClEvent::Head)
-                            .map_err(|e| Error::Parse(e)),
+                            .map_err(Error::Parse),
                         "block" => serde_json::from_str::<BlockEvent>(&event.data)
                             .map(ClEvent::Block)
-                            .map_err(|e| Error::Parse(e)),
+                            .map_err(Error::Parse),
                         _ => continue,
                     };
                     return Poll::Ready(Some(result));
@@ -87,13 +88,41 @@ impl Stream for ClEventStream {
 
 /// Subscribe to CL head events via SSE.
 pub fn subscribe_cl_events(base_url: &str) -> Result<ClEventStream> {
-    let url = format!("{}eth/v1/events?topics=head,block", base_url);
+    let url = build_events_url(base_url)?;
 
-    let client = eventsource_client::ClientBuilder::for_url(&url)
+    let client = eventsource_client::ClientBuilder::for_url(url.as_str())
         .map_err(|e| Error::Config(format!("Invalid SSE URL: {}", e)))?
         .build();
 
     Ok(ClEventStream {
         client: Box::pin(client.stream()),
     })
+}
+
+fn build_events_url(base_url: &str) -> Result<Url> {
+    let base = Url::parse(base_url)?;
+    Ok(base.join("/eth/v1/events?topics=head,block")?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_events_url;
+
+    #[test]
+    fn build_events_url_adds_path_without_trailing_slash() {
+        let url = build_events_url("http://localhost:5052").unwrap();
+        assert_eq!(
+            url.as_str(),
+            "http://localhost:5052/eth/v1/events?topics=head,block"
+        );
+    }
+
+    #[test]
+    fn build_events_url_adds_path_with_trailing_slash() {
+        let url = build_events_url("http://localhost:5052/").unwrap();
+        assert_eq!(
+            url.as_str(),
+            "http://localhost:5052/eth/v1/events?topics=head,block"
+        );
+    }
 }

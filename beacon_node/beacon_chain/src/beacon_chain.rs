@@ -4149,6 +4149,24 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         // This prevents inconsistency between the two at the expense of concurrency.
         drop(fork_choice);
 
+        // Persist execution proofs to the database if zkvm is enabled and proofs are cached.
+        // This is done after the block is successfully stored so we don't lose proofs on cache eviction.
+        if let Some(proofs) = self
+            .data_availability_checker
+            .get_execution_proofs(&block_root)
+            && !proofs.is_empty()
+        {
+            let proofs_owned: Vec<_> = proofs.iter().map(|p| (**p).clone()).collect();
+            if let Err(e) = self.store.put_execution_proofs(&block_root, &proofs_owned) {
+                // Log but don't fail block import - proofs can still be served from cache
+                warn!(
+                    %block_root,
+                    error = ?e,
+                    "Failed to persist execution proofs to database"
+                );
+            }
+        }
+
         // We're declaring the block "imported" at this point, since fork choice and the DB know
         // about it.
         let block_time_imported = timestamp_now();

@@ -81,6 +81,7 @@ impl<E: EthSpec> SSZSnappyInboundCodec<E> {
                 RpcSuccessResponse::DataColumnsByRoot(res) => res.as_ssz_bytes(),
                 RpcSuccessResponse::DataColumnsByRange(res) => res.as_ssz_bytes(),
                 RpcSuccessResponse::ExecutionProofsByRoot(res) => res.as_ssz_bytes(),
+                RpcSuccessResponse::ExecutionProofsByRange(res) => res.as_ssz_bytes(),
                 RpcSuccessResponse::LightClientBootstrap(res) => res.as_ssz_bytes(),
                 RpcSuccessResponse::LightClientOptimisticUpdate(res) => res.as_ssz_bytes(),
                 RpcSuccessResponse::LightClientFinalityUpdate(res) => res.as_ssz_bytes(),
@@ -362,6 +363,7 @@ impl<E: EthSpec> Encoder<RequestType<E>> for SSZSnappyOutboundCodec<E> {
             RequestType::DataColumnsByRange(req) => req.as_ssz_bytes(),
             RequestType::DataColumnsByRoot(req) => req.data_column_ids.as_ssz_bytes(),
             RequestType::ExecutionProofsByRoot(req) => req.as_ssz_bytes(),
+            RequestType::ExecutionProofsByRange(req) => req.as_ssz_bytes(),
             RequestType::Ping(req) => req.as_ssz_bytes(),
             RequestType::LightClientBootstrap(req) => req.as_ssz_bytes(),
             RequestType::LightClientUpdatesByRange(req) => req.as_ssz_bytes(),
@@ -578,6 +580,11 @@ fn handle_rpc_request<E: EthSpec>(
 
             Ok(Some(RequestType::ExecutionProofsByRoot(request)))
         }
+        SupportedProtocol::ExecutionProofsByRangeV1 => {
+            Ok(Some(RequestType::ExecutionProofsByRange(
+                ExecutionProofsByRangeRequest::from_ssz_bytes(decoded_buffer)?,
+            )))
+        }
         SupportedProtocol::PingV1 => Ok(Some(RequestType::Ping(Ping {
             data: u64::from_ssz_bytes(decoded_buffer)?,
         }))),
@@ -743,6 +750,11 @@ fn handle_rpc_response<E: EthSpec>(
         },
         SupportedProtocol::ExecutionProofsByRootV1 => {
             Ok(Some(RpcSuccessResponse::ExecutionProofsByRoot(Arc::new(
+                ExecutionProof::from_ssz_bytes(decoded_buffer)?,
+            ))))
+        }
+        SupportedProtocol::ExecutionProofsByRangeV1 => {
+            Ok(Some(RpcSuccessResponse::ExecutionProofsByRange(Arc::new(
                 ExecutionProof::from_ssz_bytes(decoded_buffer)?,
             ))))
         }
@@ -1294,6 +1306,12 @@ mod tests {
             }
             RequestType::ExecutionProofsByRoot(exec_proofs) => {
                 assert_eq!(decoded, RequestType::ExecutionProofsByRoot(exec_proofs))
+            }
+            RequestType::ExecutionProofsByRange(exec_proofs_range) => {
+                assert_eq!(
+                    decoded,
+                    RequestType::ExecutionProofsByRange(exec_proofs_range)
+                )
             }
             RequestType::Ping(ping) => {
                 assert_eq!(decoded, RequestType::Ping(ping))
