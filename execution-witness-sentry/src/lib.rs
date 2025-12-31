@@ -32,12 +32,12 @@ pub mod storage;
 pub mod subscription;
 
 // Re-export main types at crate root for convenience.
-pub use cl_subscription::{subscribe_cl_events, ClEvent, ClEventStream, HeadEvent, BlockEvent};
+pub use cl_subscription::{BlockEvent, ClEvent, ClEventStream, HeadEvent, subscribe_cl_events};
 pub use config::{ClEndpoint, Config, Endpoint};
 pub use error::{Error, Result};
 pub use rpc::{BlockInfo, ClClient, ElClient, ExecutionProof, generate_random_proof};
 pub use storage::{
-    compress_gzip, decompress_gzip, load_block_data, BlockMetadata, BlockStorage, SavedProof,
+    BlockMetadata, BlockStorage, SavedProof, compress_gzip, decompress_gzip, load_block_data,
 };
 pub use subscription::subscribe_blocks;
 

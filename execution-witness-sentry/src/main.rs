@@ -16,8 +16,8 @@ use tracing::{debug, error, info, warn};
 use url::Url;
 
 use execution_witness_sentry::{
-    subscribe_blocks, subscribe_cl_events, BlockStorage, ClClient, ClEvent, Config, ElClient,
-    ExecutionProof, SavedProof, generate_random_proof,
+    BlockStorage, ClClient, ClEvent, Config, ElClient, ExecutionProof, SavedProof,
+    generate_random_proof, subscribe_blocks, subscribe_cl_events,
 };
 
 /// Execution witness sentry - monitors EL nodes and fetches witnesses.
@@ -185,8 +185,12 @@ async fn backfill_proofs(
         if let Some(storage) = storage {
             if let Ok(Some((_metadata, saved_proofs))) = storage.load_proofs_by_slot(slot) {
                 if !saved_proofs.is_empty() {
-                    debug!(slot = slot, num_proofs = saved_proofs.len(), "Using saved proofs from disk");
-                    
+                    debug!(
+                        slot = slot,
+                        num_proofs = saved_proofs.len(),
+                        "Using saved proofs from disk"
+                    );
+
                     for saved_proof in &saved_proofs {
                         let proof = ExecutionProof {
                             proof_id: saved_proof.proof_id,
@@ -319,7 +323,7 @@ async fn main() -> anyhow::Result<()> {
     // Set up CL clients - separate zkvm targets from event sources
     let mut zkvm_clients: Vec<(String, ClClient)> = Vec::new(); // zkvm-enabled nodes for proof submission
     let mut event_source_client: Option<(String, String, ClClient)> = None; // First available CL for events
-    
+
     if let Some(endpoints) = config.cl_endpoints.as_ref() {
         for endpoint in endpoints {
             let url = match Url::parse(&endpoint.url) {
@@ -341,7 +345,8 @@ async fn main() -> anyhow::Result<()> {
                     // Use first non-zkvm CL as event source
                     if event_source_client.is_none() {
                         info!(name = %endpoint.name, "Using as event source");
-                        event_source_client = Some((endpoint.name.clone(), endpoint.url.clone(), client));
+                        event_source_client =
+                            Some((endpoint.name.clone(), endpoint.url.clone(), client));
                     }
                 }
                 Err(e) => {
@@ -351,7 +356,10 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    info!(zkvm_targets = zkvm_clients.len(), "zkvm-enabled CL endpoints configured");
+    info!(
+        zkvm_targets = zkvm_clients.len(),
+        "zkvm-enabled CL endpoints configured"
+    );
 
     let event_source = match event_source_client {
         Some(es) => es,
@@ -460,7 +468,8 @@ async fn main() -> anyhow::Result<()> {
                         let block_root = head.block.clone();
 
                         // Fetch the execution block hash for this beacon block
-                        let exec_hash = match es_client.get_block_execution_hash(&block_root).await {
+                        let exec_hash = match es_client.get_block_execution_hash(&block_root).await
+                        {
                             Ok(Some(hash)) => hash,
                             Ok(None) => {
                                 debug!(name = %es_name, slot = slot, "No execution hash for block");
@@ -510,7 +519,7 @@ async fn main() -> anyhow::Result<()> {
             _ = monitor_interval.tick() => {
                 // Monitor zkvm CL status
                 let statuses = monitor_zkvm_status(&source_client_for_monitor, &zkvm_clients).await;
-                
+
                 for status in &statuses {
                     if status.gap < -5 {
                         // More than 5 slots behind - log warning and backfill
@@ -520,7 +529,7 @@ async fn main() -> anyhow::Result<()> {
                             gap = status.gap,
                             "zkvm CL is behind, starting backfill"
                         );
-                        
+
                         // Find the client and backfill
                         if let Some((_, client)) = zkvm_clients.iter().find(|(n, _)| n == &status.name) {
                             backfill_proofs(
