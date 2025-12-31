@@ -333,12 +333,10 @@ impl<T: BeaconChainTypes> Router<T> {
                 self.on_execution_proofs_by_root_response(peer_id, app_request_id, execution_proof);
             }
             Response::ExecutionProofsByRange(execution_proof) => {
-                // ExecutionProofsByRange responses are not currently used by sync
-                // This is primarily for serving range requests to peers
-                debug!(
-                    %peer_id,
-                    ?execution_proof,
-                    "Received ExecutionProofsByRange Response (not processed)"
+                self.on_execution_proofs_by_range_response(
+                    peer_id,
+                    app_request_id,
+                    execution_proof,
                 );
             }
             // Light client responses should not be received
@@ -743,6 +741,30 @@ impl<T: BeaconChainTypes> Router<T> {
             execution_proof,
             seen_timestamp: timestamp_now(),
         });
+    }
+
+    /// Handle an `ExecutionProofsByRange` response from the peer.
+    pub fn on_execution_proofs_by_range_response(
+        &mut self,
+        peer_id: PeerId,
+        app_request_id: AppRequestId,
+        execution_proof: Option<Arc<ExecutionProof>>,
+    ) {
+        trace!(
+            %peer_id,
+            "Received ExecutionProofsByRange Response"
+        );
+
+        if let AppRequestId::Sync(sync_request_id) = app_request_id {
+            self.send_to_sync(SyncMessage::RpcExecutionProof {
+                peer_id,
+                sync_request_id,
+                execution_proof,
+                seen_timestamp: timestamp_now(),
+            });
+        } else {
+            crit!("All execution proofs by range responses should belong to sync");
+        }
     }
 
     /// Handle a `DataColumnsByRoot` response from the peer.

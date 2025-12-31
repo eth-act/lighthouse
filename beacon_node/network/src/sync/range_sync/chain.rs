@@ -6,12 +6,14 @@ use crate::sync::batch::{
     BatchConfig, BatchInfo, BatchOperationOutcome, BatchProcessingResult, BatchState,
 };
 use crate::sync::block_sidecar_coupling::CouplingError;
-use crate::sync::network_context::{RangeRequestId, RpcRequestSendError, RpcResponseError};
+use crate::sync::network_context::{
+    NoPeerError, RangeRequestId, RpcRequestSendError, RpcResponseError,
+};
 use crate::sync::{BatchProcessResult, network_context::SyncNetworkContext};
 use beacon_chain::BeaconChainTypes;
 use beacon_chain::block_verification_types::RpcBlock;
 use lighthouse_network::service::api_types::Id;
-use lighthouse_network::{PeerAction, PeerId};
+use lighthouse_network::{PeerAction, PeerId, Subnet};
 use lighthouse_tracing::SPAN_SYNCING_CHAIN;
 use logging::crit;
 use std::collections::{BTreeMap, HashSet, btree_map::Entry};
@@ -462,6 +464,12 @@ impl<T: BeaconChainTypes> SyncingChain<T> {
             // This is to handle the case where no batch was sent for the current processing
             // target when there is no sampling peers available. This is a valid state and should not
             // return an error.
+            return Ok(KeepChain);
+        } else if !self.good_peers_on_execution_proof_subnet(self.processing_target, network) {
+            debug!(
+                src = "process_completed_batches",
+                "Waiting for zkvm-enabled peers for execution proofs"
+            );
             return Ok(KeepChain);
         } else {
             // NOTE: It is possible that the batch doesn't exist for the processing id. This can happen
@@ -944,6 +952,31 @@ impl<T: BeaconChainTypes> SyncingChain<T> {
                     CouplingError::BlobPeerFailure(msg) => {
                         tracing::debug!(?batch_id, msg, "Blob peer failure");
                     }
+                    CouplingError::ExecutionProofPeerFailure {
+                        error,
+                        peer,
+                        exceeded_retries,
+                    } => {
+                        tracing::debug!(?batch_id, ?peer, error, "Execution proof peer failure");
+                        if !*exceeded_retries {
+                            if let BatchOperationOutcome::Failed { blacklist } =
+                                batch.downloading_to_awaiting_download()?
+                            {
+                                return Err(RemoveChain::ChainFailed {
+                                    blacklist,
+                                    failing_batch: batch_id,
+                                });
+                            }
+                            let mut failed_peers = HashSet::new();
+                            failed_peers.insert(*peer);
+                            return self.retry_execution_proof_batch(
+                                network,
+                                batch_id,
+                                request_id,
+                                failed_peers,
+                            );
+                        }
+                    }
                     CouplingError::InternalError(msg) => {
                         tracing::error!(?batch_id, msg, "Block components coupling internal error");
                     }
@@ -1020,6 +1053,13 @@ impl<T: BeaconChainTypes> SyncingChain<T> {
 
         for batch_id in awaiting_downloads {
             if self.good_peers_on_sampling_subnets(batch_id, network) {
+                if !self.good_peers_on_execution_proof_subnet(batch_id, network) {
+                    debug!(
+                        src = "attempt_send_awaiting_download_batches",
+                        "Waiting for zkvm-enabled peers for execution proofs"
+                    );
+                    continue;
+                }
                 self.send_batch(network, batch_id)?;
             } else {
                 debug!(
@@ -1083,6 +1123,13 @@ impl<T: BeaconChainTypes> SyncingChain<T> {
                     return Ok(KeepChain);
                 }
                 Err(e) => match e {
+                    RpcRequestSendError::NoPeer(NoPeerError::ExecutionProofPeer) => {
+                        debug!(
+                            %batch_id,
+                            "Waiting for zkvm-enabled peers for execution proofs"
+                        );
+                        return Ok(KeepChain);
+                    }
                     // TODO(das): Handle the NoPeer case explicitly and don't drop the batch. For
                     // sync to work properly it must be okay to have "stalled" batches in
                     // AwaitingDownload state. Currently it will error with invalid state if
@@ -1163,6 +1210,45 @@ impl<T: BeaconChainTypes> SyncingChain<T> {
         Ok(KeepChain)
     }
 
+    /// Retries execution proof requests within the batch by creating a new proofs request.
+    fn retry_execution_proof_batch(
+        &mut self,
+        network: &mut SyncNetworkContext<T>,
+        batch_id: BatchId,
+        id: Id,
+        mut failed_peers: HashSet<PeerId>,
+    ) -> ProcessingResult {
+        let _guard = self.span.clone().entered();
+        debug!(%batch_id, %id, ?failed_peers, "Retrying execution proof requests");
+        if let Some(batch) = self.batches.get_mut(&batch_id) {
+            failed_peers.extend(&batch.failed_peers());
+            let req = batch.to_blocks_by_range_request().0;
+
+            let synced_peers = network
+                .network_globals()
+                .peers
+                .read()
+                .synced_peers_for_epoch(batch_id)
+                .cloned()
+                .collect::<HashSet<_>>();
+
+            match network.retry_execution_proofs_by_range(id, &synced_peers, &failed_peers, req) {
+                Ok(()) => {
+                    batch.start_downloading(id)?;
+                    debug!(
+                        ?batch_id,
+                        id, "Retried execution proof requests from other peers"
+                    );
+                    return Ok(KeepChain);
+                }
+                Err(e) => {
+                    debug!(?batch_id, id, e, "Failed to retry execution proof batch");
+                }
+            }
+        }
+        Ok(KeepChain)
+    }
+
     /// Returns true if this chain is currently syncing.
     pub fn is_syncing(&self) -> bool {
         match self.state {
@@ -1203,6 +1289,13 @@ impl<T: BeaconChainTypes> SyncingChain<T> {
                 debug!(
                     src = "request_batches_optimistic",
                     "Waiting for peers to be available on sampling column subnets"
+                );
+                return Ok(KeepChain);
+            }
+            if !self.good_peers_on_execution_proof_subnet(epoch, network) {
+                debug!(
+                    src = "request_batches_optimistic",
+                    "Waiting for zkvm-enabled peers for execution proofs"
                 );
                 return Ok(KeepChain);
             }
@@ -1252,6 +1345,27 @@ impl<T: BeaconChainTypes> SyncingChain<T> {
         }
     }
 
+    /// Returns true if there is at least one zkvm-enabled peer for execution proofs.
+    fn good_peers_on_execution_proof_subnet(
+        &self,
+        epoch: Epoch,
+        network: &SyncNetworkContext<T>,
+    ) -> bool {
+        if !network.chain.spec.is_zkvm_enabled_for_epoch(epoch) {
+            return true;
+        }
+
+        let peers_db = network.network_globals().peers.read();
+        let synced_peers: HashSet<_> = peers_db.synced_peers_for_epoch(epoch).cloned().collect();
+
+        self.peers.iter().chain(synced_peers.iter()).any(|peer| {
+            peers_db
+                .peer_info(peer)
+                .map(|info| info.on_subnet_metadata(&Subnet::ExecutionProof))
+                .unwrap_or(false)
+        })
+    }
+
     /// Creates the next required batch from the chain. If there are no more batches required,
     /// `false` is returned.
     fn include_next_batch(&mut self, network: &mut SyncNetworkContext<T>) -> Option<BatchId> {
@@ -1291,6 +1405,13 @@ impl<T: BeaconChainTypes> SyncingChain<T> {
             debug!(
                 src = "include_next_batch",
                 "Waiting for peers to be available on custody column subnets"
+            );
+            return None;
+        }
+        if !self.good_peers_on_execution_proof_subnet(self.to_be_downloaded, network) {
+            debug!(
+                src = "include_next_batch",
+                "Waiting for zkvm-enabled peers for execution proofs"
             );
             return None;
         }

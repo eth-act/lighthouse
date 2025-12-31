@@ -411,7 +411,7 @@ impl<E: EthSpec> Network<E> {
         };
 
         let peer_manager = {
-            let peer_manager_cfg = PeerManagerCfg {
+            let mut peer_manager_cfg = PeerManagerCfg {
                 discovery_enabled: !config.disable_discovery,
                 quic_enabled: !config.disable_quic_support,
                 metrics_enabled: config.metrics_enabled,
@@ -419,6 +419,15 @@ impl<E: EthSpec> Network<E> {
                 execution_proof_enabled: ctx.chain_spec.is_zkvm_enabled(),
                 ..Default::default()
             };
+            // TODO(zkproofs): We decrease the slot time, so we want to
+            // correspondingly decrease the status interval at which a node will
+            // check if it needs to sync with others.
+            let epoch_secs = ctx
+                .chain_spec
+                .seconds_per_slot
+                .saturating_mul(E::slots_per_epoch())
+                .max(1);
+            peer_manager_cfg.status_interval = peer_manager_cfg.status_interval.min(epoch_secs);
             PeerManager::new(peer_manager_cfg, network_globals.clone())?
         };
 

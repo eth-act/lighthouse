@@ -3,26 +3,26 @@ use crate::network_beacon_processor::ChainSegmentProcessId;
 use crate::status::ToStatusMessage;
 use crate::sync::SyncMessage;
 use crate::sync::manager::SLOT_IMPORT_TOLERANCE;
-use crate::sync::network_context::RangeRequestId;
+use crate::sync::network_context::{MAX_EXECUTION_PROOF_RETRIES, RangeRequestId};
 use crate::sync::range_sync::RangeSyncType;
 use beacon_chain::data_column_verification::CustodyDataColumn;
 use beacon_chain::test_utils::{AttestationStrategy, BlockStrategy};
 use beacon_chain::{EngineState, NotifyExecutionLayer, block_verification_types::RpcBlock};
 use beacon_processor::WorkType;
-use lighthouse_network::rpc::RequestType;
 use lighthouse_network::rpc::methods::{
-    BlobsByRangeRequest, DataColumnsByRangeRequest, OldBlocksByRangeRequest,
-    OldBlocksByRangeRequestV2, StatusMessageV2,
+    BlobsByRangeRequest, DataColumnsByRangeRequest, ExecutionProofsByRangeRequest,
+    OldBlocksByRangeRequest, OldBlocksByRangeRequestV2, StatusMessageV2,
 };
+use lighthouse_network::rpc::{RPCError, RequestType};
 use lighthouse_network::service::api_types::{
     AppRequestId, BlobsByRangeRequestId, BlocksByRangeRequestId, DataColumnsByRangeRequestId,
-    SyncRequestId,
+    ExecutionProofsByRangeRequestId, SyncRequestId,
 };
 use lighthouse_network::{PeerId, SyncInfo};
 use std::time::Duration;
 use types::{
-    BlobSidecarList, BlockImportSource, Epoch, EthSpec, Hash256, MinimalEthSpec as E,
-    SignedBeaconBlock, SignedBeaconBlockHash, Slot,
+    BlobSidecarList, BlockImportSource, Epoch, EthSpec, ExecutionBlockHash, ExecutionProof,
+    ExecutionProofId, Hash256, MinimalEthSpec as E, SignedBeaconBlock, SignedBeaconBlockHash, Slot,
 };
 
 const D: Duration = Duration::new(0, 0);
@@ -36,6 +36,13 @@ enum ByRangeDataRequestIds {
     PreDeneb,
     PrePeerDAS(BlobsByRangeRequestId, PeerId),
     PostPeerDAS(Vec<(DataColumnsByRangeRequestId, PeerId)>),
+}
+
+struct BlocksByRangeRequestMeta {
+    id: BlocksByRangeRequestId,
+    peer: PeerId,
+    start_slot: u64,
+    count: u64,
 }
 
 /// Sync tests are usually written in the form:
@@ -82,6 +89,20 @@ impl TestRig {
             head_slot: local_info.head_slot + 1 + Slot::new(SLOT_IMPORT_TOLERANCE as u64),
             ..local_info
         })
+    }
+
+    fn add_head_zkvm_peer_with_root(&mut self, head_root: Hash256) -> PeerId {
+        let local_info = self.local_info();
+        let peer_id = self.new_connected_zkvm_peer();
+        self.send_sync_message(SyncMessage::AddPeer(
+            peer_id,
+            SyncInfo {
+                head_root,
+                head_slot: local_info.head_slot + 1 + Slot::new(SLOT_IMPORT_TOLERANCE as u64),
+                ..local_info
+            },
+        ));
+        peer_id
     }
 
     // Produce a finalized peer with an advanced finalized epoch
@@ -155,6 +176,13 @@ impl TestRig {
         }
     }
 
+    fn add_synced_zkvm_peer(&mut self) -> PeerId {
+        let peer_id = self.new_connected_zkvm_peer();
+        let local_info = self.local_info();
+        self.send_sync_message(SyncMessage::AddPeer(peer_id, local_info));
+        peer_id
+    }
+
     fn assert_state(&self, state: RangeSyncType) {
         assert_eq!(
             self.sync_manager
@@ -200,6 +228,16 @@ impl TestRig {
         &mut self,
         request_filter: RequestFilter,
     ) -> ((BlocksByRangeRequestId, PeerId), ByRangeDataRequestIds) {
+        let (meta, by_range_data_requests) =
+            self.find_blocks_by_range_request_with_meta(request_filter);
+
+        ((meta.id, meta.peer), by_range_data_requests)
+    }
+
+    fn find_blocks_by_range_request_with_meta(
+        &mut self,
+        request_filter: RequestFilter,
+    ) -> (BlocksByRangeRequestMeta, ByRangeDataRequestIds) {
         let filter_f = |peer: PeerId, start_slot: u64| {
             if let Some(expected_epoch) = request_filter.epoch {
                 let epoch = Slot::new(start_slot).epoch(E::slots_per_epoch()).as_u64();
@@ -222,10 +260,17 @@ impl TestRig {
                     peer_id,
                     request:
                         RequestType::BlocksByRange(OldBlocksByRangeRequest::V2(
-                            OldBlocksByRangeRequestV2 { start_slot, .. },
+                            OldBlocksByRangeRequestV2 {
+                                start_slot, count, ..
+                            },
                         )),
                     app_request_id: AppRequestId::Sync(SyncRequestId::BlocksByRange(id)),
-                } if filter_f(*peer_id, *start_slot) => Some((*id, *peer_id)),
+                } if filter_f(*peer_id, *start_slot) => Some(BlocksByRangeRequestMeta {
+                    id: *id,
+                    peer: *peer_id,
+                    start_slot: *start_slot,
+                    count: *count,
+                }),
                 _ => None,
             })
             .unwrap_or_else(|e| {
@@ -272,6 +317,45 @@ impl TestRig {
         (block_req, by_range_data_requests)
     }
 
+    fn find_execution_proofs_by_range_request(
+        &mut self,
+        request_filter: RequestFilter,
+    ) -> (ExecutionProofsByRangeRequestId, PeerId, u64, u64) {
+        let filter_f = |peer: PeerId, start_slot: u64| {
+            if let Some(expected_epoch) = request_filter.epoch {
+                let epoch = Slot::new(start_slot).epoch(E::slots_per_epoch()).as_u64();
+                if epoch != expected_epoch {
+                    return false;
+                }
+            }
+            if let Some(expected_peer) = request_filter.peer
+                && peer != expected_peer
+            {
+                return false;
+            }
+
+            true
+        };
+
+        self.pop_received_network_event(|ev| match ev {
+            NetworkMessage::SendRequest {
+                peer_id,
+                request:
+                    RequestType::ExecutionProofsByRange(ExecutionProofsByRangeRequest {
+                        start_slot,
+                        count,
+                    }),
+                app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofsByRange(id)),
+            } if filter_f(*peer_id, *start_slot) => Some((*id, *peer_id, *start_slot, *count)),
+            _ => None,
+        })
+        .unwrap_or_else(|e| {
+            panic!(
+                "Should have an ExecutionProofsByRange request, filter {request_filter:?}: {e:?}"
+            )
+        })
+    }
+
     fn find_and_complete_blocks_by_range_request(
         &mut self,
         request_filter: RequestFilter,
@@ -290,6 +374,15 @@ impl TestRig {
             seen_timestamp: D,
         });
 
+        self.complete_by_range_data_requests(by_range_data_request_ids);
+
+        blocks_req_id.parent_request_id.requester
+    }
+
+    fn complete_by_range_data_requests(
+        &mut self,
+        by_range_data_request_ids: ByRangeDataRequestIds,
+    ) {
         match by_range_data_request_ids {
             ByRangeDataRequestIds::PreDeneb => {}
             ByRangeDataRequestIds::PrePeerDAS(id, peer_id) => {
@@ -319,8 +412,6 @@ impl TestRig {
                 }
             }
         }
-
-        blocks_req_id.parent_request_id.requester
     }
 
     fn find_and_complete_processing_chain_segment(&mut self, id: ChainSegmentProcessId) {
@@ -600,4 +691,611 @@ fn finalized_sync_not_enough_custody_peers_on_start() {
 
     let last_epoch = advanced_epochs + EXTRA_SYNCED_EPOCHS;
     r.complete_and_process_range_sync_until(last_epoch, filter());
+}
+
+#[test]
+fn range_sync_requests_execution_proofs_for_zkvm() {
+    let Some(mut rig) = TestRig::test_setup_after_fulu_with_zkvm() else {
+        return;
+    };
+
+    let head_root = Hash256::random();
+    let _supernode_peer = rig.add_head_peer_with_root(head_root);
+
+    rig.assert_state(RangeSyncType::Head);
+    rig.expect_empty_network();
+
+    let zkvm_peer = rig.add_head_zkvm_peer_with_root(head_root);
+    let _ = rig.find_blocks_by_range_request(filter());
+    let (_, proof_peer, _, _) =
+        rig.find_execution_proofs_by_range_request(filter().peer(zkvm_peer));
+    assert_eq!(proof_peer, zkvm_peer);
+}
+
+#[test]
+fn range_sync_uses_cached_execution_proofs() {
+    let Some(mut rig) = TestRig::test_setup_after_fulu_with_zkvm() else {
+        return;
+    };
+
+    let head_root = Hash256::random();
+    let zkvm_peer = rig.add_head_zkvm_peer_with_root(head_root);
+    let _supernode_peer = rig.add_head_peer_with_root(head_root);
+
+    let (block_meta, by_range_data) = rig.find_blocks_by_range_request_with_meta(filter());
+    let (proof_req_id, proof_peer, proof_start_slot, proof_count) =
+        rig.find_execution_proofs_by_range_request(filter().peer(zkvm_peer));
+
+    assert_eq!(proof_start_slot, block_meta.start_slot);
+    assert_eq!(proof_count, block_meta.count);
+    assert_eq!(proof_peer, zkvm_peer);
+
+    let mut block = rig.rand_block();
+    *block.message_mut().slot_mut() = Slot::new(block_meta.start_slot);
+
+    let block_root = block.canonical_root();
+    let block_hash = block
+        .message()
+        .body()
+        .execution_payload()
+        .expect("execution payload should exist")
+        .execution_payload_ref()
+        .block_hash();
+
+    let min_proofs = rig
+        .harness
+        .chain
+        .spec
+        .zkvm_min_proofs_required()
+        .expect("zkvm enabled");
+
+    let proofs = (0..min_proofs)
+        .map(|i| {
+            ExecutionProof::new(
+                ExecutionProofId::new(u8::try_from(i).expect("proof id fits")).unwrap(),
+                block.slot(),
+                block_hash,
+                block_root,
+                vec![1, 2, 3],
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+
+    rig.harness
+        .chain
+        .data_availability_checker
+        .put_verified_execution_proofs(block_root, proofs)
+        .unwrap();
+
+    rig.send_sync_message(SyncMessage::RpcBlock {
+        sync_request_id: SyncRequestId::BlocksByRange(block_meta.id),
+        peer_id: block_meta.peer,
+        beacon_block: Some(Arc::new(block)),
+        seen_timestamp: D,
+    });
+    rig.send_sync_message(SyncMessage::RpcBlock {
+        sync_request_id: SyncRequestId::BlocksByRange(block_meta.id),
+        peer_id: block_meta.peer,
+        beacon_block: None,
+        seen_timestamp: D,
+    });
+
+    rig.complete_by_range_data_requests(by_range_data);
+
+    rig.send_sync_message(SyncMessage::RpcExecutionProof {
+        sync_request_id: SyncRequestId::ExecutionProofsByRange(proof_req_id),
+        peer_id: proof_peer,
+        execution_proof: None,
+        seen_timestamp: D,
+    });
+
+    let request_id = block_meta.id.parent_request_id.requester;
+    let process_id = match request_id {
+        RangeRequestId::RangeSync { chain_id, batch_id } => {
+            ChainSegmentProcessId::RangeBatchId(chain_id, batch_id)
+        }
+        RangeRequestId::BackfillSync { batch_id } => {
+            ChainSegmentProcessId::BackSyncBatchId(batch_id)
+        }
+    };
+    rig.find_and_complete_processing_chain_segment(process_id);
+}
+
+#[test]
+fn range_sync_retries_execution_proofs_without_block_retry() {
+    let Some(mut rig) = TestRig::test_setup_after_fulu_with_zkvm() else {
+        return;
+    };
+
+    let head_root = Hash256::random();
+    let zkvm_peer_1 = rig.add_head_zkvm_peer_with_root(head_root);
+    let zkvm_peer_2 = rig.add_head_zkvm_peer_with_root(head_root);
+    let _supernode_peer = rig.add_head_peer_with_root(head_root);
+
+    let (block_meta, by_range_data) = rig.find_blocks_by_range_request_with_meta(filter());
+    let epoch = Slot::new(block_meta.start_slot)
+        .epoch(E::slots_per_epoch())
+        .as_u64();
+    let (proof_req_id, proof_peer, proof_start_slot, _) =
+        rig.find_execution_proofs_by_range_request(filter().epoch(epoch));
+
+    assert_eq!(proof_start_slot, block_meta.start_slot);
+    assert!(proof_peer == zkvm_peer_1 || proof_peer == zkvm_peer_2);
+
+    let mut block = rig.rand_block();
+    *block.message_mut().slot_mut() = Slot::new(block_meta.start_slot);
+
+    let block_root = block.canonical_root();
+    let block_hash = block
+        .message()
+        .body()
+        .execution_payload()
+        .expect("execution payload should exist")
+        .execution_payload_ref()
+        .block_hash();
+
+    let wrong_hash = if block_hash == ExecutionBlockHash::zero() {
+        ExecutionBlockHash::repeat_byte(0x11)
+    } else {
+        ExecutionBlockHash::zero()
+    };
+
+    rig.send_sync_message(SyncMessage::RpcBlock {
+        sync_request_id: SyncRequestId::BlocksByRange(block_meta.id),
+        peer_id: block_meta.peer,
+        beacon_block: Some(Arc::new(block)),
+        seen_timestamp: D,
+    });
+    rig.send_sync_message(SyncMessage::RpcBlock {
+        sync_request_id: SyncRequestId::BlocksByRange(block_meta.id),
+        peer_id: block_meta.peer,
+        beacon_block: None,
+        seen_timestamp: D,
+    });
+
+    rig.complete_by_range_data_requests(by_range_data);
+
+    let bad_proof = ExecutionProof::new(
+        ExecutionProofId::new(0).unwrap(),
+        Slot::new(block_meta.start_slot),
+        wrong_hash,
+        block_root,
+        vec![1, 2, 3],
+    )
+    .unwrap();
+
+    rig.send_sync_message(SyncMessage::RpcExecutionProof {
+        sync_request_id: SyncRequestId::ExecutionProofsByRange(proof_req_id),
+        peer_id: proof_peer,
+        execution_proof: Some(Arc::new(bad_proof)),
+        seen_timestamp: D,
+    });
+    rig.send_sync_message(SyncMessage::RpcExecutionProof {
+        sync_request_id: SyncRequestId::ExecutionProofsByRange(proof_req_id),
+        peer_id: proof_peer,
+        execution_proof: None,
+        seen_timestamp: D,
+    });
+
+    if rig
+        .pop_received_network_event(|ev| match ev {
+            NetworkMessage::SendRequest {
+                request:
+                    RequestType::BlocksByRange(OldBlocksByRangeRequest::V2(
+                        OldBlocksByRangeRequestV2 { start_slot, .. },
+                    )),
+                ..
+            } if *start_slot == block_meta.start_slot => Some(()),
+            _ => None,
+        })
+        .is_ok()
+    {
+        panic!("unexpected BlocksByRange retry for execution proof failure");
+    }
+
+    let (_, retry_peer, retry_start_slot, _) =
+        rig.find_execution_proofs_by_range_request(filter().epoch(epoch));
+    assert_eq!(retry_start_slot, block_meta.start_slot);
+    assert_ne!(retry_peer, proof_peer);
+}
+
+#[test]
+fn backfill_retries_execution_proofs_without_block_retry() {
+    let Some(mut rig) = TestRig::test_setup_after_fulu_with_zkvm_backfill() else {
+        return;
+    };
+
+    let zkvm_peer_1 = rig.add_synced_zkvm_peer();
+    let zkvm_peer_2 = rig.add_synced_zkvm_peer();
+    let local_info = rig.local_info();
+    let _supernode_peer = rig.add_supernode_peer(local_info);
+
+    let backfill_epoch = Slot::new(E::slots_per_epoch())
+        .epoch(E::slots_per_epoch())
+        .as_u64();
+    let (block_meta, by_range_data) =
+        rig.find_blocks_by_range_request_with_meta(filter().epoch(backfill_epoch));
+    let (proof_req_id, proof_peer, proof_start_slot, _) =
+        rig.find_execution_proofs_by_range_request(filter().epoch(backfill_epoch));
+
+    assert_eq!(proof_start_slot, block_meta.start_slot);
+    assert!(proof_peer == zkvm_peer_1 || proof_peer == zkvm_peer_2);
+
+    let mut block = rig.rand_block();
+    *block.message_mut().slot_mut() = Slot::new(block_meta.start_slot);
+
+    let block_root = block.canonical_root();
+    let block_hash = block
+        .message()
+        .body()
+        .execution_payload()
+        .expect("execution payload should exist")
+        .execution_payload_ref()
+        .block_hash();
+
+    let wrong_hash = if block_hash == ExecutionBlockHash::zero() {
+        ExecutionBlockHash::repeat_byte(0x11)
+    } else {
+        ExecutionBlockHash::zero()
+    };
+
+    rig.send_sync_message(SyncMessage::RpcBlock {
+        sync_request_id: SyncRequestId::BlocksByRange(block_meta.id),
+        peer_id: block_meta.peer,
+        beacon_block: Some(Arc::new(block)),
+        seen_timestamp: D,
+    });
+    rig.send_sync_message(SyncMessage::RpcBlock {
+        sync_request_id: SyncRequestId::BlocksByRange(block_meta.id),
+        peer_id: block_meta.peer,
+        beacon_block: None,
+        seen_timestamp: D,
+    });
+
+    rig.complete_by_range_data_requests(by_range_data);
+
+    let bad_proof = ExecutionProof::new(
+        ExecutionProofId::new(0).unwrap(),
+        Slot::new(block_meta.start_slot),
+        wrong_hash,
+        block_root,
+        vec![1, 2, 3],
+    )
+    .unwrap();
+
+    rig.send_sync_message(SyncMessage::RpcExecutionProof {
+        sync_request_id: SyncRequestId::ExecutionProofsByRange(proof_req_id),
+        peer_id: proof_peer,
+        execution_proof: Some(Arc::new(bad_proof)),
+        seen_timestamp: D,
+    });
+    rig.send_sync_message(SyncMessage::RpcExecutionProof {
+        sync_request_id: SyncRequestId::ExecutionProofsByRange(proof_req_id),
+        peer_id: proof_peer,
+        execution_proof: None,
+        seen_timestamp: D,
+    });
+
+    if rig
+        .pop_received_network_event(|ev| match ev {
+            NetworkMessage::SendRequest {
+                request:
+                    RequestType::BlocksByRange(OldBlocksByRangeRequest::V2(
+                        OldBlocksByRangeRequestV2 { start_slot, .. },
+                    )),
+                ..
+            } if *start_slot == block_meta.start_slot => Some(()),
+            _ => None,
+        })
+        .is_ok()
+    {
+        panic!("unexpected BlocksByRange retry for execution proof failure");
+    }
+
+    let (_, retry_peer, retry_start_slot, _) =
+        rig.find_execution_proofs_by_range_request(filter().epoch(backfill_epoch));
+    assert_eq!(retry_start_slot, block_meta.start_slot);
+    assert_ne!(retry_peer, proof_peer);
+}
+
+#[test]
+fn range_sync_execution_proof_retries_exhaust_then_block_retry() {
+    let Some(mut rig) = TestRig::test_setup_after_fulu_with_zkvm() else {
+        return;
+    };
+
+    let head_root = Hash256::random();
+    let zkvm_peer_1 = rig.add_head_zkvm_peer_with_root(head_root);
+    let zkvm_peer_2 = rig.add_head_zkvm_peer_with_root(head_root);
+    let zkvm_peer_3 = rig.add_head_zkvm_peer_with_root(head_root);
+    let _supernode_peer = rig.add_head_peer_with_root(head_root);
+
+    let (block_meta, by_range_data) = rig.find_blocks_by_range_request_with_meta(filter());
+    let epoch = Slot::new(block_meta.start_slot)
+        .epoch(E::slots_per_epoch())
+        .as_u64();
+    let (mut proof_req_id, mut proof_peer, proof_start_slot, _) =
+        rig.find_execution_proofs_by_range_request(filter().epoch(epoch));
+
+    assert_eq!(proof_start_slot, block_meta.start_slot);
+    assert!(proof_peer == zkvm_peer_1 || proof_peer == zkvm_peer_2 || proof_peer == zkvm_peer_3);
+
+    let mut block = rig.rand_block();
+    *block.message_mut().slot_mut() = Slot::new(block_meta.start_slot);
+
+    let block_root = block.canonical_root();
+    let block_hash = block
+        .message()
+        .body()
+        .execution_payload()
+        .expect("execution payload should exist")
+        .execution_payload_ref()
+        .block_hash();
+
+    let wrong_hash = if block_hash == ExecutionBlockHash::zero() {
+        ExecutionBlockHash::repeat_byte(0x11)
+    } else {
+        ExecutionBlockHash::zero()
+    };
+
+    rig.send_sync_message(SyncMessage::RpcBlock {
+        sync_request_id: SyncRequestId::BlocksByRange(block_meta.id),
+        peer_id: block_meta.peer,
+        beacon_block: Some(Arc::new(block)),
+        seen_timestamp: D,
+    });
+    rig.send_sync_message(SyncMessage::RpcBlock {
+        sync_request_id: SyncRequestId::BlocksByRange(block_meta.id),
+        peer_id: block_meta.peer,
+        beacon_block: None,
+        seen_timestamp: D,
+    });
+    rig.complete_by_range_data_requests(by_range_data);
+
+    for attempt in 1..=MAX_EXECUTION_PROOF_RETRIES {
+        let bad_proof = ExecutionProof::new(
+            ExecutionProofId::new(0).unwrap(),
+            Slot::new(block_meta.start_slot),
+            wrong_hash,
+            block_root,
+            vec![1, 2, 3],
+        )
+        .unwrap();
+
+        rig.send_sync_message(SyncMessage::RpcExecutionProof {
+            sync_request_id: SyncRequestId::ExecutionProofsByRange(proof_req_id),
+            peer_id: proof_peer,
+            execution_proof: Some(Arc::new(bad_proof)),
+            seen_timestamp: D,
+        });
+        rig.send_sync_message(SyncMessage::RpcExecutionProof {
+            sync_request_id: SyncRequestId::ExecutionProofsByRange(proof_req_id),
+            peer_id: proof_peer,
+            execution_proof: None,
+            seen_timestamp: D,
+        });
+
+        if attempt < MAX_EXECUTION_PROOF_RETRIES {
+            if rig
+                .pop_received_network_event(|ev| match ev {
+                    NetworkMessage::SendRequest {
+                        request:
+                            RequestType::BlocksByRange(OldBlocksByRangeRequest::V2(
+                                OldBlocksByRangeRequestV2 { start_slot, .. },
+                            )),
+                        ..
+                    } if *start_slot == block_meta.start_slot => Some(()),
+                    _ => None,
+                })
+                .is_ok()
+            {
+                panic!("unexpected BlocksByRange retry before proof retries are exhausted");
+            }
+
+            let (next_req_id, next_peer, retry_start_slot, _) =
+                rig.find_execution_proofs_by_range_request(filter().epoch(epoch));
+            assert_eq!(retry_start_slot, block_meta.start_slot);
+            assert_ne!(next_peer, proof_peer);
+            proof_req_id = next_req_id;
+            proof_peer = next_peer;
+        }
+    }
+
+    rig.pop_received_network_event(|ev| match ev {
+        NetworkMessage::SendRequest {
+            request:
+                RequestType::BlocksByRange(OldBlocksByRangeRequest::V2(
+                    OldBlocksByRangeRequestV2 { start_slot, .. },
+                )),
+            ..
+        } if *start_slot == block_meta.start_slot => Some(()),
+        _ => None,
+    })
+    .unwrap_or_else(|e| panic!("Expected BlocksByRange retry after exhausted proofs: {e}"));
+}
+
+#[test]
+fn range_sync_proof_retry_on_unsupported_protocol() {
+    let Some(mut rig) = TestRig::test_setup_after_fulu_with_zkvm() else {
+        return;
+    };
+
+    let head_root = Hash256::random();
+    let zkvm_peer_1 = rig.add_head_zkvm_peer_with_root(head_root);
+    let zkvm_peer_2 = rig.add_head_zkvm_peer_with_root(head_root);
+    let _supernode_peer = rig.add_head_peer_with_root(head_root);
+
+    let (block_meta, by_range_data) = rig.find_blocks_by_range_request_with_meta(filter());
+    let epoch = Slot::new(block_meta.start_slot)
+        .epoch(E::slots_per_epoch())
+        .as_u64();
+    let (proof_req_id, proof_peer, proof_start_slot, _) =
+        rig.find_execution_proofs_by_range_request(filter().epoch(epoch));
+
+    assert_eq!(proof_start_slot, block_meta.start_slot);
+    assert!(proof_peer == zkvm_peer_1 || proof_peer == zkvm_peer_2);
+
+    let mut block = rig.rand_block();
+    *block.message_mut().slot_mut() = Slot::new(block_meta.start_slot);
+
+    rig.send_sync_message(SyncMessage::RpcBlock {
+        sync_request_id: SyncRequestId::BlocksByRange(block_meta.id),
+        peer_id: block_meta.peer,
+        beacon_block: Some(Arc::new(block)),
+        seen_timestamp: D,
+    });
+    rig.send_sync_message(SyncMessage::RpcBlock {
+        sync_request_id: SyncRequestId::BlocksByRange(block_meta.id),
+        peer_id: block_meta.peer,
+        beacon_block: None,
+        seen_timestamp: D,
+    });
+    rig.complete_by_range_data_requests(by_range_data);
+
+    rig.send_sync_message(SyncMessage::RpcError {
+        peer_id: proof_peer,
+        sync_request_id: SyncRequestId::ExecutionProofsByRange(proof_req_id),
+        error: RPCError::UnsupportedProtocol,
+    });
+
+    if rig
+        .pop_received_network_event(|ev| match ev {
+            NetworkMessage::SendRequest {
+                request:
+                    RequestType::BlocksByRange(OldBlocksByRangeRequest::V2(
+                        OldBlocksByRangeRequestV2 { start_slot, .. },
+                    )),
+                ..
+            } if *start_slot == block_meta.start_slot => Some(()),
+            _ => None,
+        })
+        .is_ok()
+    {
+        panic!("unexpected BlocksByRange retry on unsupported protocol");
+    }
+
+    let (_, retry_peer, retry_start_slot, _) =
+        rig.find_execution_proofs_by_range_request(filter().epoch(epoch));
+    assert_eq!(retry_start_slot, block_meta.start_slot);
+    assert_ne!(retry_peer, proof_peer);
+}
+
+#[test]
+fn range_sync_ignores_bad_proofs_when_cached() {
+    let Some(mut rig) = TestRig::test_setup_after_fulu_with_zkvm() else {
+        return;
+    };
+
+    let head_root = Hash256::random();
+    let zkvm_peer = rig.add_head_zkvm_peer_with_root(head_root);
+    let _supernode_peer = rig.add_head_peer_with_root(head_root);
+
+    let (block_meta, by_range_data) = rig.find_blocks_by_range_request_with_meta(filter());
+    let epoch = Slot::new(block_meta.start_slot)
+        .epoch(E::slots_per_epoch())
+        .as_u64();
+    let (proof_req_id, proof_peer, proof_start_slot, _) =
+        rig.find_execution_proofs_by_range_request(filter().epoch(epoch));
+
+    assert_eq!(proof_start_slot, block_meta.start_slot);
+    assert_eq!(proof_peer, zkvm_peer);
+
+    let mut block = rig.rand_block();
+    *block.message_mut().slot_mut() = Slot::new(block_meta.start_slot);
+
+    let block_root = block.canonical_root();
+    let block_hash = block
+        .message()
+        .body()
+        .execution_payload()
+        .expect("execution payload should exist")
+        .execution_payload_ref()
+        .block_hash();
+
+    let min_proofs = rig
+        .harness
+        .chain
+        .spec
+        .zkvm_min_proofs_required()
+        .expect("zkvm enabled");
+
+    let proofs = (0..min_proofs)
+        .map(|i| {
+            ExecutionProof::new(
+                ExecutionProofId::new(u8::try_from(i).expect("proof id fits")).unwrap(),
+                block.slot(),
+                block_hash,
+                block_root,
+                vec![1, 2, 3],
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+
+    rig.harness
+        .chain
+        .data_availability_checker
+        .put_verified_execution_proofs(block_root, proofs)
+        .unwrap();
+
+    rig.send_sync_message(SyncMessage::RpcBlock {
+        sync_request_id: SyncRequestId::BlocksByRange(block_meta.id),
+        peer_id: block_meta.peer,
+        beacon_block: Some(Arc::new(block)),
+        seen_timestamp: D,
+    });
+    rig.send_sync_message(SyncMessage::RpcBlock {
+        sync_request_id: SyncRequestId::BlocksByRange(block_meta.id),
+        peer_id: block_meta.peer,
+        beacon_block: None,
+        seen_timestamp: D,
+    });
+
+    rig.complete_by_range_data_requests(by_range_data);
+
+    let wrong_hash = if block_hash == ExecutionBlockHash::zero() {
+        ExecutionBlockHash::repeat_byte(0x11)
+    } else {
+        ExecutionBlockHash::zero()
+    };
+
+    let bad_proof = ExecutionProof::new(
+        ExecutionProofId::new(0).unwrap(),
+        Slot::new(block_meta.start_slot),
+        wrong_hash,
+        block_root,
+        vec![1, 2, 3],
+    )
+    .unwrap();
+
+    rig.send_sync_message(SyncMessage::RpcExecutionProof {
+        sync_request_id: SyncRequestId::ExecutionProofsByRange(proof_req_id),
+        peer_id: proof_peer,
+        execution_proof: Some(Arc::new(bad_proof)),
+        seen_timestamp: D,
+    });
+    rig.send_sync_message(SyncMessage::RpcExecutionProof {
+        sync_request_id: SyncRequestId::ExecutionProofsByRange(proof_req_id),
+        peer_id: proof_peer,
+        execution_proof: None,
+        seen_timestamp: D,
+    });
+
+    if rig
+        .pop_received_network_event(|ev| match ev {
+            NetworkMessage::SendRequest {
+                request:
+                    RequestType::ExecutionProofsByRange(ExecutionProofsByRangeRequest {
+                        start_slot,
+                        ..
+                    }),
+                ..
+            } if *start_slot == block_meta.start_slot => Some(()),
+            _ => None,
+        })
+        .is_ok()
+    {
+        panic!("unexpected execution proof retry when cache already satisfies requirement");
+    }
 }

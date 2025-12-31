@@ -348,6 +348,23 @@ impl<T: BeaconChainTypes> BackFillSync<T> {
                     CouplingError::BlobPeerFailure(msg) => {
                         tracing::debug!(?batch_id, msg, "Blob peer failure");
                     }
+                    CouplingError::ExecutionProofPeerFailure {
+                        error,
+                        peer,
+                        exceeded_retries,
+                    } => {
+                        tracing::debug!(?batch_id, ?peer, error, "Execution proof peer failure");
+                        if !*exceeded_retries {
+                            let mut failed_peers = HashSet::new();
+                            failed_peers.insert(*peer);
+                            return self.retry_execution_proof_batch(
+                                network,
+                                batch_id,
+                                request_id,
+                                failed_peers,
+                            );
+                        }
+                    }
                     CouplingError::InternalError(msg) => {
                         error!(?batch_id, msg, "Block components coupling internal error");
                     }
@@ -991,6 +1008,46 @@ impl<T: BeaconChainTypes> BackFillSync<T> {
                 }
                 Err(e) => {
                     debug!(?batch_id, id, e, "Failed to retry partial batch");
+                }
+            }
+        } else {
+            return Err(BackFillError::InvalidSyncState(
+                "Batch should exist to be retried".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Retries execution proof requests within the batch by creating a new proofs request.
+    pub fn retry_execution_proof_batch(
+        &mut self,
+        network: &mut SyncNetworkContext<T>,
+        batch_id: BatchId,
+        id: Id,
+        mut failed_peers: HashSet<PeerId>,
+    ) -> Result<(), BackFillError> {
+        if let Some(batch) = self.batches.get_mut(&batch_id) {
+            failed_peers.extend(&batch.failed_peers());
+            let req = batch.to_blocks_by_range_request().0;
+
+            let synced_peers = network
+                .network_globals()
+                .peers
+                .read()
+                .synced_peers_for_epoch(batch_id)
+                .cloned()
+                .collect::<HashSet<_>>();
+
+            match network.retry_execution_proofs_by_range(id, &synced_peers, &failed_peers, req) {
+                Ok(()) => {
+                    debug!(
+                        ?batch_id,
+                        id, "Retried execution proof requests from different peers"
+                    );
+                    return Ok(());
+                }
+                Err(e) => {
+                    debug!(?batch_id, id, e, "Failed to retry execution proof batch");
                 }
             }
         } else {

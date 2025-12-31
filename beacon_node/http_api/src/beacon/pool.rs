@@ -530,6 +530,7 @@ pub fn post_beacon_pool_attestations_v2<T: BeaconChainTypes>(
 /// Submits an execution proof to the beacon node.
 /// The proof will be validated and stored in the data availability checker.
 /// If valid, the proof will be published to the gossip network.
+/// If the proof makes a block available, the block will be imported.
 pub fn post_beacon_pool_execution_proofs<T: BeaconChainTypes>(
     network_tx_filter: &NetworkTxFilter<T>,
     beacon_pool_path: &BeaconPoolPathFilter<T>,
@@ -541,81 +542,92 @@ pub fn post_beacon_pool_execution_proofs<T: BeaconChainTypes>(
         .and(warp_utils::json::json())
         .and(network_tx_filter.clone())
         .then(
-            |task_spawner: TaskSpawner<T::EthSpec>,
+            |_task_spawner: TaskSpawner<T::EthSpec>,
              chain: Arc<BeaconChain<T>>,
              proof: ExecutionProof,
-             network_tx: UnboundedSender<NetworkMessage<T::EthSpec>>| {
-                task_spawner.blocking_json_task(Priority::P0, move || {
-                    let proof = Arc::new(proof);
-
-                    // Validate the proof using the same logic as gossip validation
-                    let verified_proof: GossipVerifiedExecutionProof<T, Observe> =
-                        GossipVerifiedExecutionProof::new(proof.clone(), &chain).map_err(|e| {
-                            match e {
-                                GossipExecutionProofError::PriorKnown {
-                                    slot,
-                                    block_root,
-                                    proof_id,
-                                } => {
-                                    debug!(
-                                        %slot,
-                                        %block_root,
-                                        %proof_id,
-                                        "Execution proof already known"
-                                    );
-                                    warp_utils::reject::custom_bad_request(format!(
-                                        "proof already known for slot {} block_root {} proof_id {}",
-                                        slot, block_root, proof_id
-                                    ))
-                                }
-                                GossipExecutionProofError::PriorKnownUnpublished => {
-                                    // Proof is valid but was received via non-gossip source
-                                    // It's in the DA checker, so we should publish it to gossip
-                                    warp_utils::reject::custom_bad_request(
-                                        "proof already received but not yet published".to_string(),
-                                    )
-                                }
-                                _ => warp_utils::reject::object_invalid(format!(
-                                    "proof verification failed: {:?}",
-                                    e
-                                )),
-                            }
-                        })?;
-
-                    let slot = verified_proof.slot();
-                    let block_root = verified_proof.block_root();
-                    let proof_id = verified_proof.subnet_id();
-
-                    // Publish the proof to the gossip network
-                    utils::publish_pubsub_message(
-                        &network_tx,
-                        PubsubMessage::ExecutionProof(verified_proof.clone().into_inner()),
-                    )?;
-
-                    // Store the proof in the data availability checker
-                    if let Err(e) = chain
-                        .data_availability_checker
-                        .put_rpc_execution_proofs(block_root, vec![verified_proof.into_inner()])
-                    {
-                        warn!(
-                            %slot,
-                            %block_root,
-                            %proof_id,
-                            error = ?e,
-                            "Failed to store execution proof in DA checker"
-                        );
-                    }
-
-                    info!(
-                        %slot,
-                        %block_root,
-                        %proof_id,
-                        "Execution proof submitted and published"
-                    );
-
-                    Ok(())
-                })
+             network_tx: UnboundedSender<NetworkMessage<T::EthSpec>>| async move {
+                let result = publish_execution_proof(chain, proof, network_tx).await;
+                convert_rejection(result.map(|()| warp::reply::json(&()))).await
             },
         )
         .boxed()
+}
+
+/// Validate, publish, and process an execution proof.
+async fn publish_execution_proof<T: BeaconChainTypes>(
+    chain: Arc<BeaconChain<T>>,
+    proof: ExecutionProof,
+    network_tx: UnboundedSender<NetworkMessage<T::EthSpec>>,
+) -> Result<(), warp::Rejection> {
+    let proof = Arc::new(proof);
+
+    // Validate the proof using the same logic as gossip validation
+    let verified_proof: GossipVerifiedExecutionProof<T, Observe> =
+        GossipVerifiedExecutionProof::new(proof.clone(), &chain).map_err(|e| match e {
+            GossipExecutionProofError::PriorKnown {
+                slot,
+                block_root,
+                proof_id,
+            } => {
+                debug!(
+                    %slot,
+                    %block_root,
+                    %proof_id,
+                    "Execution proof already known"
+                );
+                warp_utils::reject::custom_bad_request(format!(
+                    "proof already known for slot {} block_root {} proof_id {}",
+                    slot, block_root, proof_id
+                ))
+            }
+            GossipExecutionProofError::PriorKnownUnpublished => {
+                // Proof is valid but was received via non-gossip source
+                // It's in the DA checker, so we should publish it to gossip
+                warp_utils::reject::custom_bad_request(
+                    "proof already received but not yet published".to_string(),
+                )
+            }
+            _ => warp_utils::reject::object_invalid(format!("proof verification failed: {:?}", e)),
+        })?;
+
+    let slot = verified_proof.slot();
+    let block_root = verified_proof.block_root();
+    let proof_id = verified_proof.subnet_id();
+
+    // Publish the proof to the gossip network
+    utils::publish_pubsub_message(
+        &network_tx,
+        PubsubMessage::ExecutionProof(verified_proof.clone().into_inner()),
+    )?;
+
+    // Store the proof in the data availability checker and check if block is now available.
+    // This properly triggers block import if all components are now available.
+    match chain
+        .process_rpc_execution_proofs(slot, block_root, vec![verified_proof.into_inner()])
+        .await
+    {
+        Ok(status) => {
+            info!(
+                %slot,
+                %block_root,
+                %proof_id,
+                ?status,
+                "Execution proof submitted and published"
+            );
+        }
+        Err(e) => {
+            // Log the error but don't fail the request - the proof was already
+            // published to gossip and stored in the DA checker. The error is
+            // likely due to the block already being imported or similar.
+            debug!(
+                %slot,
+                %block_root,
+                %proof_id,
+                error = ?e,
+                "Error processing execution proof availability (proof was still published)"
+            );
+        }
+    }
+
+    Ok(())
 }
