@@ -1,23 +1,22 @@
-# Mixed configuration: 3 normal nodes, 1 node with dummy EL
+# Mixed configuration: 3 normal nodes with reth, 3 zkvm nodes with dummy_el
 participants:
-  # Nodes with real execution layer (nodes 1-3)
+  # Normal nodes with real EL (nodes 1-3)
   - el_type: reth
     el_image: ghcr.io/paradigmxyz/reth:latest
     cl_type: lighthouse
     cl_image: lighthouse:local
     cl_extra_params:
-      - --target-peers=3
+      - --target-peers=5
     count: 3
-  # Node with dummy execution layer (node 4)
-  # TODO(zkproofs): Currently there is no way to add no client here
-  # We likely want to use our dummy zkvm EL here
+  # ZKVM nodes with dummy EL (nodes 4-6)
+  # Uses dummy_el wrapped as geth - returns SYNCING for all engine calls
   - el_type: geth
     el_image: dummy_el:local
     cl_type: lighthouse
     cl_image: lighthouse:local
     cl_extra_params:
       - --activate-zkvm
-      - --target-peers=3
+      - --target-peers=5
     count: 3
 network_params:
   electra_fork_epoch: 0
