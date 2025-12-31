@@ -1105,9 +1105,10 @@ fn range_sync_execution_proof_retries_exhaust_then_block_retry() {
     rig.pop_received_network_event(|ev| match ev {
         NetworkMessage::SendRequest {
             request:
-                RequestType::BlocksByRange(OldBlocksByRangeRequest::V2(
-                    OldBlocksByRangeRequestV2 { start_slot, .. },
-                )),
+                RequestType::BlocksByRange(OldBlocksByRangeRequest::V2(OldBlocksByRangeRequestV2 {
+                    start_slot,
+                    ..
+                })),
             ..
         } if *start_slot == block_meta.start_slot => Some(()),
         _ => None,
