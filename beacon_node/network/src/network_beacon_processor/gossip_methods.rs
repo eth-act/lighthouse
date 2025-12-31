@@ -820,13 +820,29 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                         debug!(
                             %block_root,
                             %proof_id,
-                            "Gossip execution proof already processed via the EL. Accepting the proof without re-processing."
+                            "Gossip execution proof already processed via the EL. Checking availability."
                         );
                         self.propagate_validation_result(
                             message_id,
                             peer_id,
                             MessageAcceptance::Accept,
                         );
+
+                        // The proof is already in the DA checker (from HTTP API).
+                        // Check if this makes any pending blocks complete and import them.
+                        let slot = execution_proof.slot;
+                        if let Err(e) = self
+                            .chain
+                            .process_rpc_execution_proofs(slot, block_root, vec![execution_proof])
+                            .await
+                        {
+                            debug!(
+                                %block_root,
+                                %proof_id,
+                                error = ?e,
+                                "Failed to process availability for prior known execution proof"
+                            );
+                        }
                     }
                     GossipExecutionProofError::PriorKnown {
                         block_root,

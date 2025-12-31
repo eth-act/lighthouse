@@ -1034,6 +1034,12 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 .process_prune_blobs(data_availability_boundary);
         }
 
+        // Prune execution proofs in the background.
+        if let Some(execution_proof_boundary) = self.execution_proof_boundary() {
+            self.store_migrator
+                .process_prune_execution_proofs(execution_proof_boundary);
+        }
+
         // Take a write-lock on the canonical head and signal for it to prune.
         self.canonical_head.fork_choice_write_lock().prune()?;
 

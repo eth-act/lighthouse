@@ -14,7 +14,7 @@ use beacon_processor::{
 use lighthouse_network::rpc::InboundRequestId;
 use lighthouse_network::rpc::methods::{
     BlobsByRangeRequest, BlobsByRootRequest, DataColumnsByRangeRequest, DataColumnsByRootRequest,
-    ExecutionProofsByRootRequest, LightClientUpdatesByRangeRequest,
+    ExecutionProofsByRangeRequest, ExecutionProofsByRootRequest, LightClientUpdatesByRangeRequest,
 };
 use lighthouse_network::service::api_types::CustodyBackfillBatchId;
 use lighthouse_network::{
@@ -696,6 +696,24 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         self.try_send(BeaconWorkEvent {
             drop_during_sync: false,
             work: Work::ExecutionProofsByRootsRequest(Box::new(process_fn)),
+        })
+    }
+
+    /// Create a new work event to process `ExecutionProofsByRangeRequest`s from the RPC network.
+    pub fn send_execution_proofs_by_range_request(
+        self: &Arc<Self>,
+        peer_id: PeerId,
+        inbound_request_id: InboundRequestId,
+        request: ExecutionProofsByRangeRequest,
+    ) -> Result<(), Error<T::EthSpec>> {
+        let processor = self.clone();
+        let process_fn = move || {
+            processor.handle_execution_proofs_by_range_request(peer_id, inbound_request_id, request)
+        };
+
+        self.try_send(BeaconWorkEvent {
+            drop_during_sync: false,
+            work: Work::ExecutionProofsByRangeRequest(Box::new(process_fn)),
         })
     }
 

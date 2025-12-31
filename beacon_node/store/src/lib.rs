@@ -40,6 +40,7 @@ use strum::{EnumIter, EnumString, IntoStaticStr};
 pub use types::*;
 
 const DATA_COLUMN_DB_KEY_SIZE: usize = 32 + 8;
+const EXECUTION_PROOF_DB_KEY_SIZE: usize = 32 + 1; // block_root + proof_id
 
 pub type ColumnIter<'a, K> = Box<dyn Iterator<Item = Result<(K, Vec<u8>), Error>> + 'a>;
 pub type ColumnKeyIter<'a, K> = Box<dyn Iterator<Item = Result<K, Error>> + 'a>;
@@ -171,6 +172,25 @@ pub fn parse_data_column_key(data: Vec<u8>) -> Result<(Hash256, ColumnIndex), Er
     Ok((block_root, column_index))
 }
 
+pub fn get_execution_proof_key(block_root: &Hash256, proof_id: u8) -> Vec<u8> {
+    let mut result = block_root.as_slice().to_vec();
+    result.push(proof_id);
+    result
+}
+
+pub fn parse_execution_proof_key(data: Vec<u8>) -> Result<(Hash256, u8), Error> {
+    if data.len() != EXECUTION_PROOF_DB_KEY_SIZE {
+        return Err(Error::InvalidKey(format!(
+            "Unexpected BeaconExecutionProof key len {}",
+            data.len()
+        )));
+    }
+    let (block_root_bytes, proof_id_bytes) = data.split_at(32);
+    let block_root = Hash256::from_slice(block_root_bytes);
+    let proof_id = proof_id_bytes[0];
+    Ok((block_root, proof_id))
+}
+
 #[must_use]
 #[derive(Clone)]
 pub enum KeyValueStoreOp {
@@ -263,6 +283,12 @@ pub enum DBColumn {
     BeaconDataColumn,
     #[strum(serialize = "bdi")]
     BeaconDataColumnCustodyInfo,
+    /// For storing execution proofs (zkVM proofs) in the blob database.
+    ///
+    /// - Key: `Hash256` block root + `u8` proof_id (33 bytes total).
+    /// - Value: SSZ-encoded ExecutionProof.
+    #[strum(serialize = "bep")]
+    BeaconExecutionProof,
     /// For full `BeaconState`s in the hot database (finalized or fork-boundary states).
     ///
     /// DEPRECATED.
@@ -437,6 +463,7 @@ impl DBColumn {
             | Self::LightClientUpdate
             | Self::Dummy => 8,
             Self::BeaconDataColumn => DATA_COLUMN_DB_KEY_SIZE,
+            Self::BeaconExecutionProof => EXECUTION_PROOF_DB_KEY_SIZE,
         }
     }
 }

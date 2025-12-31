@@ -9,12 +9,13 @@ use crate::metadata::{
     ANCHOR_INFO_KEY, ANCHOR_UNINITIALIZED, AnchorInfo, BLOB_INFO_KEY, BlobInfo,
     COMPACTION_TIMESTAMP_KEY, CONFIG_KEY, CURRENT_SCHEMA_VERSION, CompactionTimestamp,
     DATA_COLUMN_CUSTODY_INFO_KEY, DATA_COLUMN_INFO_KEY, DataColumnCustodyInfo, DataColumnInfo,
-    SCHEMA_VERSION_KEY, SPLIT_KEY, STATE_UPPER_LIMIT_NO_RETAIN, SchemaVersion,
+    EXECUTION_PROOF_INFO_KEY, ExecutionProofInfo, SCHEMA_VERSION_KEY, SPLIT_KEY,
+    STATE_UPPER_LIMIT_NO_RETAIN, SchemaVersion,
 };
 use crate::state_cache::{PutStateOutcome, StateCache};
 use crate::{
     BlobSidecarListFromRoot, DBColumn, DatabaseBlock, Error, ItemStore, KeyValueStoreOp, StoreItem,
-    StoreOp, get_data_column_key,
+    StoreOp, get_data_column_key, get_execution_proof_key,
     metrics::{self, COLD_METRIC, HOT_METRIC},
     parse_data_column_key,
 };
@@ -61,6 +62,8 @@ pub struct HotColdDB<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> {
     blob_info: RwLock<BlobInfo>,
     /// The starting slots for the range of data columns stored in the database.
     data_column_info: RwLock<DataColumnInfo>,
+    /// The starting slots for the range of execution proofs stored in the database.
+    execution_proof_info: RwLock<ExecutionProofInfo>,
     pub(crate) config: StoreConfig,
     pub hierarchy: HierarchyModuli,
     /// Cold database containing compact historical data.
@@ -93,6 +96,7 @@ struct BlockCache<E: EthSpec> {
     block_cache: LruCache<Hash256, SignedBeaconBlock<E>>,
     blob_cache: LruCache<Hash256, BlobSidecarList<E>>,
     data_column_cache: LruCache<Hash256, HashMap<ColumnIndex, Arc<DataColumnSidecar<E>>>>,
+    execution_proof_cache: LruCache<Hash256, Vec<Arc<ExecutionProof>>>,
     data_column_custody_info_cache: Option<DataColumnCustodyInfo>,
 }
 
@@ -102,6 +106,7 @@ impl<E: EthSpec> BlockCache<E> {
             block_cache: LruCache::new(size),
             blob_cache: LruCache::new(size),
             data_column_cache: LruCache::new(size),
+            execution_proof_cache: LruCache::new(size),
             data_column_custody_info_cache: None,
         }
     }
@@ -115,6 +120,9 @@ impl<E: EthSpec> BlockCache<E> {
         self.data_column_cache
             .get_or_insert_mut(block_root, Default::default)
             .insert(data_column.index, data_column);
+    }
+    pub fn put_execution_proofs(&mut self, block_root: Hash256, proofs: Vec<Arc<ExecutionProof>>) {
+        self.execution_proof_cache.put(block_root, proofs);
     }
     pub fn put_data_column_custody_info(
         &mut self,
@@ -139,6 +147,12 @@ impl<E: EthSpec> BlockCache<E> {
             .get(block_root)
             .and_then(|map| map.get(column_index).cloned())
     }
+    pub fn get_execution_proofs(
+        &mut self,
+        block_root: &Hash256,
+    ) -> Option<Vec<Arc<ExecutionProof>>> {
+        self.execution_proof_cache.get(block_root).cloned()
+    }
     pub fn get_data_column_custody_info(&self) -> Option<DataColumnCustodyInfo> {
         self.data_column_custody_info_cache.clone()
     }
@@ -151,10 +165,14 @@ impl<E: EthSpec> BlockCache<E> {
     pub fn delete_data_columns(&mut self, block_root: &Hash256) {
         let _ = self.data_column_cache.pop(block_root);
     }
+    pub fn delete_execution_proofs(&mut self, block_root: &Hash256) {
+        let _ = self.execution_proof_cache.pop(block_root);
+    }
     pub fn delete(&mut self, block_root: &Hash256) {
         self.delete_block(block_root);
         self.delete_blobs(block_root);
         self.delete_data_columns(block_root);
+        self.delete_execution_proofs(block_root);
     }
 }
 
@@ -232,6 +250,7 @@ impl<E: EthSpec> HotColdDB<E, MemoryStore<E>, MemoryStore<E>> {
             anchor_info: RwLock::new(ANCHOR_UNINITIALIZED),
             blob_info: RwLock::new(BlobInfo::default()),
             data_column_info: RwLock::new(DataColumnInfo::default()),
+            execution_proof_info: RwLock::new(ExecutionProofInfo::default()),
             cold_db: MemoryStore::open(),
             blobs_db: MemoryStore::open(),
             hot_db: MemoryStore::open(),
@@ -286,6 +305,7 @@ impl<E: EthSpec> HotColdDB<E, BeaconNodeBackend<E>, BeaconNodeBackend<E>> {
             anchor_info,
             blob_info: RwLock::new(BlobInfo::default()),
             data_column_info: RwLock::new(DataColumnInfo::default()),
+            execution_proof_info: RwLock::new(ExecutionProofInfo::default()),
             blobs_db: BeaconNodeBackend::open(&config, blobs_db_path)?,
             cold_db: BeaconNodeBackend::open(&config, cold_path)?,
             hot_db,
@@ -395,10 +415,38 @@ impl<E: EthSpec> HotColdDB<E, BeaconNodeBackend<E>, BeaconNodeBackend<E>> {
             new_data_column_info.clone(),
         )?;
 
+        // Initialize execution proof info
+        let execution_proof_info = db.load_execution_proof_info()?;
+        let zkvm_fork_slot = db
+            .spec
+            .zkvm_fork_epoch()
+            .map(|epoch| epoch.start_slot(E::slots_per_epoch()));
+        let new_execution_proof_info = match &execution_proof_info {
+            Some(execution_proof_info) => {
+                // Set the oldest execution proof slot to the fork slot if it is not yet set.
+                let oldest_execution_proof_slot = execution_proof_info
+                    .oldest_execution_proof_slot
+                    .or(zkvm_fork_slot);
+                ExecutionProofInfo {
+                    oldest_execution_proof_slot,
+                }
+            }
+            // First start.
+            None => ExecutionProofInfo {
+                // Set the oldest execution proof slot to the fork slot if it is not yet set.
+                oldest_execution_proof_slot: zkvm_fork_slot,
+            },
+        };
+        db.compare_and_set_execution_proof_info_with_write(
+            <_>::default(),
+            new_execution_proof_info.clone(),
+        )?;
+
         info!(
             path = ?blobs_db_path,
             oldest_blob_slot = ?new_blob_info.oldest_blob_slot,
             oldest_data_column_slot = ?new_data_column_info.oldest_data_column_slot,
+            oldest_execution_proof_slot = ?new_execution_proof_info.oldest_execution_proof_slot,
             "Blob DB initialized"
         );
 
@@ -1023,6 +1071,47 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
                 DBColumn::BeaconDataColumn,
                 get_data_column_key(block_root, &data_column.index),
                 data_column.as_ssz_bytes(),
+            ));
+        }
+    }
+
+    /// Store execution proofs for a block.
+    pub fn put_execution_proofs(
+        &self,
+        block_root: &Hash256,
+        proofs: &[ExecutionProof],
+    ) -> Result<(), Error> {
+        for proof in proofs {
+            self.blobs_db.put_bytes(
+                DBColumn::BeaconExecutionProof,
+                &get_execution_proof_key(block_root, proof.proof_id.as_u8()),
+                &proof.as_ssz_bytes(),
+            )?;
+        }
+        if !proofs.is_empty() {
+            let cached = proofs
+                .iter()
+                .map(|proof| Arc::new(proof.clone()))
+                .collect::<Vec<_>>();
+            self.block_cache
+                .as_ref()
+                .inspect(|cache| cache.lock().put_execution_proofs(*block_root, cached));
+        }
+        Ok(())
+    }
+
+    /// Create key-value store operations for storing execution proofs.
+    pub fn execution_proofs_as_kv_store_ops(
+        &self,
+        block_root: &Hash256,
+        proofs: &[ExecutionProof],
+        ops: &mut Vec<KeyValueStoreOp>,
+    ) {
+        for proof in proofs {
+            ops.push(KeyValueStoreOp::PutKeyValue(
+                DBColumn::BeaconExecutionProof,
+                get_execution_proof_key(block_root, proof.proof_id.as_u8()),
+                proof.as_ssz_bytes(),
             ));
         }
     }
@@ -2558,6 +2647,47 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         }
     }
 
+    /// Fetch all execution proofs for a given block from the store.
+    pub fn get_execution_proofs(
+        &self,
+        block_root: &Hash256,
+    ) -> Result<Vec<Arc<ExecutionProof>>, Error> {
+        if let Some(proofs) = self
+            .block_cache
+            .as_ref()
+            .and_then(|cache| cache.lock().get_execution_proofs(block_root))
+        {
+            return Ok(proofs);
+        }
+
+        let mut proofs = Vec::new();
+        let prefix = block_root.as_slice();
+
+        for result in self
+            .blobs_db
+            .iter_column_from::<Vec<u8>>(DBColumn::BeaconExecutionProof, prefix)
+        {
+            let (key, value) = result?;
+            // Check if key starts with our block_root prefix
+            if !key.starts_with(prefix) {
+                // We've moved past this block's proofs
+                break;
+            }
+            let proof = Arc::new(ExecutionProof::from_ssz_bytes(&value)?);
+            proofs.push(proof);
+        }
+
+        if !proofs.is_empty() {
+            self.block_cache.as_ref().inspect(|cache| {
+                cache
+                    .lock()
+                    .put_execution_proofs(*block_root, proofs.clone())
+            });
+        }
+
+        Ok(proofs)
+    }
+
     /// Fetch all keys in the data_column column with prefix `block_root`
     pub fn get_data_column_keys(&self, block_root: Hash256) -> Result<Vec<ColumnIndex>, Error> {
         self.blobs_db
@@ -2875,6 +3005,77 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         data_column_info: &DataColumnInfo,
     ) -> KeyValueStoreOp {
         data_column_info.as_kv_store_op(DATA_COLUMN_INFO_KEY)
+    }
+
+    /// Get a clone of the store's execution proof info.
+    ///
+    /// To do mutations, use `compare_and_set_execution_proof_info`.
+    pub fn get_execution_proof_info(&self) -> ExecutionProofInfo {
+        self.execution_proof_info.read_recursive().clone()
+    }
+
+    /// Initialize the `ExecutionProofInfo` when starting from genesis or a checkpoint.
+    pub fn init_execution_proof_info(&self, anchor_slot: Slot) -> Result<KeyValueStoreOp, Error> {
+        let oldest_execution_proof_slot = self.spec.zkvm_fork_epoch().map(|fork_epoch| {
+            std::cmp::max(anchor_slot, fork_epoch.start_slot(E::slots_per_epoch()))
+        });
+        let execution_proof_info = ExecutionProofInfo {
+            oldest_execution_proof_slot,
+        };
+        self.compare_and_set_execution_proof_info(
+            self.get_execution_proof_info(),
+            execution_proof_info,
+        )
+    }
+
+    /// Atomically update the execution proof info from `prev_value` to `new_value`.
+    ///
+    /// Return a `KeyValueStoreOp` which should be written to disk, possibly atomically with other
+    /// values.
+    ///
+    /// Return an `ExecutionProofInfoConcurrentMutation` error if the `prev_value` provided
+    /// is not correct.
+    pub fn compare_and_set_execution_proof_info(
+        &self,
+        prev_value: ExecutionProofInfo,
+        new_value: ExecutionProofInfo,
+    ) -> Result<KeyValueStoreOp, Error> {
+        let mut execution_proof_info = self.execution_proof_info.write();
+        if *execution_proof_info == prev_value {
+            let kv_op = self.store_execution_proof_info_in_batch(&new_value);
+            *execution_proof_info = new_value;
+            Ok(kv_op)
+        } else {
+            Err(Error::ExecutionProofInfoConcurrentMutation)
+        }
+    }
+
+    /// As for `compare_and_set_execution_proof_info`, but also writes to disk immediately.
+    pub fn compare_and_set_execution_proof_info_with_write(
+        &self,
+        prev_value: ExecutionProofInfo,
+        new_value: ExecutionProofInfo,
+    ) -> Result<(), Error> {
+        let kv_store_op = self.compare_and_set_execution_proof_info(prev_value, new_value)?;
+        self.hot_db.do_atomically(vec![kv_store_op])
+    }
+
+    /// Load the execution proof info from disk, but do not set `self.execution_proof_info`.
+    fn load_execution_proof_info(&self) -> Result<Option<ExecutionProofInfo>, Error> {
+        self.hot_db
+            .get(&EXECUTION_PROOF_INFO_KEY)
+            .map_err(|e| Error::LoadExecutionProofInfo(e.into()))
+    }
+
+    /// Store the given `execution_proof_info` to disk.
+    ///
+    /// The argument is intended to be `self.execution_proof_info`, but is passed manually to avoid
+    /// issues with recursive locking.
+    fn store_execution_proof_info_in_batch(
+        &self,
+        execution_proof_info: &ExecutionProofInfo,
+    ) -> KeyValueStoreOp {
+        execution_proof_info.as_kv_store_op(EXECUTION_PROOF_INFO_KEY)
     }
 
     /// Return the slot-window describing the available historic states.
@@ -3393,6 +3594,178 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         debug!("Blob pruning complete");
 
         Ok(())
+    }
+
+    /// Try to prune execution proofs older than the execution proof boundary.
+    ///
+    /// Proofs from the epoch `execution_proof_boundary` are retained.
+    /// This epoch is an _exclusive_ endpoint for the pruning process.
+    ///
+    /// This function only supports pruning execution proofs older than the split point,
+    /// which is older than (or equal to) finalization.
+    pub fn try_prune_execution_proofs(
+        &self,
+        force: bool,
+        execution_proof_boundary: Epoch,
+    ) -> Result<(), Error> {
+        // Check if zkvm fork is enabled
+        if self.spec.zkvm_fork_epoch().is_none() {
+            debug!("ZKVM fork is disabled");
+            return Ok(());
+        }
+
+        let pruning_enabled = self.get_config().prune_blobs; // Use same config as blobs for now
+        if !force && !pruning_enabled {
+            debug!(
+                prune_blobs = pruning_enabled,
+                "Execution proof pruning is disabled"
+            );
+            return Ok(());
+        }
+
+        let execution_proof_info = self.get_execution_proof_info();
+        let Some(oldest_execution_proof_slot) = execution_proof_info.oldest_execution_proof_slot
+        else {
+            debug!("No execution proofs stored yet");
+            return Ok(());
+        };
+
+        let start_epoch = oldest_execution_proof_slot.epoch(E::slots_per_epoch());
+
+        // Prune execution proofs up until the `execution_proof_boundary - 1` or the split
+        // slot's epoch, whichever is older.
+        let split = self.get_split_info();
+        let end_epoch = std::cmp::min(
+            execution_proof_boundary.saturating_sub(1u64),
+            split.slot.epoch(E::slots_per_epoch()).saturating_sub(1u64),
+        );
+        let end_slot = end_epoch.end_slot(E::slots_per_epoch());
+
+        let can_prune = end_epoch != Epoch::new(0) && start_epoch <= end_epoch;
+        if !can_prune {
+            debug!(
+                %oldest_execution_proof_slot,
+                %execution_proof_boundary,
+                %split.slot,
+                %end_epoch,
+                %start_epoch,
+                "Execution proofs are pruned"
+            );
+            return Ok(());
+        }
+
+        debug!(
+            %end_epoch,
+            %execution_proof_boundary,
+            "Pruning execution proofs"
+        );
+
+        // Iterate blocks backwards from the `end_epoch`.
+        let Some((end_block_root, _)) = self
+            .forwards_block_roots_iterator_until(end_slot, end_slot, || {
+                self.get_hot_state(&split.state_root, true)?
+                    .ok_or(HotColdDBError::MissingSplitState(
+                        split.state_root,
+                        split.slot,
+                    ))
+                    .map(|state| (state, split.state_root))
+                    .map_err(Into::into)
+            })?
+            .next()
+            .transpose()?
+        else {
+            debug!(
+                %end_epoch,
+                %execution_proof_boundary,
+                "No execution proofs to prune"
+            );
+            return Ok(());
+        };
+
+        let mut db_ops = vec![];
+        let mut removed_block_roots = vec![];
+        let mut new_oldest_slot: Option<Slot> = None;
+
+        // Iterate blocks backwards until we reach blocks older than the boundary.
+        for tuple in ParentRootBlockIterator::new(self, end_block_root) {
+            let (block_root, blinded_block) = tuple?;
+            let slot = blinded_block.slot();
+
+            // Get all execution proof keys for this block
+            let keys = self.get_all_execution_proof_keys(&block_root);
+
+            // Check if any proofs exist for this block
+            let mut block_has_proofs = false;
+            for key in keys {
+                if self
+                    .blobs_db
+                    .key_exists(DBColumn::BeaconExecutionProof, &key)?
+                {
+                    block_has_proofs = true;
+                    db_ops.push(KeyValueStoreOp::DeleteKey(
+                        DBColumn::BeaconExecutionProof,
+                        key,
+                    ));
+                }
+            }
+
+            if block_has_proofs {
+                debug!(
+                    ?block_root,
+                    %slot,
+                    "Pruning execution proofs for block"
+                );
+                removed_block_roots.push(block_root);
+                new_oldest_slot = Some(slot);
+            }
+            // Continue iterating even if this block has no proofs - proofs may be sparse
+        }
+
+        // Commit deletions
+        if !db_ops.is_empty() {
+            debug!(
+                num_deleted = db_ops.len(),
+                "Deleting execution proofs from disk"
+            );
+            self.blobs_db.do_atomically(db_ops)?;
+        }
+
+        // TODO(zkproofs): Fix this to make it more readable
+        if !removed_block_roots.is_empty()
+            && let Some(mut block_cache) = self.block_cache.as_ref().map(|cache| cache.lock())
+        {
+            for block_root in removed_block_roots {
+                block_cache.delete_execution_proofs(&block_root);
+            }
+        }
+
+        // Update the execution proof info with the new oldest slot
+        if let Some(new_slot) = new_oldest_slot {
+            let new_oldest = end_slot + 1;
+            self.compare_and_set_execution_proof_info_with_write(
+                execution_proof_info.clone(),
+                ExecutionProofInfo {
+                    oldest_execution_proof_slot: Some(new_oldest),
+                },
+            )?;
+            debug!(
+                old_oldest = %new_slot,
+                new_oldest = %new_oldest,
+                "Updated execution proof info"
+            );
+        }
+
+        debug!("Execution proof pruning complete");
+
+        Ok(())
+    }
+
+    /// Get all possible execution proof keys for a given block root.
+    /// Returns keys for proof_ids 0 to MAX_PROOFS-1.
+    fn get_all_execution_proof_keys(&self, block_root: &Hash256) -> Vec<Vec<u8>> {
+        (0..types::MAX_PROOFS as u8)
+            .map(|proof_id| get_execution_proof_key(block_root, proof_id))
+            .collect()
     }
 
     /// Delete *all* states from the freezer database and update the anchor accordingly.

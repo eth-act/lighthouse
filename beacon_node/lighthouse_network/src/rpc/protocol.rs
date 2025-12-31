@@ -254,6 +254,9 @@ pub enum Protocol {
     /// The `ExecutionProofsByRoot` protocol name.
     #[strum(serialize = "execution_proofs_by_root")]
     ExecutionProofsByRoot,
+    /// The `ExecutionProofsByRange` protocol name.
+    #[strum(serialize = "execution_proofs_by_range")]
+    ExecutionProofsByRange,
     /// The `Ping` protocol name.
     Ping,
     /// The `MetaData` protocol name.
@@ -285,6 +288,7 @@ impl Protocol {
             Protocol::DataColumnsByRoot => Some(ResponseTermination::DataColumnsByRoot),
             Protocol::DataColumnsByRange => Some(ResponseTermination::DataColumnsByRange),
             Protocol::ExecutionProofsByRoot => Some(ResponseTermination::ExecutionProofsByRoot),
+            Protocol::ExecutionProofsByRange => Some(ResponseTermination::ExecutionProofsByRange),
             Protocol::Ping => None,
             Protocol::MetaData => None,
             Protocol::LightClientBootstrap => None,
@@ -316,6 +320,7 @@ pub enum SupportedProtocol {
     DataColumnsByRootV1,
     DataColumnsByRangeV1,
     ExecutionProofsByRootV1,
+    ExecutionProofsByRangeV1,
     PingV1,
     MetaDataV1,
     MetaDataV2,
@@ -341,6 +346,7 @@ impl SupportedProtocol {
             SupportedProtocol::DataColumnsByRootV1 => "1",
             SupportedProtocol::DataColumnsByRangeV1 => "1",
             SupportedProtocol::ExecutionProofsByRootV1 => "1",
+            SupportedProtocol::ExecutionProofsByRangeV1 => "1",
             SupportedProtocol::PingV1 => "1",
             SupportedProtocol::MetaDataV1 => "1",
             SupportedProtocol::MetaDataV2 => "2",
@@ -366,6 +372,7 @@ impl SupportedProtocol {
             SupportedProtocol::DataColumnsByRootV1 => Protocol::DataColumnsByRoot,
             SupportedProtocol::DataColumnsByRangeV1 => Protocol::DataColumnsByRange,
             SupportedProtocol::ExecutionProofsByRootV1 => Protocol::ExecutionProofsByRoot,
+            SupportedProtocol::ExecutionProofsByRangeV1 => Protocol::ExecutionProofsByRange,
             SupportedProtocol::PingV1 => Protocol::Ping,
             SupportedProtocol::MetaDataV1 => Protocol::MetaData,
             SupportedProtocol::MetaDataV2 => Protocol::MetaData,
@@ -417,10 +424,16 @@ impl SupportedProtocol {
             ]);
         }
         if fork_context.spec.is_zkvm_enabled() {
-            supported.push(ProtocolId::new(
-                SupportedProtocol::ExecutionProofsByRootV1,
-                Encoding::SSZSnappy,
-            ));
+            supported.extend_from_slice(&[
+                ProtocolId::new(
+                    SupportedProtocol::ExecutionProofsByRootV1,
+                    Encoding::SSZSnappy,
+                ),
+                ProtocolId::new(
+                    SupportedProtocol::ExecutionProofsByRangeV1,
+                    Encoding::SSZSnappy,
+                ),
+            ]);
         }
         supported
     }
@@ -535,6 +548,10 @@ impl ProtocolId {
                 DataColumnsByRangeRequest::ssz_max_len::<E>(),
             ),
             Protocol::ExecutionProofsByRoot => RpcLimits::new(0, spec.max_blocks_by_root_request),
+            Protocol::ExecutionProofsByRange => RpcLimits::new(
+                ExecutionProofsByRangeRequest::ssz_min_len(),
+                ExecutionProofsByRangeRequest::ssz_max_len(),
+            ),
             Protocol::Ping => RpcLimits::new(
                 <Ping as Encode>::ssz_fixed_len(),
                 <Ping as Encode>::ssz_fixed_len(),
@@ -572,6 +589,7 @@ impl ProtocolId {
                 rpc_data_column_limits::<E>(fork_context.current_fork_epoch(), &fork_context.spec)
             }
             Protocol::ExecutionProofsByRoot => rpc_execution_proof_limits(),
+            Protocol::ExecutionProofsByRange => rpc_execution_proof_limits(),
             Protocol::Ping => RpcLimits::new(
                 <Ping as Encode>::ssz_fixed_len(),
                 <Ping as Encode>::ssz_fixed_len(),
@@ -614,6 +632,7 @@ impl ProtocolId {
             | SupportedProtocol::BlocksByRootV1
             | SupportedProtocol::BlocksByRangeV1
             | SupportedProtocol::ExecutionProofsByRootV1
+            | SupportedProtocol::ExecutionProofsByRangeV1
             | SupportedProtocol::PingV1
             | SupportedProtocol::MetaDataV1
             | SupportedProtocol::MetaDataV2
@@ -748,6 +767,7 @@ pub enum RequestType<E: EthSpec> {
     DataColumnsByRoot(DataColumnsByRootRequest<E>),
     DataColumnsByRange(DataColumnsByRangeRequest),
     ExecutionProofsByRoot(ExecutionProofsByRootRequest),
+    ExecutionProofsByRange(ExecutionProofsByRangeRequest),
     LightClientBootstrap(LightClientBootstrapRequest),
     LightClientOptimisticUpdate,
     LightClientFinalityUpdate,
@@ -772,6 +792,7 @@ impl<E: EthSpec> RequestType<E> {
             RequestType::DataColumnsByRoot(req) => req.max_requested() as u64,
             RequestType::DataColumnsByRange(req) => req.max_requested::<E>(),
             RequestType::ExecutionProofsByRoot(req) => req.max_requested() as u64,
+            RequestType::ExecutionProofsByRange(req) => req.max_proofs_requested(),
             RequestType::Ping(_) => 1,
             RequestType::MetaData(_) => 1,
             RequestType::LightClientBootstrap(_) => 1,
@@ -802,6 +823,7 @@ impl<E: EthSpec> RequestType<E> {
             RequestType::DataColumnsByRoot(_) => SupportedProtocol::DataColumnsByRootV1,
             RequestType::DataColumnsByRange(_) => SupportedProtocol::DataColumnsByRangeV1,
             RequestType::ExecutionProofsByRoot(_) => SupportedProtocol::ExecutionProofsByRootV1,
+            RequestType::ExecutionProofsByRange(_) => SupportedProtocol::ExecutionProofsByRangeV1,
             RequestType::Ping(_) => SupportedProtocol::PingV1,
             RequestType::MetaData(req) => match req {
                 MetadataRequest::V1(_) => SupportedProtocol::MetaDataV1,
@@ -834,6 +856,7 @@ impl<E: EthSpec> RequestType<E> {
             RequestType::DataColumnsByRoot(_) => ResponseTermination::DataColumnsByRoot,
             RequestType::DataColumnsByRange(_) => ResponseTermination::DataColumnsByRange,
             RequestType::ExecutionProofsByRoot(_) => ResponseTermination::ExecutionProofsByRoot,
+            RequestType::ExecutionProofsByRange(_) => ResponseTermination::ExecutionProofsByRange,
             RequestType::Status(_) => unreachable!(),
             RequestType::Goodbye(_) => unreachable!(),
             RequestType::Ping(_) => unreachable!(),
@@ -884,6 +907,10 @@ impl<E: EthSpec> RequestType<E> {
                 SupportedProtocol::ExecutionProofsByRootV1,
                 Encoding::SSZSnappy,
             )],
+            RequestType::ExecutionProofsByRange(_) => vec![ProtocolId::new(
+                SupportedProtocol::ExecutionProofsByRangeV1,
+                Encoding::SSZSnappy,
+            )],
             RequestType::Ping(_) => vec![ProtocolId::new(
                 SupportedProtocol::PingV1,
                 Encoding::SSZSnappy,
@@ -923,6 +950,7 @@ impl<E: EthSpec> RequestType<E> {
             RequestType::DataColumnsByRoot(_) => false,
             RequestType::DataColumnsByRange(_) => false,
             RequestType::ExecutionProofsByRoot(_) => false,
+            RequestType::ExecutionProofsByRange(_) => false,
             RequestType::Ping(_) => true,
             RequestType::MetaData(_) => true,
             RequestType::LightClientBootstrap(_) => true,
@@ -1038,6 +1066,9 @@ impl<E: EthSpec> std::fmt::Display for RequestType<E> {
             }
             RequestType::ExecutionProofsByRoot(req) => {
                 write!(f, "Execution proofs by root: {:?}", req)
+            }
+            RequestType::ExecutionProofsByRange(req) => {
+                write!(f, "Execution proofs by range: {:?}", req)
             }
             RequestType::Ping(ping) => write!(f, "Ping: {}", ping.data),
             RequestType::MetaData(_) => write!(f, "MetaData request"),

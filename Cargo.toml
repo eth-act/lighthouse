@@ -62,6 +62,7 @@ members = [
     "crypto/kzg",
     "database_manager",
     "dummy_el",
+    "execution-witness-sentry",
     "lcli",
     "lighthouse",
     "lighthouse/environment",

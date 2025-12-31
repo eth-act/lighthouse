@@ -7,7 +7,7 @@ use beacon_chain::{BeaconChainError, BeaconChainTypes, BlockProcessStatus, WhenS
 use itertools::{Itertools, process_results};
 use lighthouse_network::rpc::methods::{
     BlobsByRangeRequest, BlobsByRootRequest, DataColumnsByRangeRequest, DataColumnsByRootRequest,
-    ExecutionProofsByRootRequest,
+    ExecutionProofsByRangeRequest, ExecutionProofsByRootRequest,
 };
 use lighthouse_network::rpc::*;
 use lighthouse_network::{PeerId, ReportSource, Response, SyncInfo};
@@ -15,9 +15,9 @@ use lighthouse_tracing::{
     SPAN_HANDLE_BLOBS_BY_RANGE_REQUEST, SPAN_HANDLE_BLOBS_BY_ROOT_REQUEST,
     SPAN_HANDLE_BLOCKS_BY_RANGE_REQUEST, SPAN_HANDLE_BLOCKS_BY_ROOT_REQUEST,
     SPAN_HANDLE_DATA_COLUMNS_BY_RANGE_REQUEST, SPAN_HANDLE_DATA_COLUMNS_BY_ROOT_REQUEST,
-    SPAN_HANDLE_EXECUTION_PROOFS_BY_ROOT_REQUEST, SPAN_HANDLE_LIGHT_CLIENT_BOOTSTRAP,
-    SPAN_HANDLE_LIGHT_CLIENT_FINALITY_UPDATE, SPAN_HANDLE_LIGHT_CLIENT_OPTIMISTIC_UPDATE,
-    SPAN_HANDLE_LIGHT_CLIENT_UPDATES_BY_RANGE,
+    SPAN_HANDLE_EXECUTION_PROOFS_BY_RANGE_REQUEST, SPAN_HANDLE_EXECUTION_PROOFS_BY_ROOT_REQUEST,
+    SPAN_HANDLE_LIGHT_CLIENT_BOOTSTRAP, SPAN_HANDLE_LIGHT_CLIENT_FINALITY_UPDATE,
+    SPAN_HANDLE_LIGHT_CLIENT_OPTIMISTIC_UPDATE, SPAN_HANDLE_LIGHT_CLIENT_UPDATES_BY_RANGE,
 };
 use methods::LightClientUpdatesByRangeRequest;
 use slot_clock::SlotClock;
@@ -436,19 +436,39 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
             request.already_have.iter().copied().collect();
         let count_needed = request.count_needed as usize;
 
-        // Get all execution proofs we have for this block from the DA checker
-        let Some(available_proofs) = self
+        // Get all execution proofs we have for this block from the DA checker, falling back to the
+        // store (which checks the store cache/DB).
+        let available_proofs = match self
             .chain
             .data_availability_checker
             .get_execution_proofs(&block_root)
-        else {
-            // No proofs available for this block
-            debug!(
-                %peer_id,
-                %block_root,
-                "No execution proofs available for peer"
-            );
-            return Ok(());
+        {
+            Some(proofs) => proofs,
+            None => match self.chain.store.get_execution_proofs(&block_root) {
+                Ok(proofs) => {
+                    if proofs.is_empty() {
+                        debug!(
+                            %peer_id,
+                            %block_root,
+                            "No execution proofs available for peer"
+                        );
+                        return Ok(());
+                    }
+                    proofs
+                }
+                Err(e) => {
+                    error!(
+                        %peer_id,
+                        %block_root,
+                        error = ?e,
+                        "Error fetching execution proofs for block root"
+                    );
+                    return Err((
+                        RpcErrorResponse::ServerError,
+                        "Error fetching execution proofs",
+                    ));
+                }
+            },
         };
 
         // Filter out proofs the peer already has and send up to count_needed
@@ -481,6 +501,137 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
             already_have = already_have_set.len(),
             sent = sent_count,
             "ExecutionProofsByRoot outgoing response processed"
+        );
+
+        Ok(())
+    }
+
+    /// Handle an `ExecutionProofsByRange` request from the peer.
+    #[instrument(
+        name = SPAN_HANDLE_EXECUTION_PROOFS_BY_RANGE_REQUEST,
+        parent = None,
+        level = "debug",
+        skip_all,
+        fields(peer_id = %peer_id, client = tracing::field::Empty)
+    )]
+    pub fn handle_execution_proofs_by_range_request(
+        &self,
+        peer_id: PeerId,
+        inbound_request_id: InboundRequestId,
+        req: ExecutionProofsByRangeRequest,
+    ) {
+        let client = self.network_globals.client(&peer_id);
+        Span::current().record("client", field::display(client.kind));
+
+        self.terminate_response_stream(
+            peer_id,
+            inbound_request_id,
+            self.handle_execution_proofs_by_range_request_inner(peer_id, inbound_request_id, req),
+            Response::ExecutionProofsByRange,
+        );
+    }
+
+    /// Handle an `ExecutionProofsByRange` request from the peer.
+    fn handle_execution_proofs_by_range_request_inner(
+        &self,
+        peer_id: PeerId,
+        inbound_request_id: InboundRequestId,
+        req: ExecutionProofsByRangeRequest,
+    ) -> Result<(), (RpcErrorResponse, &'static str)> {
+        debug!(
+            %peer_id,
+            count = req.count,
+            start_slot = req.start_slot,
+            "Received ExecutionProofsByRange Request"
+        );
+
+        let request_start_slot = Slot::from(req.start_slot);
+
+        // Check if zkvm is enabled and get the execution proof boundary
+        let execution_proof_boundary_slot = match self.chain.execution_proof_boundary() {
+            Some(boundary) => boundary.start_slot(T::EthSpec::slots_per_epoch()),
+            None => {
+                debug!("ZKVM fork is disabled");
+                return Err((RpcErrorResponse::InvalidRequest, "ZKVM fork is disabled"));
+            }
+        };
+
+        // Get the oldest execution proof slot from the store
+        let oldest_execution_proof_slot = self
+            .chain
+            .store
+            .get_execution_proof_info()
+            .oldest_execution_proof_slot
+            .unwrap_or(execution_proof_boundary_slot);
+
+        if request_start_slot < oldest_execution_proof_slot {
+            debug!(
+                %request_start_slot,
+                %oldest_execution_proof_slot,
+                %execution_proof_boundary_slot,
+                "Range request start slot is older than the oldest execution proof slot."
+            );
+
+            return if execution_proof_boundary_slot < oldest_execution_proof_slot {
+                Err((
+                    RpcErrorResponse::ResourceUnavailable,
+                    "execution proofs pruned within boundary",
+                ))
+            } else {
+                Err((
+                    RpcErrorResponse::InvalidRequest,
+                    "Req outside availability period",
+                ))
+            };
+        }
+
+        let block_roots = self.get_block_roots_for_slot_range(
+            req.start_slot,
+            req.count,
+            "ExecutionProofsByRange",
+        )?;
+        let mut proofs_sent = 0;
+
+        for root in block_roots {
+            // Get execution proofs from the database (like BlobsByRange does for blobs)
+            match self.chain.store.get_execution_proofs(&root) {
+                Ok(proofs) => {
+                    for proof in proofs {
+                        // Due to skip slots, proofs could be out of the range
+                        if proof.slot >= request_start_slot
+                            && proof.slot < request_start_slot + req.count
+                        {
+                            proofs_sent += 1;
+                            self.send_network_message(NetworkMessage::SendResponse {
+                                peer_id,
+                                inbound_request_id,
+                                response: Response::ExecutionProofsByRange(Some(proof)),
+                            });
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        request = ?req,
+                        %peer_id,
+                        block_root = ?root,
+                        error = ?e,
+                        "Error fetching execution proofs for block root"
+                    );
+                    return Err((
+                        RpcErrorResponse::ServerError,
+                        "Failed fetching execution proofs from database",
+                    ));
+                }
+            }
+        }
+
+        debug!(
+            %peer_id,
+            start_slot = req.start_slot,
+            count = req.count,
+            sent = proofs_sent,
+            "ExecutionProofsByRange outgoing response processed"
         );
 
         Ok(())
