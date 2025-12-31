@@ -66,10 +66,10 @@ impl Stream for ClEventStream {
                     let result = match event.event_type.as_str() {
                         "head" => serde_json::from_str::<HeadEvent>(&event.data)
                             .map(ClEvent::Head)
-                            .map_err(|e| Error::Parse(e)),
+                            .map_err(Error::Parse),
                         "block" => serde_json::from_str::<BlockEvent>(&event.data)
                             .map(ClEvent::Block)
-                            .map_err(|e| Error::Parse(e)),
+                            .map_err(Error::Parse),
                         _ => continue,
                     };
                     return Poll::Ready(Some(result));

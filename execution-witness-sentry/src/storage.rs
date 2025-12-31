@@ -117,10 +117,10 @@ impl BlockStorage {
         std::fs::write(data_path, combined_data)?;
 
         // Clean up old blocks if retention is configured
-        if let Some(retain) = self.retain {
-            if block_number > retain {
-                self.delete_old_block(block_number - retain)?;
-            }
+        if let Some(retain) = self.retain
+            && block_number > retain
+        {
+            self.delete_old_block(block_number - retain)?;
         }
 
         Ok(())

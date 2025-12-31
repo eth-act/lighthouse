@@ -182,51 +182,50 @@ async fn backfill_proofs(
     // Iterate through slots from zkvm_head + 1 to zkvm_head + slots_to_check
     for slot in (zkvm_head + 1)..=(zkvm_head + slots_to_check) {
         // First try to load saved proofs from disk
-        if let Some(storage) = storage {
-            if let Ok(Some((_metadata, saved_proofs))) = storage.load_proofs_by_slot(slot) {
-                if !saved_proofs.is_empty() {
-                    debug!(
-                        slot = slot,
-                        num_proofs = saved_proofs.len(),
-                        "Using saved proofs from disk"
-                    );
+        if let Some(storage) = storage
+            && let Ok(Some((_metadata, saved_proofs))) = storage.load_proofs_by_slot(slot)
+            && !saved_proofs.is_empty()
+        {
+            debug!(
+                slot = slot,
+                num_proofs = saved_proofs.len(),
+                "Using saved proofs from disk"
+            );
 
-                    for saved_proof in &saved_proofs {
-                        let proof = ExecutionProof {
-                            proof_id: saved_proof.proof_id,
-                            slot: saved_proof.slot,
-                            block_hash: saved_proof.block_hash.clone(),
-                            block_root: saved_proof.block_root.clone(),
-                            proof_data: saved_proof.proof_data.clone(),
-                        };
+            for saved_proof in &saved_proofs {
+                let proof = ExecutionProof {
+                    proof_id: saved_proof.proof_id,
+                    slot: saved_proof.slot,
+                    block_hash: saved_proof.block_hash.clone(),
+                    block_root: saved_proof.block_root.clone(),
+                    proof_data: saved_proof.proof_data.clone(),
+                };
 
-                        match zkvm_client.submit_execution_proof(&proof).await {
-                            Ok(()) => {
-                                debug!(
-                                    name = %zkvm_name,
-                                    slot = slot,
-                                    proof_id = saved_proof.proof_id,
-                                    "Backfill proof submitted (from disk)"
-                                );
-                                proofs_submitted += 1;
-                            }
-                            Err(e) => {
-                                let msg = e.to_string();
-                                if !msg.contains("already known") {
-                                    debug!(
-                                        name = %zkvm_name,
-                                        slot = slot,
-                                        proof_id = saved_proof.proof_id,
-                                        error = %e,
-                                        "Backfill proof failed"
-                                    );
-                                }
-                            }
+                match zkvm_client.submit_execution_proof(&proof).await {
+                    Ok(()) => {
+                        debug!(
+                            name = %zkvm_name,
+                            slot = slot,
+                            proof_id = saved_proof.proof_id,
+                            "Backfill proof submitted (from disk)"
+                        );
+                        proofs_submitted += 1;
+                    }
+                    Err(e) => {
+                        let msg = e.to_string();
+                        if !msg.contains("already known") {
+                            debug!(
+                                name = %zkvm_name,
+                                slot = slot,
+                                proof_id = saved_proof.proof_id,
+                                error = %e,
+                                "Backfill proof failed"
+                            );
                         }
                     }
-                    continue; // Move to next slot
                 }
             }
+            continue; // Move to next slot
         }
 
         // No saved proofs, fetch block info and generate new proofs
@@ -243,12 +242,9 @@ async fn backfill_proofs(
         };
 
         // Only submit proofs for blocks with execution payloads
-        let exec_hash = match block_info.execution_block_hash {
-            Some(hash) => hash,
-            None => {
-                debug!(slot = slot, "No execution payload, skipping");
-                continue;
-            }
+        let Some(exec_hash) = block_info.execution_block_hash else {
+            debug!(slot = slot, "No execution payload, skipping");
+            continue;
         };
 
         // Generate and submit proofs
@@ -361,12 +357,9 @@ async fn main() -> anyhow::Result<()> {
         "zkvm-enabled CL endpoints configured"
     );
 
-    let event_source = match event_source_client {
-        Some(es) => es,
-        None => {
-            error!("No non-zkvm CL endpoint available for event source");
-            return Ok(());
-        }
+    let Some(event_source) = event_source_client else {
+        error!("No non-zkvm CL endpoint available for event source");
+        return Ok(());
     };
     info!(name = %event_source.0, "CL event source configured");
 
@@ -570,14 +563,12 @@ async fn main() -> anyhow::Result<()> {
                 );
 
                 // Find the endpoint and fetch block + witness
-                let endpoint = match config.endpoints.iter().find(|e| e.name == el_event.endpoint_name) {
-                    Some(e) => e,
-                    None => continue,
+                let Some(endpoint) = config.endpoints.iter().find(|e| e.name == el_event.endpoint_name) else {
+                    continue;
                 };
 
-                let el_url = match Url::parse(&endpoint.el_url) {
-                    Ok(u) => u,
-                    Err(_) => continue,
+                let Ok(el_url) = Url::parse(&endpoint.el_url) else {
+                    continue;
                 };
                 let el_client = ElClient::new(el_url);
 
