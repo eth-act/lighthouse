@@ -5,14 +5,17 @@ use beacon_chain::{BeaconChain, BeaconChainError, BeaconChainTypes, WhenSlotSkip
 use eth2::beacon_response::{ExecutionOptimisticFinalizedMetadata, UnversionedResponse};
 use eth2::types::BlockId as CoreBlockId;
 use eth2::types::DataColumnIndicesQuery;
-use eth2::types::{BlobIndicesQuery, BlobWrapper, BlobsVersionedHashesQuery};
+use eth2::types::{
+    BlobIndicesQuery, BlobWrapper, BlobsVersionedHashesQuery, ExecutionProofIdsQuery,
+};
 use fixed_bytes::FixedBytesExtended;
+use ssz_types::RuntimeVariableList;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
 use types::{
-    BlobSidecarList, DataColumnSidecarList, EthSpec, ForkName, Hash256, SignedBeaconBlock,
-    SignedBlindedBeaconBlock, Slot,
+    BlobSidecarList, DataColumnSidecarList, EthSpec, ExecutionProof, ExecutionProofId, ForkName,
+    Hash256, MAX_PROOFS, SignedBeaconBlock, SignedBlindedBeaconBlock, Slot,
 };
 use warp::Rejection;
 
@@ -26,6 +29,12 @@ type Finalized = bool;
 type DataColumnsResponse<T> = (
     DataColumnSidecarList<<T as BeaconChainTypes>::EthSpec>,
     ForkName,
+    ExecutionOptimistic,
+    Finalized,
+);
+
+type ExecutionProofsResponse = (
+    RuntimeVariableList<Arc<ExecutionProof>>,
     ExecutionOptimistic,
     Finalized,
 );
@@ -310,6 +319,53 @@ impl BlockId {
             execution_optimistic,
             finalized,
         ))
+    }
+
+    pub fn get_execution_proofs<T: BeaconChainTypes>(
+        &self,
+        query: ExecutionProofIdsQuery,
+        chain: &BeaconChain<T>,
+    ) -> Result<ExecutionProofsResponse, Rejection> {
+        if !chain.spec.is_zkvm_enabled() {
+            return Err(warp_utils::reject::custom_bad_request(
+                "zkvm is not enabled for this node".to_string(),
+            ));
+        }
+
+        let (root, execution_optimistic, finalized) = self.root(chain)?;
+        let _block = BlockId::blinded_block_by_root(&root, chain)?.ok_or_else(|| {
+            warp_utils::reject::custom_not_found(format!("beacon block with root {}", root))
+        })?;
+
+        let mut proofs = chain
+            .store
+            .get_execution_proofs(&root)
+            .map_err(warp_utils::reject::unhandled_error)?;
+
+        if proofs.is_empty() {
+            return Err(warp_utils::reject::custom_not_found(format!(
+                "no execution proofs stored for block {root}"
+            )));
+        }
+
+        let proof_ids = query
+            .proof_ids
+            .map(|ids| {
+                ids.into_iter()
+                    .map(ExecutionProofId::new)
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()
+            .map_err(warp_utils::reject::custom_bad_request)?;
+
+        if let Some(proof_ids) = proof_ids {
+            proofs.retain(|proof| proof_ids.contains(&proof.proof_id));
+        }
+
+        let proof_list = RuntimeVariableList::new(proofs, MAX_PROOFS)
+            .map_err(|e| warp_utils::reject::custom_server_error(format!("{:?}", e)))?;
+
+        Ok((proof_list, execution_optimistic, finalized))
     }
 
     #[allow(clippy::type_complexity)]

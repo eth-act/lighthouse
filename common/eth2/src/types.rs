@@ -690,6 +690,13 @@ pub struct BlobIndicesQuery {
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ExecutionProofIdsQuery {
+    #[serde(default, deserialize_with = "option_query_vec")]
+    pub proof_ids: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BlobsVersionedHashesQuery {
     #[serde(default, deserialize_with = "option_query_vec")]
     pub versioned_hashes: Option<Vec<Hash256>>,

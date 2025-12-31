@@ -1297,6 +1297,17 @@ impl BeaconNodeHttpClient {
         Ok(path)
     }
 
+    /// Path for `v1/beacon/execution_proofs/{block_id}`
+    pub fn get_execution_proofs_path(&self, block_id: BlockId) -> Result<Url, Error> {
+        let mut path = self.eth_path(V1)?;
+        path.path_segments_mut()
+            .map_err(|()| Error::InvalidUrl(self.server.clone()))?
+            .push("beacon")
+            .push("execution_proofs")
+            .push(&block_id.to_string());
+        Ok(path)
+    }
+
     /// Path for `v1/beacon/blinded_blocks/{block_id}`
     pub fn get_beacon_blinded_blocks_path(&self, block_id: BlockId) -> Result<Url, Error> {
         let mut path = self.eth_path(V1)?;
@@ -1369,6 +1380,30 @@ impl BeaconNodeHttpClient {
                 .join(",");
             path.query_pairs_mut()
                 .append_pair("versioned_hashes", &hashes_string);
+        }
+
+        self.get_opt(path)
+            .await
+            .map(|opt| opt.map(BeaconResponse::Unversioned))
+    }
+
+    /// `GET v1/beacon/execution_proofs/{block_id}`
+    ///
+    /// Returns `Ok(None)` on a 404 error.
+    pub async fn get_execution_proofs(
+        &self,
+        block_id: BlockId,
+        proof_ids: Option<&[u8]>,
+    ) -> Result<Option<ExecutionOptimisticFinalizedBeaconResponse<Vec<ExecutionProof>>>, Error>
+    {
+        let mut path = self.get_execution_proofs_path(block_id)?;
+        if let Some(proof_ids) = proof_ids {
+            let ids_string = proof_ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            path.query_pairs_mut().append_pair("proof_ids", &ids_string);
         }
 
         self.get_opt(path)

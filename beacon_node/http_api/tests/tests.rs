@@ -118,7 +118,9 @@ impl ApiTesterConfig {
     }
 
     fn with_zkvm(mut self) -> Self {
+        // TODO(zkproofs): shouldn't need both of these to be enabled
         self.enable_zkvm = true;
+        self.spec.zkvm_enabled = true;
         self
     }
 }
@@ -1962,6 +1964,60 @@ impl ApiTester {
         self
     }
 
+    pub async fn test_get_execution_proofs(self, filter: bool) -> Self {
+        let head = self.chain.head_snapshot();
+        let block_root = head.beacon_block_root;
+
+        let proof_ids = [
+            ExecutionProofId::new(0).expect("Valid proof id"),
+            ExecutionProofId::new(1).expect("Valid proof id"),
+        ];
+        let proofs = proof_ids
+            .iter()
+            .map(|proof_id| self.create_test_execution_proof_with_id(*proof_id))
+            .collect::<Vec<_>>();
+
+        self.chain
+            .store
+            .put_execution_proofs(&block_root, &proofs)
+            .unwrap();
+
+        let filter_ids = filter.then(|| vec![proof_ids[1].as_u8()]);
+        let result = match self
+            .client
+            .get_execution_proofs(CoreBlockId::Root(block_root), filter_ids.as_deref())
+            .await
+        {
+            Ok(result) => result.unwrap().into_data(),
+            Err(e) => panic!("query failed incorrectly: {e:?}"),
+        };
+
+        if filter {
+            assert_eq!(result.len(), 1);
+            assert_eq!(result[0].proof_id, proof_ids[1]);
+        } else {
+            assert_eq!(result.len(), proofs.len());
+        }
+
+        self
+    }
+
+    pub async fn test_get_execution_proofs_zkvm_disabled(self) -> Self {
+        let block_id = BlockId(CoreBlockId::Head);
+        let (block_root, _, _) = block_id.root(&self.chain).unwrap();
+        let result = self
+            .client
+            .get_execution_proofs(CoreBlockId::Root(block_root), None)
+            .await;
+
+        match result {
+            Ok(response) => panic!("query should fail: {response:?}"),
+            Err(e) => assert_eq!(e.status().unwrap(), 400),
+        }
+
+        self
+    }
+
     pub async fn test_get_blobs_post_fulu_full_node(self, versioned_hashes: bool) -> Self {
         let block_id = BlockId(CoreBlockId::Head);
         let (block_root, _, _) = block_id.root(&self.chain).unwrap();
@@ -2752,6 +2808,11 @@ impl ApiTester {
 
     /// Helper to create a test execution proof for the head block
     fn create_test_execution_proof(&self) -> ExecutionProof {
+        let proof_id = ExecutionProofId::new(0).expect("Valid proof id");
+        self.create_test_execution_proof_with_id(proof_id)
+    }
+
+    fn create_test_execution_proof_with_id(&self, proof_id: ExecutionProofId) -> ExecutionProof {
         let head = self.chain.head_snapshot();
         let block_root = head.beacon_block_root;
         let slot = head.beacon_block.slot();
@@ -2763,7 +2824,6 @@ impl ApiTester {
             .map(|p| p.block_hash())
             .unwrap_or_else(|_| ExecutionBlockHash::zero());
 
-        let proof_id = ExecutionProofId::new(0).expect("Valid proof id");
         let proof_data = vec![0u8; 32]; // Dummy proof data
 
         ExecutionProof::new(proof_id, slot, block_hash, block_root, proof_data)
@@ -8165,6 +8225,24 @@ async fn get_blob_sidecars_pre_deneb() {
     ApiTester::new_from_config(config)
         .await
         .test_get_blob_sidecars_pre_deneb()
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn get_execution_proofs() {
+    ApiTester::new_with_zkvm()
+        .await
+        .test_get_execution_proofs(false)
+        .await
+        .test_get_execution_proofs(true)
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn get_execution_proofs_zkvm_disabled() {
+    ApiTester::new()
+        .await
+        .test_get_execution_proofs_zkvm_disabled()
         .await;
 }
 
