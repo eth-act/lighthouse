@@ -5,12 +5,18 @@ edition = "2021"
 
 [dependencies]
 async-trait = "0.1" #TODO(zkproofs): Remove
+clap = { workspace = true }
+eth2 = { workspace = true, features = ["events"] }
 execution_layer = { path = "../beacon_node/execution_layer" }
+futures = { workspace = true }
 hashbrown = "0.15"
 lru = "0.12"
+sensitive_url = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 types = { path = "../consensus/types" }
 
 [dev-dependencies]

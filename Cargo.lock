@@ -11321,13 +11321,19 @@ name = "zkvm_execution_layer"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "clap",
+ "eth2",
  "execution_layer",
  "fixed_bytes",
+ "futures",
  "hashbrown 0.15.5",
  "lru 0.12.5",
+ "sensitive_url",
  "serde",
  "thiserror 2.0.17",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "types",
 ]
 
