@@ -432,20 +432,20 @@ impl<T: BeaconChainTypes> DataAvailabilityChecker<T> {
             let proof_id = proof.proof_id;
 
             // If we have the block, check that the proof's block_hash matches the payload hash.
-            if let Some(execution_payload_hash) = execution_payload_hash {
-                if proof.block_hash != execution_payload_hash {
-                    warn!(
-                        ?block_root,
-                        ?proof_id,
-                        proof_hash = ?proof.block_hash,
-                        ?execution_payload_hash,
-                        "Proof execution payload hash mismatch"
-                    );
-                    return Err(AvailabilityCheckError::ExecutionPayloadHashMismatch {
-                        proof_hash: proof.block_hash,
-                        block_hash: execution_payload_hash,
-                    });
-                }
+            if let Some(execution_payload_hash) = execution_payload_hash
+                && proof.block_hash != execution_payload_hash
+            {
+                warn!(
+                    ?block_root,
+                    ?proof_id,
+                    proof_hash = ?proof.block_hash,
+                    ?execution_payload_hash,
+                    "Proof execution payload hash mismatch"
+                );
+                return Err(AvailabilityCheckError::ExecutionPayloadHashMismatch {
+                    proof_hash: proof.block_hash,
+                    block_hash: execution_payload_hash,
+                });
             }
 
             let verifier = verifier_registry.get_verifier(proof_id).ok_or_else(|| {

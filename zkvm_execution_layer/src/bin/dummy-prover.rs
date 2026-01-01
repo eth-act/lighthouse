@@ -185,12 +185,9 @@ impl Prover {
             }
         }
 
-        let payload = match block.message().body().execution_payload() {
-            Ok(payload) => payload,
-            Err(_) => {
-                debug!(?block_id, ?slot, "Block has no execution payload");
-                return None;
-            }
+        let Ok(payload) = block.message().body().execution_payload() else {
+            debug!(?block_id, ?slot, "Block has no execution payload");
+            return None;
         };
 
         Some(BlockProofInputs {

@@ -262,16 +262,16 @@ impl<E: EthSpec> PendingComponents<E> {
             return;
         }
 
-        if let Some(expected_hash) = self.execution_payload_hash() {
-            if proof.block_hash != expected_hash {
-                debug!(
-                    ?expected_hash,
-                    proof_hash = ?proof.block_hash,
-                    proof_id = ?proof.proof_id,
-                    "Execution proof payload hash mismatch"
-                );
-                return;
-            }
+        if let Some(expected_hash) = self.execution_payload_hash()
+            && proof.block_hash != expected_hash
+        {
+            debug!(
+                ?expected_hash,
+                proof_hash = ?proof.block_hash,
+                proof_id = ?proof.proof_id,
+                "Execution proof payload hash mismatch"
+            );
+            return;
         }
 
         self.verified_execution_proofs.push(proof);
