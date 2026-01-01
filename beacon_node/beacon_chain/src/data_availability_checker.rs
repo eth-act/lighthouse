@@ -406,43 +406,46 @@ impl<T: BeaconChainTypes> DataAvailabilityChecker<T> {
                 .put_verified_execution_proofs(block_root, owned_proofs);
         };
 
-        // Get the execution payload hash from the block
-        let execution_payload_hash = self
-            .availability_cache
-            .peek_pending_components(&block_root, |components| {
-                components.and_then(|c| c.block.as_ref().and_then(|b| b.execution_payload_hash()))
-            })
-            .ok_or_else(|| {
-                warn!(
-                    ?block_root,
-                    "Cannot verify proofs: block not in cache or has no execution payload"
-                );
-                AvailabilityCheckError::MissingExecutionPayload
-            })?;
+        // Get the execution payload hash from the block, if it is already cached.
+        let execution_payload_hash =
+            self.availability_cache
+                .peek_pending_components(&block_root, |components| {
+                    components
+                        .and_then(|c| c.block.as_ref().and_then(|b| b.execution_payload_hash()))
+                });
 
-        debug!(
-            ?block_root,
-            ?execution_payload_hash,
-            "Got execution payload hash for proof verification"
-        );
+        if let Some(execution_payload_hash) = execution_payload_hash {
+            debug!(
+                ?block_root,
+                ?execution_payload_hash,
+                "Got execution payload hash for proof verification"
+            );
+        } else {
+            debug!(
+                ?block_root,
+                "Execution payload hash not available yet, deferring block hash check"
+            );
+        }
 
         let mut verified_proofs = Vec::new();
         for proof in proofs {
             let proof_id = proof.proof_id;
 
-            // Check that the proof's block_hash matches the execution payload hash
-            if proof.block_hash != execution_payload_hash {
-                warn!(
-                    ?block_root,
-                    ?proof_id,
-                    proof_hash = ?proof.block_hash,
-                    ?execution_payload_hash,
-                    "Proof execution payload hash mismatch"
-                );
-                return Err(AvailabilityCheckError::ExecutionPayloadHashMismatch {
-                    proof_hash: proof.block_hash,
-                    block_hash: execution_payload_hash,
-                });
+            // If we have the block, check that the proof's block_hash matches the payload hash.
+            if let Some(execution_payload_hash) = execution_payload_hash {
+                if proof.block_hash != execution_payload_hash {
+                    warn!(
+                        ?block_root,
+                        ?proof_id,
+                        proof_hash = ?proof.block_hash,
+                        ?execution_payload_hash,
+                        "Proof execution payload hash mismatch"
+                    );
+                    return Err(AvailabilityCheckError::ExecutionPayloadHashMismatch {
+                        proof_hash: proof.block_hash,
+                        block_hash: execution_payload_hash,
+                    });
+                }
             }
 
             let verifier = verifier_registry.get_verifier(proof_id).ok_or_else(|| {

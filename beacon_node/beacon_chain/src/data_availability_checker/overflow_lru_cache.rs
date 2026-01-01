@@ -227,18 +227,51 @@ impl<E: EthSpec> PendingComponents<E> {
         self.verified_execution_proofs.len()
     }
 
+    fn execution_payload_hash(&self) -> Option<types::ExecutionBlockHash> {
+        self.block
+            .as_ref()
+            .and_then(|block| block.execution_payload_hash())
+    }
+
+    fn retain_matching_execution_proofs(&mut self) {
+        let Some(expected_hash) = self.execution_payload_hash() else {
+            return;
+        };
+
+        let before = self.verified_execution_proofs.len();
+        self.verified_execution_proofs
+            .retain(|proof| proof.block_hash == expected_hash);
+        let after = self.verified_execution_proofs.len();
+        if before != after {
+            debug!(
+                ?expected_hash,
+                dropped = before - after,
+                "Dropped execution proofs with mismatched payload hash"
+            );
+        }
+    }
+
     /// Merges a single execution proof into the cache.
     ///
     /// Proofs are only inserted if:
     /// 1. We don't already have a proof from this subnet for this block
-    /// 2. The proof's block_hash matches the cached block_root (if block exists)
+    /// 2. The proof's block_hash matches the cached block payload hash (if block exists)
     pub fn merge_execution_proof(&mut self, proof: types::ExecutionProof) {
-        // Verify the proof is for the correct block
-        // ExecutionBlockHash is a wrapper around Hash256, so we need to convert
-
         // Don't insert duplicate proofs
         if self.has_proof_with_id(proof.proof_id) {
             return;
+        }
+
+        if let Some(expected_hash) = self.execution_payload_hash() {
+            if proof.block_hash != expected_hash {
+                debug!(
+                    ?expected_hash,
+                    proof_hash = ?proof.block_hash,
+                    proof_id = ?proof.proof_id,
+                    "Execution proof payload hash mismatch"
+                );
+                return;
+            }
         }
 
         self.verified_execution_proofs.push(proof);
@@ -259,6 +292,7 @@ impl<E: EthSpec> PendingComponents<E> {
     /// Blobs that don't match the new block's commitments are evicted.
     pub fn merge_block(&mut self, block: DietAvailabilityPendingExecutedBlock<E>) {
         self.insert_executed_block(block);
+        self.retain_matching_execution_proofs();
         let reinsert = self.get_cached_blobs_mut().take();
         self.merge_blobs(reinsert);
     }
@@ -1414,7 +1448,10 @@ mod pending_components_tests {
     use rand::rngs::StdRng;
     use state_processing::ConsensusContext;
     use types::test_utils::TestRandom;
-    use types::{BeaconState, ForkName, MainnetEthSpec, SignedBeaconBlock, Slot};
+    use types::{
+        BeaconState, ExecutionBlockHash, ExecutionProof, ExecutionProofId, ForkName,
+        MainnetEthSpec, SignedBeaconBlock, Slot,
+    };
 
     type E = MainnetEthSpec;
 
@@ -1607,6 +1644,48 @@ mod pending_components_tests {
         cache.merge_block(block_commitments);
 
         assert_cache_consistent(cache, max_len);
+    }
+
+    #[test]
+    fn execution_proofs_filtered_on_block_merge() {
+        let (block, blobs, invalid_blobs, max_len) = pre_setup();
+        let block_root = block.canonical_root();
+        let slot = block.slot();
+        let payload_hash = block
+            .message()
+            .body()
+            .execution_payload()
+            .expect("block has execution payload")
+            .execution_payload_ref()
+            .block_hash();
+
+        let proof_id_0 = ExecutionProofId::new(0).expect("proof id 0 is valid");
+        let proof_id_1 = ExecutionProofId::new(1).expect("proof id 1 is valid");
+
+        let proof_ok =
+            ExecutionProof::new(proof_id_0, slot, payload_hash, block_root, vec![1, 2, 3])
+                .expect("valid proof");
+        let proof_bad = ExecutionProof::new(
+            proof_id_1,
+            slot,
+            ExecutionBlockHash::repeat_byte(42),
+            block_root,
+            vec![4, 5, 6],
+        )
+        .expect("valid proof with mismatched hash");
+
+        let (pending_block, _, _) = setup_pending_components(block, blobs, invalid_blobs);
+        let mut cache = <PendingComponents<E>>::empty(block_root, max_len);
+
+        cache.merge_execution_proofs(vec![proof_ok, proof_bad]);
+        assert_eq!(cache.execution_proof_subnet_count(), 2);
+
+        cache.merge_block(pending_block);
+        assert_eq!(cache.execution_proof_subnet_count(), 1);
+        assert_eq!(
+            cache.get_cached_execution_proofs()[0].block_hash,
+            payload_hash
+        );
     }
 
     #[test]
