@@ -3,7 +3,7 @@ use beacon_chain::{BeaconChain, BeaconChainTypes};
 use eth2::types::EndpointVersion;
 use lighthouse_network::PubsubMessage;
 use lighthouse_network::rpc::methods::MetaData;
-use network::{NetworkMessage, ValidatorSubscriptionMessage};
+use network::{NetworkMessage, SyncMessage, ValidatorSubscriptionMessage};
 use parking_lot::RwLock;
 use std::sync::Arc;
 use tokio::sync::mpsc::{Sender, UnboundedSender};
@@ -20,6 +20,8 @@ pub type TaskSpawnerFilter<T> = BoxedFilter<(TaskSpawner<<T as BeaconChainTypes>
 pub type ValidatorSubscriptionTxFilter = BoxedFilter<(Sender<ValidatorSubscriptionMessage>,)>;
 pub type NetworkTxFilter<T> =
     BoxedFilter<(UnboundedSender<NetworkMessage<<T as BeaconChainTypes>::EthSpec>>,)>;
+pub type SyncTxFilter<T> =
+    BoxedFilter<(UnboundedSender<SyncMessage<<T as BeaconChainTypes>::EthSpec>>,)>;
 pub type OptionalConsensusVersionHeaderFilter = BoxedFilter<(Option<ForkName>,)>;
 
 pub fn from_meta_data<E: EthSpec>(

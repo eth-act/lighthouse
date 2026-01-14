@@ -447,6 +447,23 @@ pub fn serve<T: BeaconChainTypes>(
         })
         .boxed();
 
+    // Create a `warp` filter that provides access to the sync sender channel.
+    let sync_tx = ctx
+        .network_senders
+        .as_ref()
+        .map(|senders| senders.sync_send());
+    let sync_tx_filter = warp::any()
+        .map(move || sync_tx.clone())
+        .and_then(|sync_tx| async move {
+            match sync_tx {
+                Some(sync_tx) => Ok(sync_tx),
+                None => Err(warp_utils::reject::custom_not_found(
+                    "The networking stack has not yet started (sync_tx).".to_string(),
+                )),
+            }
+        })
+        .boxed();
+
     // Create a `warp` filter that rejects requests whilst the node is syncing.
     let not_while_syncing_filter =
         warp::any()
@@ -1515,7 +1532,7 @@ pub fn serve<T: BeaconChainTypes>(
 
     // POST beacon/pool/execution_proofs
     let post_beacon_pool_execution_proofs =
-        post_beacon_pool_execution_proofs(&network_tx_filter, &beacon_pool_path);
+        post_beacon_pool_execution_proofs(&network_tx_filter, &sync_tx_filter, &beacon_pool_path);
 
     let beacon_rewards_path = eth_v1
         .clone()
