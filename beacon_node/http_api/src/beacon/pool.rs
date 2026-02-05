@@ -1,5 +1,7 @@
 use crate::task_spawner::{Priority, TaskSpawner};
-use crate::utils::{NetworkTxFilter, OptionalConsensusVersionHeaderFilter, ResponseFilter};
+use crate::utils::{
+    NetworkTxFilter, OptionalConsensusVersionHeaderFilter, ResponseFilter, SyncTxFilter,
+};
 use crate::version::{
     ResponseIncludesVersion, V1, V2, add_consensus_version_header, beacon_response,
     unsupported_version_rejection,
@@ -10,10 +12,10 @@ use beacon_chain::execution_proof_verification::{
 };
 use beacon_chain::observed_data_sidecars::Observe;
 use beacon_chain::observed_operations::ObservationOutcome;
-use beacon_chain::{BeaconChain, BeaconChainTypes};
+use beacon_chain::{AvailabilityProcessingStatus, BeaconChain, BeaconChainTypes};
 use eth2::types::{AttestationPoolQuery, EndpointVersion, Failure, GenericResponse};
 use lighthouse_network::PubsubMessage;
-use network::NetworkMessage;
+use network::{NetworkMessage, SyncMessage};
 use operation_pool::ReceivedPreCapella;
 use slot_clock::SlotClock;
 use std::collections::HashSet;
@@ -533,6 +535,7 @@ pub fn post_beacon_pool_attestations_v2<T: BeaconChainTypes>(
 /// If the proof makes a block available, the block will be imported.
 pub fn post_beacon_pool_execution_proofs<T: BeaconChainTypes>(
     network_tx_filter: &NetworkTxFilter<T>,
+    sync_tx_filter: &SyncTxFilter<T>,
     beacon_pool_path: &BeaconPoolPathFilter<T>,
 ) -> ResponseFilter {
     beacon_pool_path
@@ -541,12 +544,15 @@ pub fn post_beacon_pool_execution_proofs<T: BeaconChainTypes>(
         .and(warp::path::end())
         .and(warp_utils::json::json())
         .and(network_tx_filter.clone())
+        .and(sync_tx_filter.clone())
         .then(
             |_task_spawner: TaskSpawner<T::EthSpec>,
              chain: Arc<BeaconChain<T>>,
              proof: ExecutionProof,
-             network_tx: UnboundedSender<NetworkMessage<T::EthSpec>>| async move {
-                let result = publish_execution_proof(chain, proof, network_tx).await;
+             network_tx_filter: UnboundedSender<NetworkMessage<T::EthSpec>>,
+             sync_tx_filter: UnboundedSender<SyncMessage<T::EthSpec>>| async move {
+                let result =
+                    publish_execution_proof(chain, proof, network_tx_filter, sync_tx_filter).await;
                 convert_rejection(result.map(|()| warp::reply::json(&()))).await
             },
         )
@@ -558,6 +564,7 @@ async fn publish_execution_proof<T: BeaconChainTypes>(
     chain: Arc<BeaconChain<T>>,
     proof: ExecutionProof,
     network_tx: UnboundedSender<NetworkMessage<T::EthSpec>>,
+    sync_tx: UnboundedSender<SyncMessage<T::EthSpec>>,
 ) -> Result<(), warp::Rejection> {
     let proof = Arc::new(proof);
 
@@ -614,6 +621,18 @@ async fn publish_execution_proof<T: BeaconChainTypes>(
                 ?status,
                 "Execution proof submitted and published"
             );
+
+            if let AvailabilityProcessingStatus::Imported(_) = status {
+                chain.recompute_head_at_current_slot().await;
+
+                // Notify that block was imported via HTTP API
+                if let Err(e) = sync_tx.send(SyncMessage::GossipBlockProcessResult {
+                    block_root,
+                    imported: true,
+                }) {
+                    debug!(error = %e, "Could not send message to the sync service")
+                };
+            }
         }
         Err(e) => {
             // Log the error but don't fail the request - the proof was already

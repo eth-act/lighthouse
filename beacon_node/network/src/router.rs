@@ -88,13 +88,12 @@ impl<T: BeaconChainTypes> Router<T> {
         invalid_block_storage: InvalidBlockStorage,
         beacon_processor_send: BeaconProcessorSend<T::EthSpec>,
         fork_context: Arc<ForkContext>,
+        sync_send: mpsc::UnboundedSender<SyncMessage<T::EthSpec>>,
+        sync_recv: mpsc::UnboundedReceiver<SyncMessage<T::EthSpec>>,
     ) -> Result<mpsc::UnboundedSender<RouterMessage<T::EthSpec>>, String> {
         trace!("Service starting");
 
         let (handler_send, handler_recv) = mpsc::unbounded_channel();
-
-        // generate the message channel
-        let (sync_send, sync_recv) = mpsc::unbounded_channel::<SyncMessage<T::EthSpec>>();
 
         let network_beacon_processor = NetworkBeaconProcessor {
             beacon_processor_send,

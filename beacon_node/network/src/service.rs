@@ -5,6 +5,7 @@ use crate::network_beacon_processor::InvalidBlockStorage;
 use crate::persisted_dht::{clear_dht, load_dht, persist_dht};
 use crate::router::{Router, RouterMessage};
 use crate::subnet_service::{SubnetService, SubnetServiceMessage, Subscription};
+use crate::sync::manager::SyncMessage;
 use beacon_chain::{BeaconChain, BeaconChainTypes};
 use beacon_processor::BeaconProcessorSend;
 use futures::channel::mpsc::Sender;
@@ -138,11 +139,13 @@ pub enum ValidatorSubscriptionMessage {
 pub struct NetworkSenders<E: EthSpec> {
     network_send: mpsc::UnboundedSender<NetworkMessage<E>>,
     validator_subscription_send: mpsc::Sender<ValidatorSubscriptionMessage>,
+    sync_send: mpsc::UnboundedSender<SyncMessage<E>>,
 }
 
 pub struct NetworkReceivers<E: EthSpec> {
     pub network_recv: mpsc::UnboundedReceiver<NetworkMessage<E>>,
     pub validator_subscription_recv: mpsc::Receiver<ValidatorSubscriptionMessage>,
+    pub sync_recv: mpsc::UnboundedReceiver<SyncMessage<E>>,
 }
 
 impl<E: EthSpec> NetworkSenders<E> {
@@ -150,13 +153,16 @@ impl<E: EthSpec> NetworkSenders<E> {
         let (network_send, network_recv) = mpsc::unbounded_channel::<NetworkMessage<E>>();
         let (validator_subscription_send, validator_subscription_recv) =
             mpsc::channel(VALIDATOR_SUBSCRIPTION_MESSAGE_QUEUE_SIZE);
+        let (sync_send, sync_recv) = mpsc::unbounded_channel::<SyncMessage<E>>();
         let senders = Self {
             network_send,
             validator_subscription_send,
+            sync_send,
         };
         let receivers = NetworkReceivers {
             network_recv,
             validator_subscription_recv,
+            sync_recv,
         };
         (senders, receivers)
     }
@@ -167,6 +173,10 @@ impl<E: EthSpec> NetworkSenders<E> {
 
     pub fn validator_subscription_send(&self) -> mpsc::Sender<ValidatorSubscriptionMessage> {
         self.validator_subscription_send.clone()
+    }
+
+    pub fn sync_send(&self) -> mpsc::UnboundedSender<SyncMessage<E>> {
+        self.sync_send.clone()
     }
 }
 
@@ -320,6 +330,8 @@ impl<T: BeaconChainTypes> NetworkService<T> {
             invalid_block_storage,
             beacon_processor_send,
             fork_context.clone(),
+            network_senders.sync_send(),
+            network_receivers.sync_recv,
         )?;
 
         // attestation and sync committee subnet service
@@ -338,6 +350,7 @@ impl<T: BeaconChainTypes> NetworkService<T> {
         let NetworkReceivers {
             network_recv,
             validator_subscription_recv,
+            sync_recv: _,
         } = network_receivers;
 
         // create the network service and spawn the task
