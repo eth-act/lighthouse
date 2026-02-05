@@ -27,6 +27,7 @@ use crate::data_availability_checker::{
 };
 use crate::data_column_verification::{GossipDataColumnError, GossipVerifiedDataColumn};
 use crate::early_attester_cache::EarlyAttesterCache;
+use crate::eip8025::{ExecutionProofError, verify_signed_execution_proof_signature};
 use crate::errors::{BeaconChainError as Error, BlockProductionError};
 use crate::events::ServerSentEventHandler;
 use crate::execution_payload::{NotifyExecutionLayer, PreparePayloadHandle, get_execution_payload};
@@ -7420,6 +7421,53 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         self.data_availability_checker
             .custody_context()
             .custody_columns_for_epoch(epoch_opt, &self.spec)
+    }
+
+    /// Verify a signed execution proof (EIP-8025).
+    ///
+    /// This method:
+    /// 1. Looks up the validator's public key from the beacon state
+    /// 2. Verifies the BLS signature over the proof message
+    /// TODO:
+    /// - map the PublicInput to a cache of new payload request root -> beacon block root.
+    /// - use the validator cache at the block being proven, not the head state.
+    ///
+    /// # Returns
+    ///
+    /// `Ok(())` if the proof is valid, otherwise an `ExecutionProofError`.
+    pub async fn verify_execution_proof(
+        &self,
+        signed_proof: &types::SignedExecutionProof,
+    ) -> Result<(), Error> {
+        // Get current fork name
+        let head = self.canonical_head.cached_head();
+        let fork_name = self.spec.fork_name_at_slot::<T::EthSpec>(head.head_slot());
+
+        // Get the validator's public key from the head state
+        let validator_index = signed_proof.validator_index as usize;
+        // TODO: Should this use the head state or the parent state of the block being proven?
+        let head_state = &head.snapshot.beacon_state;
+
+        let validator_pubkey = head_state
+            .validators()
+            .get(validator_index)
+            .map(|v| v.pubkey)
+            .ok_or(ExecutionProofError::InvalidValidatorIndex)?;
+
+        // Verify the signature
+        let genesis_validators_root = self.genesis_validators_root;
+        let spec = self.spec.clone();
+        let signed_proof = signed_proof.clone();
+
+        verify_signed_execution_proof_signature::<T::EthSpec>(
+            &signed_proof,
+            &validator_pubkey,
+            fork_name,
+            genesis_validators_root,
+            &spec,
+        )?;
+
+        Ok(())
     }
 }
 

@@ -4,6 +4,7 @@ mod execution_block_header;
 mod execution_payload;
 mod bls_to_execution_change;
 mod dumb_macros;
+pub mod eip8025;
 mod execution_payload_bid;
 mod execution_payload_envelope;
 mod execution_payload_header;
@@ -41,3 +42,10 @@ pub use payload::{
 pub use signed_bls_to_execution_change::SignedBlsToExecutionChange;
 pub use signed_execution_payload_bid::SignedExecutionPayloadBid;
 pub use signed_execution_payload_envelope::SignedExecutionPayloadEnvelope;
+
+// EIP-8025: Optional Execution Proofs
+pub use eip8025::{
+    DOMAIN_EXECUTION_PROOF, ExecutionProof, ExecutionProofList, GeneratedProof,
+    MIN_REQUIRED_EXECUTION_PROOFS, MaxExecutionProofsPerPayload, ProofAttributes, ProofGenId,
+    ProofStatus, ProofType, PublicInput, SignedExecutionProof,
+};

@@ -1,5 +1,5 @@
 use account_utils::validator_definitions::{PasswordStorage, ValidatorDefinition};
-use bls::{PublicKeyBytes, Signature};
+use bls::{PublicKeyBytes, Signature, SignatureBytes};
 use doppelganger_service::DoppelgangerService;
 use eth2::types::PublishBlockRequest;
 use initialized_validators::InitializedValidators;
@@ -19,12 +19,12 @@ use task_executor::TaskExecutor;
 use tracing::{error, info, instrument, warn};
 use types::{
     AbstractExecPayload, Address, AggregateAndProof, Attestation, BeaconBlock, BlindedPayload,
-    ChainSpec, ContributionAndProof, Domain, Epoch, EthSpec, Fork, Graffiti, Hash256,
-    SelectionProof, SignedAggregateAndProof, SignedBeaconBlock, SignedContributionAndProof,
-    SignedRoot, SignedValidatorRegistrationData, SignedVoluntaryExit, Slot,
-    SyncAggregatorSelectionData, SyncCommitteeContribution, SyncCommitteeMessage,
-    SyncSelectionProof, SyncSubnetId, ValidatorRegistrationData, VoluntaryExit,
-    graffiti::GraffitiString,
+    ChainSpec, ContributionAndProof, Domain, Epoch, EthSpec, ExecutionProof, Fork, Graffiti,
+    Hash256, SelectionProof, SignedAggregateAndProof, SignedBeaconBlock,
+    SignedContributionAndProof, SignedExecutionProof, SignedRoot, SignedValidatorRegistrationData,
+    SignedVoluntaryExit, Slot, SyncAggregatorSelectionData, SyncCommitteeContribution,
+    SyncCommitteeMessage, SyncSelectionProof, SyncSubnetId, ValidatorRegistrationData,
+    VoluntaryExit, graffiti::GraffitiString,
 };
 use validator_store::{
     DoppelgangerStatus, Error as ValidatorStoreError, ProposalData, SignedBlock, UnsignedBlock,
@@ -554,6 +554,48 @@ impl<T: SlotClock + 'static, E: EthSpec> LighthouseValidatorStore<T, E> {
         Ok(SignedVoluntaryExit {
             message: voluntary_exit,
             signature,
+        })
+    }
+
+    /// Signs an execution proof for EIP-8025.
+    ///
+    /// This allows validators to sign execution proofs for optional execution verification.
+    pub async fn sign_execution_proof(
+        &self,
+        validator_pubkey: PublicKeyBytes,
+        execution_proof: ExecutionProof,
+        signing_epoch: Epoch,
+    ) -> Result<SignedExecutionProof, Error> {
+        let signing_context = self.signing_context(Domain::ExecutionProof, signing_epoch);
+        let signing_method = self.doppelganger_bypassed_signing_method(validator_pubkey)?;
+
+        let signature = signing_method
+            .get_signature::<E, BlindedPayload<E>>(
+                SignableMessage::ExecutionProof(&execution_proof),
+                signing_context,
+                &self.spec,
+                &self.task_executor,
+            )
+            .await?;
+
+        // Get the validator index for the signed proof
+        let validator_index = self
+            .validator_index(&validator_pubkey)
+            .ok_or(Error::UnknownPubkey(validator_pubkey))?;
+
+        // Convert BLS signature to SignatureBytes (96 bytes)
+        let signature_bytes = SignatureBytes::deserialize(&signature.serialize())
+            .map_err(|_| Error::Middleware("Failed to serialize signature".to_string()))?;
+
+        validator_metrics::inc_counter_vec(
+            &validator_metrics::SIGNED_EXECUTION_PROOFS_TOTAL,
+            &[validator_metrics::SUCCESS],
+        );
+
+        Ok(SignedExecutionProof {
+            message: execution_proof,
+            validator_index,
+            signature: signature_bytes,
         })
     }
 }

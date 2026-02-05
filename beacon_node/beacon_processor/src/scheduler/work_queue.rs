@@ -135,6 +135,7 @@ pub struct BeaconProcessorQueueLengths {
     dcbroots_queue: usize,
     dcbrange_queue: usize,
     gossip_bls_to_execution_change_queue: usize,
+    gossip_execution_proof_queue: usize,
     lc_bootstrap_queue: usize,
     lc_rpc_optimistic_update_queue: usize,
     lc_rpc_finality_update_queue: usize,
@@ -201,6 +202,8 @@ impl BeaconProcessorQueueLengths {
             dcbroots_queue: 1024,
             dcbrange_queue: 1024,
             gossip_bls_to_execution_change_queue: 16384,
+            // EIP-8025: Queue for execution proofs
+            gossip_execution_proof_queue: 64,
             lc_gossip_finality_update_queue: 1024,
             lc_gossip_optimistic_update_queue: 1024,
             lc_bootstrap_queue: 1024,
@@ -245,6 +248,8 @@ pub struct WorkQueues<E: EthSpec> {
     pub dcbroots_queue: FifoQueue<Work<E>>,
     pub dcbrange_queue: FifoQueue<Work<E>>,
     pub gossip_bls_to_execution_change_queue: FifoQueue<Work<E>>,
+    /// EIP-8025: Queue for execution proofs from gossip.
+    pub gossip_execution_proof_queue: FifoQueue<Work<E>>,
     pub lc_gossip_finality_update_queue: FifoQueue<Work<E>>,
     pub lc_gossip_optimistic_update_queue: FifoQueue<Work<E>>,
     pub lc_bootstrap_queue: FifoQueue<Work<E>>,
@@ -310,6 +315,10 @@ impl<E: EthSpec> WorkQueues<E> {
         let gossip_bls_to_execution_change_queue =
             FifoQueue::new(queue_lengths.gossip_bls_to_execution_change_queue);
 
+        // EIP-8025: Execution proof queue
+        let gossip_execution_proof_queue =
+            FifoQueue::new(queue_lengths.gossip_execution_proof_queue);
+
         let lc_gossip_optimistic_update_queue =
             FifoQueue::new(queue_lengths.lc_gossip_optimistic_update_queue);
         let lc_gossip_finality_update_queue =
@@ -357,6 +366,7 @@ impl<E: EthSpec> WorkQueues<E> {
             dcbroots_queue,
             dcbrange_queue,
             gossip_bls_to_execution_change_queue,
+            gossip_execution_proof_queue,
             lc_gossip_optimistic_update_queue,
             lc_gossip_finality_update_queue,
             lc_bootstrap_queue,

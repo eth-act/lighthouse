@@ -36,6 +36,8 @@ pub enum Domain {
     SyncCommitteeSelectionProof,
     BeaconBuilder,
     PTCAttester,
+    /// EIP-8025: Domain for execution proof signatures.
+    ExecutionProof,
     ApplicationMask(ApplicationDomain),
 }
 
@@ -302,6 +304,11 @@ pub struct ChainSpec {
      * Capella params
      */
     pub(crate) domain_bls_to_execution_change: u32,
+    /*
+     * EIP-8025 params
+     */
+    /// Domain for execution proof signatures (0x0D000000).
+    pub(crate) domain_execution_proof: u32,
 }
 
 impl ChainSpec {
@@ -505,6 +512,7 @@ impl ChainSpec {
             Domain::SyncCommitteeSelectionProof => self.domain_sync_committee_selection_proof,
             Domain::ApplicationMask(application_domain) => application_domain.get_domain_constant(),
             Domain::BlsToExecutionChange => self.domain_bls_to_execution_change,
+            Domain::ExecutionProof => self.domain_execution_proof,
         }
     }
 
@@ -1177,6 +1185,10 @@ impl ChainSpec {
              * Capella params
              */
             domain_bls_to_execution_change: 10,
+            /*
+             * EIP-8025 params
+             */
+            domain_execution_proof: 13, // 0x0D000000
         }
     }
 
@@ -1540,6 +1552,10 @@ impl ChainSpec {
              * Capella params
              */
             domain_bls_to_execution_change: 10,
+            /*
+             * EIP-8025 params
+             */
+            domain_execution_proof: 13, // 0x0D000000
         }
     }
 }

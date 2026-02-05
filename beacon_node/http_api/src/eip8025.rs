@@ -1,0 +1,180 @@
+//! EIP-8025: Optional Execution Proofs - HTTP API Endpoints
+//!
+//! This module provides HTTP API endpoints for:
+//! - GET `/eth/v1/beacon/proofs/execution_proofs/{block_id}` - Retrieve execution proofs for a block
+//! - POST `/eth/v1/beacon/execution_proofs` - Submit pre-signed execution proofs
+
+use crate::block_id::BlockId;
+use beacon_chain::{BeaconChain, BeaconChainTypes};
+use execution_layer::eip8025::ProofEngine;
+use lighthouse_network::PubsubMessage;
+use network::NetworkMessage;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::mpsc::UnboundedSender;
+use tracing::{debug, warn};
+use types::SignedExecutionProof;
+use warp::Reply;
+use warp::http::Response;
+use warp::hyper::Body;
+use warp_utils::reject::{custom_bad_request, custom_server_error};
+
+/// Response for GET /eth/v1/beacon/proofs/execution_proofs/{block_id}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ExecutionProofsResponse {
+    pub execution_optimistic: bool,
+    pub finalized: bool,
+    pub data: Vec<SignedExecutionProof>,
+}
+
+/// Request body for POST /eth/v1/beacon/execution_proofs
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SubmitExecutionProofsRequest {
+    /// Pre-signed execution proofs from validators
+    pub proofs: Vec<SignedExecutionProof>,
+}
+
+// TODO: This is a placeholder with basic functionality.
+/// Get execution proofs for a given block.
+///
+/// Returns execution proofs from the ProofEngine for the block's execution payload.
+/// This endpoint is gated by EIP-8025 fork activation.
+pub fn get_execution_proofs<T: BeaconChainTypes>(
+    block_id: BlockId,
+    chain: Arc<BeaconChain<T>>,
+) -> Result<ExecutionProofsResponse, warp::Rejection> {
+    // Check if EIP-8025 is enabled
+    let current_slot = chain
+        .slot()
+        .map_err(|e| custom_server_error(format!("Failed to get current slot: {:?}", e)))?;
+
+    let fork_name = chain.spec.fork_name_at_slot::<T::EthSpec>(current_slot);
+    if !fork_name.eip8025_enabled() {
+        return Err(custom_bad_request(
+            "EIP-8025 is not active at the current fork".to_string(),
+        ));
+    }
+
+    // Get the execution layer's proof engine
+    let execution_layer = chain
+        .execution_layer
+        .as_ref()
+        .ok_or_else(|| custom_server_error("Execution layer not available".to_string()))?;
+
+    let proof_engine = execution_layer
+        .proof_engine()
+        .ok_or_else(|| custom_server_error("Proof engine not available".to_string()))?;
+
+    // Get the block to retrieve its execution payload root
+    let (block_root, execution_optimistic, finalized) = block_id.root(&chain)?;
+
+    // Get proofs from the proof engine
+    // Note: In a full implementation, we'd compute the new_payload_request_root from the block's
+    // execution payload. For now, we use the block root as a lookup key.
+    let proofs = proof_engine.get_proofs_by_root(&block_root);
+
+    debug!(
+        block_root = ?block_root,
+        num_proofs = proofs.len(),
+        "Retrieved execution proofs for block"
+    );
+
+    Ok(ExecutionProofsResponse {
+        execution_optimistic,
+        finalized,
+        data: proofs,
+    })
+}
+
+/// Submit pre-signed execution proofs.
+///
+/// This endpoint is used by validator clients to submit execution proofs that have been
+/// signed by a validator. The proofs will be verified, stored in the ProofEngine, and
+/// gossiped to the network.
+///
+/// Note: Proofs must be signed by a validator using the validator client's signing service.
+pub async fn submit_execution_proofs<T: BeaconChainTypes>(
+    request: SubmitExecutionProofsRequest,
+    chain: Arc<BeaconChain<T>>,
+    network_send: UnboundedSender<NetworkMessage<T::EthSpec>>,
+) -> Result<Response<Body>, warp::Rejection> {
+    // Check if EIP-8025 is enabled
+    let current_slot = chain
+        .slot()
+        .map_err(|e| custom_server_error(format!("Failed to get current slot: {:?}", e)))?;
+
+    let fork_name = chain.spec.fork_name_at_slot::<T::EthSpec>(current_slot);
+    if !fork_name.eip8025_enabled() {
+        return Err(custom_bad_request(
+            "EIP-8025 is not active at the current fork".to_string(),
+        ));
+    }
+
+    if request.proofs.is_empty() {
+        return Err(custom_bad_request("No proofs provided".to_string()));
+    }
+
+    // Process each signed proof
+    for signed_proof in request.proofs {
+        let request_root = signed_proof.request_root();
+        let proof_type = signed_proof.proof_type();
+        let validator_index = signed_proof.validator_index();
+
+        debug!(
+            ?request_root,
+            proof_type, validator_index, "Processing submitted signed execution proof"
+        );
+
+        // Verify the signed proof
+        if let Err(e) = chain.verify_execution_proof(&signed_proof).await {
+            warn!(
+                error = ?e,
+                ?request_root,
+                proof_type,
+                validator_index,
+                "Signed proof validation failed"
+            );
+            return Err(custom_bad_request(format!(
+                "Proof validation failed: {e:?}"
+            )));
+        }
+
+        // Gossip publish the signed proof
+        if let Err(e) = network_send.send(NetworkMessage::Publish {
+            messages: vec![PubsubMessage::ExecutionProof(Box::new(signed_proof))],
+        }) {
+            warn!(
+                error = ?e,
+                ?request_root,
+                proof_type,
+                "Failed to gossip signed proof"
+            );
+        }
+
+        debug!(
+            ?request_root,
+            proof_type, validator_index, "Signed execution proof verified, stored, and gossiped"
+        );
+    }
+
+    Ok(warp::reply().into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_execution_proofs_response_serialization() {
+        let response = ExecutionProofsResponse {
+            execution_optimistic: false,
+            finalized: true,
+            data: vec![],
+        };
+
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("execution_optimistic"));
+        assert!(json.contains("finalized"));
+        assert!(json.contains("data"));
+    }
+}

@@ -10,6 +10,7 @@ alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
 arc-swap = "1.6.0"
+async-trait = "0.1"
 bls = { workspace = true }
 builder_client = { path = "../builder_client" }
 bytes = { workspace = true }
@@ -53,3 +54,6 @@ typenum = { workspace = true }
 types = { workspace = true }
 warp = { workspace = true }
 zeroize = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }

@@ -20,7 +20,9 @@ use beacon_chain::{
     validator_monitor::{get_block_delay_ms, get_slot_delay_ms},
 };
 use beacon_processor::{Work, WorkEvent};
-use lighthouse_network::{Client, MessageAcceptance, MessageId, PeerAction, PeerId, ReportSource};
+use lighthouse_network::{
+    Client, MessageAcceptance, MessageId, PeerAction, PeerId, ReportSource,
+};
 use lighthouse_tracing::{
     SPAN_PROCESS_GOSSIP_BLOB, SPAN_PROCESS_GOSSIP_BLOCK, SPAN_PROCESS_GOSSIP_DATA_COLUMN,
 };
@@ -39,8 +41,9 @@ use types::{
     Attestation, AttestationData, AttestationRef, AttesterSlashing, BlobSidecar, DataColumnSidecar,
     DataColumnSubnetId, EthSpec, Hash256, IndexedAttestation, LightClientFinalityUpdate,
     LightClientOptimisticUpdate, ProposerSlashing, SignedAggregateAndProof, SignedBeaconBlock,
-    SignedBlsToExecutionChange, SignedContributionAndProof, SignedVoluntaryExit, SingleAttestation,
-    Slot, SubnetId, SyncCommitteeMessage, SyncSubnetId, block::BlockImportSource,
+    SignedBlsToExecutionChange, SignedContributionAndProof, SignedExecutionProof,
+    SignedVoluntaryExit, SingleAttestation, Slot, SubnetId, SyncCommitteeMessage, SyncSubnetId,
+    block::BlockImportSource,
 };
 
 use beacon_processor::work_reprocessing_queue::QueuedColumnReconstruction;
@@ -1860,6 +1863,56 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         );
 
         metrics::inc_counter(&metrics::BEACON_PROCESSOR_BLS_TO_EXECUTION_CHANGE_IMPORTED_TOTAL);
+    }
+
+    /// EIP-8025: Process a signed execution proof received from the gossip network.
+    ///
+    /// Validates the proof signature and prover whitelist membership, then propagates
+    /// if valid or rejects/ignores based on validation results.
+    pub async fn process_gossip_execution_proof(
+        self: &Arc<Self>,
+        message_id: MessageId,
+        peer_id: PeerId,
+        execution_proof: SignedExecutionProof,
+    ) {
+        let request_root = execution_proof.request_root();
+        let proof_type = execution_proof.proof_type();
+        let validator_index = execution_proof.validator_index();
+
+        // Verify the execution proof using the BeaconChain method
+        let result = self.chain.verify_execution_proof(&execution_proof).await;
+
+        match result {
+            Ok(()) => {
+                debug!(
+                    ?request_root,
+                    proof_type,
+                    validator_index,
+                    %peer_id,
+                    "Valid execution proof received"
+                );
+
+                // Accept and propagate the proof
+                self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Accept);
+            }
+            // TODO: Extract specific error types to determine whether to reject, ignore or penalize
+            Err(e) => {
+                debug!(
+                    ?request_root,
+                    proof_type,
+                    validator_index,
+                    %peer_id,
+                    error = ?e,
+                    "Execution proof validation failed"
+                );
+                self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Reject);
+                self.gossip_penalize_peer(
+                    peer_id,
+                    PeerAction::HighToleranceError,
+                    "invalid_execution_proof",
+                );
+            }
+        }
     }
 
     /// Process the sync committee signature received from the gossip network and:

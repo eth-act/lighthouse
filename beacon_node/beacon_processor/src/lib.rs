@@ -409,6 +409,8 @@ pub enum Work<E: EthSpec> {
     DataColumnsByRootsRequest(BlockingFn),
     DataColumnsByRangeRequest(BlockingFn),
     GossipBlsToExecutionChange(BlockingFn),
+    /// EIP-8025: A signed execution proof has been received over gossip.
+    GossipExecutionProof(AsyncFn),
     LightClientBootstrapRequest(BlockingFn),
     LightClientOptimisticUpdateRequest(BlockingFn),
     LightClientFinalityUpdateRequest(BlockingFn),
@@ -461,6 +463,7 @@ pub enum WorkType {
     DataColumnsByRootsRequest,
     DataColumnsByRangeRequest,
     GossipBlsToExecutionChange,
+    GossipExecutionProof,
     LightClientBootstrapRequest,
     LightClientOptimisticUpdateRequest,
     LightClientFinalityUpdateRequest,
@@ -496,6 +499,7 @@ impl<E: EthSpec> Work<E> {
                 WorkType::GossipLightClientOptimisticUpdate
             }
             Work::GossipBlsToExecutionChange(_) => WorkType::GossipBlsToExecutionChange,
+            Work::GossipExecutionProof(_) => WorkType::GossipExecutionProof,
             Work::RpcBlock { .. } => WorkType::RpcBlock,
             Work::RpcBlobs { .. } => WorkType::RpcBlobs,
             Work::RpcCustodyColumn { .. } => WorkType::RpcCustodyColumn,
@@ -952,6 +956,9 @@ impl<E: EthSpec> BeaconProcessor<E> {
                             work_queues.gossip_bls_to_execution_change_queue.pop()
                         {
                             Some(item)
+                        // EIP-8025: Process execution proofs
+                        } else if let Some(item) = work_queues.gossip_execution_proof_queue.pop() {
+                            Some(item)
                         // Check the priority 1 API requests after we've
                         // processed all the interesting things from the network
                         // and things required for us to stay in good repute
@@ -1143,6 +1150,9 @@ impl<E: EthSpec> BeaconProcessor<E> {
                             Work::GossipBlsToExecutionChange { .. } => work_queues
                                 .gossip_bls_to_execution_change_queue
                                 .push(work, work_id),
+                            Work::GossipExecutionProof { .. } => {
+                                work_queues.gossip_execution_proof_queue.push(work, work_id)
+                            }
                             Work::BlobsByRootsRequest { .. } => {
                                 work_queues.blob_broots_queue.push(work, work_id)
                             }
@@ -1228,6 +1238,9 @@ impl<E: EthSpec> BeaconProcessor<E> {
                         WorkType::DataColumnsByRangeRequest => work_queues.dcbrange_queue.len(),
                         WorkType::GossipBlsToExecutionChange => {
                             work_queues.gossip_bls_to_execution_change_queue.len()
+                        }
+                        WorkType::GossipExecutionProof => {
+                            work_queues.gossip_execution_proof_queue.len()
                         }
                         WorkType::LightClientBootstrapRequest => {
                             work_queues.lc_bootstrap_queue.len()
@@ -1379,7 +1392,8 @@ impl<E: EthSpec> BeaconProcessor<E> {
             Work::RpcBlock { process_fn }
             | Work::RpcBlobs { process_fn }
             | Work::RpcCustodyColumn(process_fn)
-            | Work::ColumnReconstruction(process_fn) => task_spawner.spawn_async(process_fn),
+            | Work::ColumnReconstruction(process_fn)
+            | Work::GossipExecutionProof(process_fn) => task_spawner.spawn_async(process_fn),
             Work::IgnoredRpcBlock { process_fn } => task_spawner.spawn_blocking(process_fn),
             Work::GossipBlock(work)
             | Work::GossipBlobSidecar(work)

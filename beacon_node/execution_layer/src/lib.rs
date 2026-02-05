@@ -60,6 +60,7 @@ use types::{
 };
 
 mod block_hash;
+pub mod eip8025;
 mod engine_api;
 pub mod engines;
 mod keccak;
@@ -440,6 +441,8 @@ struct Inner<E: EthSpec> {
     /// This is used *only* in the informational sync status endpoint, so that a VC using this
     /// node can prefer another node with a healthier EL.
     last_new_payload_errored: RwLock<bool>,
+    /// EIP-8025: Optional execution proof engine.
+    proof_engine: Option<Arc<eip8025::HttpProofEngine>>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -527,6 +530,10 @@ impl<E: EthSpec> ExecutionLayer<E> {
                 .map_err(Error::InvalidJWTSecret)
         }?;
 
+        // EIP-8025: Currently just reuse the execution engine URL for the proof engine.
+        // TODO: Make this configurable in the future.
+        let proof_engine_url = execution_url.clone();
+
         let engine: Engine = {
             let auth = Auth::new(jwt_key, jwt_id, jwt_version);
             debug!(endpoint = %execution_url, jwt_path = ?secret_file.as_path(),"Loaded execution endpoint");
@@ -534,6 +541,13 @@ impl<E: EthSpec> ExecutionLayer<E> {
                 .map_err(Error::ApiError)?;
             Engine::new(api, executor.clone())
         };
+
+        // EIP-8025: Create proof engine using the same execution endpoint.
+        // The proof engine is optional and can be disabled via configuration.
+        let proof_engine = Some(Arc::new(eip8025::HttpProofEngine::new(
+            proof_engine_url,
+            None,
+        )));
 
         let inner = Inner {
             engine: Arc::new(engine),
@@ -546,6 +560,7 @@ impl<E: EthSpec> ExecutionLayer<E> {
             executor,
             payload_cache: PayloadCache::default(),
             last_new_payload_errored: RwLock::new(false),
+            proof_engine,
         };
 
         let el = Self {
@@ -622,6 +637,11 @@ impl<E: EthSpec> ExecutionLayer<E> {
 
     pub fn executor(&self) -> &TaskExecutor {
         &self.inner.executor
+    }
+
+    /// EIP-8025: Get the optional proof engine.
+    pub fn proof_engine(&self) -> Option<Arc<eip8025::HttpProofEngine>> {
+        self.inner.proof_engine.clone()
     }
 
     /// Get the current difficulty of the PoW chain.

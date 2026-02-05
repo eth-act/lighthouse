@@ -121,6 +121,14 @@ pub static SIGNED_VALIDATOR_REGISTRATIONS_TOTAL: LazyLock<Result<IntCounterVec>>
             &["status"],
         )
     });
+/// EIP-8025: Execution proof signing metric
+pub static SIGNED_EXECUTION_PROOFS_TOTAL: LazyLock<Result<IntCounterVec>> = LazyLock::new(|| {
+    try_create_int_counter_vec(
+        "vc_signed_execution_proofs_total",
+        "Total count of ExecutionProof signings",
+        &["status"],
+    )
+});
 pub static DUTIES_SERVICE_TIMES: LazyLock<Result<HistogramVec>> = LazyLock::new(|| {
     try_create_histogram_vec(
         "vc_duties_service_task_times_seconds",

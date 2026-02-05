@@ -14,8 +14,8 @@ use types::{
     SignedBeaconBlock, SignedBeaconBlockAltair, SignedBeaconBlockBase, SignedBeaconBlockBellatrix,
     SignedBeaconBlockCapella, SignedBeaconBlockDeneb, SignedBeaconBlockElectra,
     SignedBeaconBlockFulu, SignedBeaconBlockGloas, SignedBlsToExecutionChange,
-    SignedContributionAndProof, SignedVoluntaryExit, SingleAttestation, SubnetId,
-    SyncCommitteeMessage, SyncSubnetId,
+    SignedContributionAndProof, SignedExecutionProof, SignedVoluntaryExit, SingleAttestation,
+    SubnetId, SyncCommitteeMessage, SyncSubnetId,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -46,6 +46,8 @@ pub enum PubsubMessage<E: EthSpec> {
     LightClientFinalityUpdate(Box<LightClientFinalityUpdate<E>>),
     /// Gossipsub message providing notification of a light client optimistic update.
     LightClientOptimisticUpdate(Box<LightClientOptimisticUpdate<E>>),
+    /// EIP-8025: Gossipsub message providing notification of a signed execution proof.
+    ExecutionProof(Box<SignedExecutionProof>),
 }
 
 // Implements the `DataTransform` trait of gossipsub to employ snappy compression
@@ -149,6 +151,7 @@ impl<E: EthSpec> PubsubMessage<E> {
             PubsubMessage::LightClientOptimisticUpdate(_) => {
                 GossipKind::LightClientOptimisticUpdate
             }
+            PubsubMessage::ExecutionProof(_) => GossipKind::ExecutionProof,
         }
     }
 
@@ -387,6 +390,20 @@ impl<E: EthSpec> PubsubMessage<E> {
                             light_client_optimistic_update,
                         )))
                     }
+                    GossipKind::ExecutionProof => {
+                        // EIP-8025: Execution proofs are only valid for Fulu+
+                        match fork_context.get_fork_from_context_bytes(gossip_topic.fork_digest) {
+                            Some(fork) if fork.eip8025_enabled() => {
+                                let execution_proof = SignedExecutionProof::from_ssz_bytes(data)
+                                    .map_err(|e| format!("{:?}", e))?;
+                                Ok(PubsubMessage::ExecutionProof(Box::new(execution_proof)))
+                            }
+                            Some(_) | None => Err(format!(
+                                "execution_proof topic invalid for given fork digest {:?}",
+                                gossip_topic.fork_digest
+                            )),
+                        }
+                    }
                 }
             }
         }
@@ -413,6 +430,7 @@ impl<E: EthSpec> PubsubMessage<E> {
             PubsubMessage::BlsToExecutionChange(data) => data.as_ssz_bytes(),
             PubsubMessage::LightClientFinalityUpdate(data) => data.as_ssz_bytes(),
             PubsubMessage::LightClientOptimisticUpdate(data) => data.as_ssz_bytes(),
+            PubsubMessage::ExecutionProof(data) => data.as_ssz_bytes(),
         }
     }
 }
@@ -471,6 +489,14 @@ impl<E: EthSpec> std::fmt::Display for PubsubMessage<E> {
             }
             PubsubMessage::LightClientOptimisticUpdate(_data) => {
                 write!(f, "Light CLient Optimistic Update")
+            }
+            PubsubMessage::ExecutionProof(data) => {
+                write!(
+                    f,
+                    "Execution Proof: request_root: {:?}, proof_type: {}",
+                    data.request_root(),
+                    data.proof_type()
+                )
             }
         }
     }

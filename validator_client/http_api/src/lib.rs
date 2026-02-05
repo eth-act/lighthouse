@@ -4,6 +4,7 @@ mod create_validator;
 mod graffiti;
 mod keystores;
 mod remotekeys;
+mod sign_execution_proof;
 mod tests;
 
 pub mod test_utils;
@@ -1130,7 +1131,7 @@ pub fn serve<T: 'static + SlotClock + Clone, E: EthSpec>(
         .and(warp::query::<api_types::VoluntaryExitQuery>())
         .and(warp::path::end())
         .and(validator_store_filter.clone())
-        .and(slot_clock_filter)
+        .and(slot_clock_filter.clone())
         .and(task_executor_filter.clone())
         .then(
             |pubkey: PublicKey,
@@ -1148,6 +1149,42 @@ pub fn serve<T: 'static + SlotClock + Clone, E: EthSpec>(
                                 slot_clock,
                             ))?;
                         Ok(signed_voluntary_exit)
+                    } else {
+                        Err(warp_utils::reject::custom_server_error(
+                            "Lighthouse shutting down".into(),
+                        ))
+                    }
+                })
+            },
+        );
+
+    // POST /lighthouse/validators/{pubkey}/execution_proofs
+    // EIP-8025: Sign execution proofs for optional execution verification
+    let post_execution_proofs = warp::path("lighthouse")
+        .and(warp::path("validators"))
+        .and(warp::path::param::<PublicKey>())
+        .and(warp::path("execution_proofs"))
+        .and(warp::path::end())
+        .and(warp::body::json())
+        .and(validator_store_filter.clone())
+        .and(slot_clock_filter.clone())
+        .and(task_executor_filter.clone())
+        .then(
+            |pubkey: PublicKey,
+             request: sign_execution_proof::SignExecutionProofRequest,
+             validator_store: Arc<LighthouseValidatorStore<T, E>>,
+             slot_clock: T,
+             task_executor: TaskExecutor| {
+                blocking_json_task(move || {
+                    if let Some(handle) = task_executor.handle() {
+                        let signed_proof =
+                            handle.block_on(sign_execution_proof::sign_execution_proof::<T, E>(
+                                pubkey,
+                                request,
+                                validator_store,
+                                slot_clock,
+                            ))?;
+                        Ok(signed_proof)
                     } else {
                         Err(warp_utils::reject::custom_server_error(
                             "Lighthouse shutting down".into(),
@@ -1377,6 +1414,7 @@ pub fn serve<T: 'static + SlotClock + Clone, E: EthSpec>(
                         .or(post_std_remotekeys)
                         .or(post_graffiti)
                         .or(post_lighthouse_beacon_update)
+                        .or(post_execution_proofs)
                         .recover(warp_utils::reject::handle_rejection),
                 ))
                 .or(warp::patch()

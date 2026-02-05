@@ -1,4 +1,3 @@
-use crate::beacon_block_streamer::Error as BlockStreamerError;
 use crate::beacon_chain::ForkChoiceError;
 use crate::beacon_fork_choice_store::Error as ForkChoiceStoreError;
 use crate::data_availability_checker::AvailabilityCheckError;
@@ -8,6 +7,7 @@ use crate::observed_aggregates::Error as ObservedAttestationsError;
 use crate::observed_attesters::Error as ObservedAttestersError;
 use crate::observed_block_producers::Error as ObservedBlockProducersError;
 use crate::observed_data_sidecars::Error as ObservedDataSidecarsError;
+use crate::{beacon_block_streamer::Error as BlockStreamerError, eip8025::ExecutionProofError};
 use bls::PublicKeyBytes;
 use execution_layer::PayloadStatus;
 use fork_choice::ExecutionStatus;
@@ -248,6 +248,7 @@ pub enum BeaconChainError {
     },
     SkipProposerPreparation,
     FailedColumnCustodyInfoUpdate,
+    ExecutionProofError(ExecutionProofError),
 }
 
 easy_from_to!(SlotProcessingError, BeaconChainError);
@@ -277,6 +278,7 @@ easy_from_to!(EpochCacheError, BeaconChainError);
 easy_from_to!(LightClientError, BeaconChainError);
 easy_from_to!(MilhouseError, BeaconChainError);
 easy_from_to!(AttestationError, BeaconChainError);
+easy_from_to!(ExecutionProofError, BeaconChainError);
 
 #[derive(Debug)]
 pub enum BlockProductionError {

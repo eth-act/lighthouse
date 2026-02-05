@@ -16,6 +16,7 @@ mod build_block_contents;
 mod builder_states;
 mod custody;
 mod database;
+mod eip8025;
 mod light_client;
 mod metrics;
 mod peer;
@@ -540,6 +541,20 @@ pub fn serve<T: BeaconChainTypes>(
         .filter(|_| config.enable_beacon_processor);
     let task_spawner_filter = warp::any()
         .map(move || TaskSpawner::new(beacon_processor_send.clone()))
+        .boxed();
+
+    // Create a `warp` filter that provides direct access to the `BeaconProcessorSend`.
+    let beacon_processor_send_direct = ctx.beacon_processor_send.clone();
+    let _beacon_processor_send_filter = warp::any()
+        .map(move || beacon_processor_send_direct.clone())
+        .and_then(|send| async move {
+            match send {
+                Some(send) => Ok(send),
+                None => Err(warp_utils::reject::custom_server_error(
+                    "Beacon processor unavailable".to_string(),
+                )),
+            }
+        })
         .boxed();
 
     let duplicate_block_status_code = ctx.config.duplicate_block_status_code;
@@ -1782,6 +1797,52 @@ pub fn serve<T: BeaconChainTypes>(
                     Ok(api_types::GenericResponse::from(rewards)).map(|resp| {
                         resp.add_execution_optimistic_finalized(execution_optimistic, finalized)
                     })
+                })
+            },
+        );
+
+    /*
+     * EIP-8025: beacon/execution_proofs
+     */
+
+    let beacon_proofs_path = eth_v1
+        .clone()
+        .and(warp::path("beacon"))
+        .and(warp::path("execution_proofs"))
+        .and(task_spawner_filter.clone())
+        .and(chain_filter.clone());
+
+    // GET beacon/execution_proofs/{block_id}
+    let get_beacon_execution_proofs = beacon_proofs_path
+        .clone()
+        .and(block_id_or_err)
+        .and(warp::path::end())
+        .then(
+            |task_spawner: TaskSpawner<T::EthSpec>,
+             chain: Arc<BeaconChain<T>>,
+             block_id: BlockId| {
+                task_spawner.blocking_json_task(Priority::P1, move || {
+                    eip8025::get_execution_proofs(block_id, chain)
+                })
+            },
+        );
+
+    // POST beacon/execution_proofs/submit
+    let post_prover_execution_proofs = eth_v1
+        .clone()
+        .and(warp::path("submit"))
+        .and(warp::path::end())
+        .and(warp_utils::json::json())
+        .and(task_spawner_filter.clone())
+        .and(chain_filter.clone())
+        .and(network_tx_filter.clone())
+        .then(
+            |proofs: eip8025::SubmitExecutionProofsRequest,
+             task_spawner: TaskSpawner<T::EthSpec>,
+             chain: Arc<BeaconChain<T>>,
+             network_send: UnboundedSender<NetworkMessage<T::EthSpec>>| {
+                task_spawner.spawn_async_with_rejection(Priority::P1, async move {
+                    eip8025::submit_execution_proofs(proofs, chain, network_send).await
                 })
             },
         );
@@ -3289,6 +3350,7 @@ pub fn serve<T: BeaconChainTypes>(
                 .uor(get_beacon_pool_voluntary_exits)
                 .uor(get_beacon_pool_bls_to_execution_changes)
                 .uor(get_beacon_rewards_blocks)
+                .uor(get_beacon_execution_proofs)
                 .uor(get_config_fork_schedule)
                 .uor(get_config_spec)
                 .uor(get_config_deposit_contract)
@@ -3380,6 +3442,7 @@ pub fn serve<T: BeaconChainTypes>(
                     .uor(post_lighthouse_add_peer)
                     .uor(post_lighthouse_remove_peer)
                     .uor(post_lighthouse_custody_backfill)
+                    .uor(post_prover_execution_proofs)
                     .recover(warp_utils::reject::handle_rejection),
             ),
         )
