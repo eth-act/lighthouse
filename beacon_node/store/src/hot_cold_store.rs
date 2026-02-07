@@ -94,6 +94,8 @@ struct BlockCache<E: EthSpec> {
     blob_cache: LruCache<Hash256, BlobSidecarList<E>>,
     data_column_cache: LruCache<Hash256, HashMap<ColumnIndex, Arc<DataColumnSidecar<E>>>>,
     data_column_custody_info_cache: Option<DataColumnCustodyInfo>,
+    request_root_to_block_root: LruCache<Hash256, Hash256>,
+    block_root_to_request_root: LruCache<Hash256, Hash256>,
 }
 
 impl<E: EthSpec> BlockCache<E> {
@@ -103,6 +105,8 @@ impl<E: EthSpec> BlockCache<E> {
             blob_cache: LruCache::new(size),
             data_column_cache: LruCache::new(size),
             data_column_custody_info_cache: None,
+            request_root_to_block_root: LruCache::new(size),
+            block_root_to_request_root: LruCache::new(size),
         }
     }
     pub fn put_block(&mut self, block_root: Hash256, block: SignedBeaconBlock<E>) {
@@ -151,10 +155,34 @@ impl<E: EthSpec> BlockCache<E> {
     pub fn delete_data_columns(&mut self, block_root: &Hash256) {
         let _ = self.data_column_cache.pop(block_root);
     }
+    pub fn delete_request_root(&mut self, block_root: &Hash256) {
+        if let Some(request_root) = self.block_root_to_request_root.pop(block_root) {
+            self.request_root_to_block_root.pop(&request_root);
+        }
+    }
     pub fn delete(&mut self, block_root: &Hash256) {
         self.delete_block(block_root);
         self.delete_blobs(block_root);
         self.delete_data_columns(block_root);
+        self.delete_request_root(block_root);
+    }
+
+    /// Store bidirectional mapping between request_root and block_root
+    pub fn put_request_root_mapping(&mut self, request_root: Hash256, block_root: Hash256) {
+        self.request_root_to_block_root
+            .put(request_root, block_root);
+        self.block_root_to_request_root
+            .put(block_root, request_root);
+    }
+
+    /// Look up block_root by request_root
+    pub fn get_block_root_by_request_root(&mut self, request_root: &Hash256) -> Option<Hash256> {
+        self.request_root_to_block_root.get(request_root).copied()
+    }
+
+    /// Look up request_root by block_root
+    pub fn get_request_root_by_block_root(&mut self, block_root: &Hash256) -> Option<Hash256> {
+        self.block_root_to_request_root.get(block_root).copied()
     }
 }
 
@@ -1025,6 +1053,30 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
                 data_column.as_ssz_bytes(),
             ));
         }
+    }
+
+    /// Store bidirectional mapping between request_root and block_root (EIP-8025)
+    /// This is in-memory only and not persisted to database in initial implementation.
+    pub fn put_request_root_mapping(&self, request_root: Hash256, block_root: Hash256) {
+        if let Some(cache) = self.block_cache.as_ref() {
+            cache
+                .lock()
+                .put_request_root_mapping(request_root, block_root);
+        }
+    }
+
+    /// Look up block_root by request_root (cache-only, no database)
+    pub fn get_block_root_by_request_root(&self, request_root: &Hash256) -> Option<Hash256> {
+        self.block_cache
+            .as_ref()
+            .and_then(|cache| cache.lock().get_block_root_by_request_root(request_root))
+    }
+
+    /// Look up request_root by block_root (for future req/resp support)
+    pub fn get_request_root_by_block_root(&self, block_root: &Hash256) -> Option<Hash256> {
+        self.block_cache
+            .as_ref()
+            .and_then(|cache| cache.lock().get_request_root_by_block_root(block_root))
     }
 
     /// Store a state in the store.

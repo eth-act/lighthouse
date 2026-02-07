@@ -81,7 +81,7 @@ use eth2::types::{
 };
 use execution_layer::{
     BlockProposalContents, BlockProposalContentsType, BuilderParams, ChainHealth, ExecutionLayer,
-    FailedCondition, PayloadAttributes, PayloadStatus,
+    FailedCondition, PayloadAttributes, PayloadStatus, eip8025::ProofEngine,
 };
 use fixed_bytes::FixedBytesExtended;
 use fork_choice::{
@@ -135,6 +135,7 @@ use tracing::{Span, debug, debug_span, error, info, info_span, instrument, trace
 use tree_hash::TreeHash;
 use types::data::{ColumnIndex, FixedBlobSidecarList};
 use types::execution::BlockProductionVersion;
+use types::execution::eip8025::ProofStatus;
 use types::*;
 
 pub type ForkChoiceError = fork_choice::Error<crate::ForkChoiceStoreError>;
@@ -7426,54 +7427,126 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     /// Verify a signed execution proof (EIP-8025).
     ///
     /// This method:
-    /// 1. Looks up the validator's public key from the beacon state
-    /// 2. Verifies the BLS signature over the proof message
-    /// TODO:
-    /// - map the PublicInput to a cache of new payload request root -> beacon block root.
-    /// - use the validator cache at the block being proven, not the head state.
+    /// 1. Verifies the BLS signature over the proof message
+    /// 2. Verifies the proof via the ProofEngine (execution engine RPC)
+    /// 3. If the proof is valid, updates fork choice to mark the corresponding block as valid.
     ///
     /// # Returns
     ///
-    /// `Ok(())` if the proof is valid, otherwise an `ExecutionProofError`.
+    /// `Ok(ProofStatus)` if the proof has been verified by the proof engine, otherwise an `ExecutionProofError`.
     pub async fn verify_execution_proof(
-        &self,
-        signed_proof: &types::SignedExecutionProof,
-    ) -> Result<(), Error> {
-        // Get current fork name
-        let head = self.canonical_head.cached_head();
-        let fork_name = self.spec.fork_name_at_slot::<T::EthSpec>(head.head_slot());
+        self: &Arc<Self>,
+        signed_proof: types::SignedExecutionProof,
+    ) -> Result<ProofStatus, Error> {
+        // TODO: This function clones the proof multiple times. Optimise it.
 
-        // Get the validator's public key from the head state
-        let validator_index = signed_proof.validator_index as usize;
-        // TODO: Should this use the head state or the parent state of the block being proven?
-        let head_state = &head.snapshot.beacon_state;
+        // Clone for moving into closures
+        let chain = self.clone();
+        let signed_proof_for_bls = signed_proof.clone();
 
-        let validator_pubkey = head_state
-            .validators()
-            .get(validator_index)
-            .map(|v| v.pubkey)
-            .ok_or(ExecutionProofError::InvalidValidatorIndex)?;
+        // Use spawn_blocking_handle because BLS verification is cpu-bound.
+        self.spawn_blocking_handle(
+            move || {
+                let head = chain.canonical_head.cached_head();
+                let fork_name = chain.spec.fork_name_at_slot::<T::EthSpec>(head.head_slot());
 
-        // Verify the signature
-        let genesis_validators_root = self.genesis_validators_root;
-        let spec = self.spec.clone();
-        let signed_proof = signed_proof.clone();
+                let validator_index = signed_proof_for_bls.validator_index as usize;
+                let head_state = &head.snapshot.beacon_state;
 
-        verify_signed_execution_proof_signature::<T::EthSpec>(
-            &signed_proof,
-            &validator_pubkey,
-            fork_name,
-            genesis_validators_root,
-            &spec,
-        )?;
+                let validator_pubkey = head_state
+                    .validators()
+                    .get(validator_index)
+                    .map(|v| v.pubkey)
+                    .ok_or(ExecutionProofError::InvalidValidatorIndex)?;
 
-        Ok(())
+                verify_signed_execution_proof_signature::<T::EthSpec>(
+                    &signed_proof_for_bls,
+                    &validator_pubkey,
+                    fork_name,
+                    chain.genesis_validators_root,
+                    &chain.spec,
+                )
+            },
+            "verify_execution_proof_bls",
+        )
+        .await??;
+
+        // Step 2: ProofEngine verification
+        // The proof engine must be configured if we are receiving execution proofs, so if it's not available then that's an error.
+        let proof_engine = self
+            .execution_layer
+            .as_ref()
+            .ok_or(ExecutionProofError::NoExecutionLayer)?
+            .proof_engine()
+            .ok_or(ExecutionProofError::NoExecutionLayer)?;
+
+        // The proof engine verification is primiarly async work, waiting for the proof verifier result so we spawn it on the async executor.
+        let signed_proof_for_engine = signed_proof.clone();
+        let handle = self
+            .task_executor
+            .spawn_handle(
+                async move {
+                    proof_engine
+                        .verify_execution_proof(&signed_proof_for_engine)
+                        .await
+                },
+                "verify_execution_proof_engine",
+            )
+            .ok_or(Error::RuntimeShutdown)?;
+
+        let verification_result = handle
+            .await
+            .map_err(Error::TokioJoin)?
+            .ok_or(Error::RuntimeShutdown)??;
+
+        // Step 3: Update the fork choice if the proof engine returns valid.
+        // The proof engine returns valid if the proof is valid and the criteria for the associated block root to be considered valid are met.
+        // The proof engine returns ACCEPTED if the proof is valid but block validity criteria are not met.
+        if verification_result.is_valid() {
+            let request_root = signed_proof.request_root();
+
+            // Look up the beacon block root from request root
+            let block_root = self
+                .store
+                .get_block_root_by_request_root(&request_root)
+                .ok_or_else(|| ExecutionProofError::UnknownRequestRoot(request_root))?;
+
+            debug!(
+                ?request_root,
+                ?block_root,
+                validator_index = signed_proof.validator_index,
+                proof_type = signed_proof.message.proof_type,
+                "Processing verified execution proof"
+            );
+
+            // Update fork choice using spawn_blocking_handle to avoid lock contention.
+            let chain = self.clone();
+            self.spawn_blocking_handle(
+                move || {
+                    chain
+                        .canonical_head
+                        .fork_choice_write_lock()
+                        .on_valid_execution_payload(block_root)
+                },
+                "verify_execution_proof_fork_choice_update",
+            )
+            .await??;
+
+            info!(
+                ?block_root,
+                ?request_root,
+                "Updated fork choice for verified proof"
+            );
+        }
+
+        Ok(verification_result)
     }
 }
 
 impl<T: BeaconChainTypes> Drop for BeaconChain<T> {
     fn drop(&mut self) {
         let drop = || -> Result<(), Error> {
+            // TODO: Persist the proof engine state if the BeaconChain is dropped.
             self.persist_fork_choice()?;
             self.persist_op_pool()?;
             self.persist_custody_context()

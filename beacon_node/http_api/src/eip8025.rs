@@ -34,7 +34,6 @@ pub struct SubmitExecutionProofsRequest {
     pub proofs: Vec<SignedExecutionProof>,
 }
 
-// TODO: This is a placeholder with basic functionality.
 /// Get execution proofs for a given block.
 ///
 /// Returns execution proofs from the ProofEngine for the block's execution payload.
@@ -69,9 +68,11 @@ pub fn get_execution_proofs<T: BeaconChainTypes>(
     let (block_root, execution_optimistic, finalized) = block_id.root(&chain)?;
 
     // Get proofs from the proof engine
-    // Note: In a full implementation, we'd compute the new_payload_request_root from the block's
-    // execution payload. For now, we use the block root as a lookup key.
-    let proofs = proof_engine.get_proofs_by_root(&block_root);
+    let request_root = chain
+        .store
+        .get_request_root_by_block_root(&block_root)
+        .ok_or(custom_server_error("request block is unknown".to_string()))?;
+    let proofs = proof_engine.get_proofs_by_root(&request_root);
 
     debug!(
         block_root = ?block_root,
@@ -86,18 +87,18 @@ pub fn get_execution_proofs<T: BeaconChainTypes>(
     })
 }
 
-/// Submit pre-signed execution proofs.
+/// Submit signed execution proofs.
 ///
 /// This endpoint is used by validator clients to submit execution proofs that have been
 /// signed by a validator. The proofs will be verified, stored in the ProofEngine, and
 /// gossiped to the network.
-///
-/// Note: Proofs must be signed by a validator using the validator client's signing service.
 pub async fn submit_execution_proofs<T: BeaconChainTypes>(
     request: SubmitExecutionProofsRequest,
     chain: Arc<BeaconChain<T>>,
     network_send: UnboundedSender<NetworkMessage<T::EthSpec>>,
 ) -> Result<Response<Body>, warp::Rejection> {
+    // TODO: should we add a verify: bool to verify_execution_proof to allow skipping verification checks from this endpoint if we trust the source?
+
     // Check if EIP-8025 is enabled
     let current_slot = chain
         .slot()
@@ -125,8 +126,8 @@ pub async fn submit_execution_proofs<T: BeaconChainTypes>(
             proof_type, validator_index, "Processing submitted signed execution proof"
         );
 
-        // Verify the signed proof
-        if let Err(e) = chain.verify_execution_proof(&signed_proof).await {
+        // Verify proof (BLS signature + execution engine + fork choice update)
+        if let Err(e) = chain.verify_execution_proof(signed_proof.clone()).await {
             warn!(
                 error = ?e,
                 ?request_root,

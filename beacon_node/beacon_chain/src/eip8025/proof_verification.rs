@@ -7,6 +7,7 @@
 //! - TODO: integration into proof engine for end-to-end verification
 
 use crate::BeaconChainError;
+use execution_layer::eip8025::ProofEngineError;
 use std::fmt;
 use tree_hash::TreeHash;
 use types::{ChainSpec, Domain, EthSpec, ForkName, Hash256, SignedExecutionProof, SigningData};
@@ -18,8 +19,6 @@ pub enum ExecutionProofError {
     InvalidSignature,
     /// The proof data is empty.
     EmptyProofData,
-    /// The proof data exceeds the maximum allowed size.
-    ProofDataTooLarge,
     /// The validator index is out of range.
     InvalidValidatorIndex,
     /// Failed to decompress the validator's public key.
@@ -30,6 +29,12 @@ pub enum ExecutionProofError {
     UnsupportedFork,
     /// Failed to retrieve beacon state.
     StateError(String),
+    /// No execution layer configured.
+    NoExecutionLayer,
+    /// The request root referenced by the proof is not known.
+    UnknownRequestRoot(Hash256),
+    /// The was an error in the proof engine during verification.
+    ProofEngineError(ProofEngineError),
 }
 
 impl fmt::Display for ExecutionProofError {
@@ -40,9 +45,6 @@ impl fmt::Display for ExecutionProofError {
             }
             ExecutionProofError::EmptyProofData => {
                 write!(f, "Proof data is empty")
-            }
-            ExecutionProofError::ProofDataTooLarge => {
-                write!(f, "Proof data exceeds maximum size")
             }
             ExecutionProofError::InvalidValidatorIndex => {
                 write!(f, "Validator index out of range")
@@ -58,6 +60,19 @@ impl fmt::Display for ExecutionProofError {
             }
             ExecutionProofError::StateError(msg) => {
                 write!(f, "Beacon state error: {}", msg)
+            }
+            ExecutionProofError::NoExecutionLayer => {
+                write!(f, "No execution layer configured")
+            }
+            ExecutionProofError::UnknownRequestRoot(root) => {
+                write!(
+                    f,
+                    "Unknown request root {:?}. Block may not be imported yet or was already finalized.",
+                    root
+                )
+            }
+            ExecutionProofError::ProofEngineError(engine_error) => {
+                write!(f, "Proof engine error: {:?}", engine_error)
             }
         }
     }
@@ -97,7 +112,7 @@ pub fn compute_execution_proof_domain(
 ///
 /// This function:
 /// 1. Checks that the fork supports EIP-8025
-/// 2. Checks that proof data is not empty
+/// 2. Checks that proof data is not empty (max proof size should be enforced by ssz deserialization)
 /// 3. Verifies the BLS signature over the proof message using the validator's pubkey
 ///
 /// # Arguments
@@ -120,19 +135,13 @@ pub fn verify_signed_execution_proof_signature<E: EthSpec>(
 ) -> Result<(), BeaconChainError> {
     // Check fork support
     if !fork_name.eip8025_enabled() {
-        return Err(ExecutionProofError::UnsupportedFork.into());
+        Err(ExecutionProofError::UnsupportedFork)?;
     }
 
     // Check proof data is not empty
     if signed_proof.message.proof_data.is_empty() {
-        return Err(ExecutionProofError::EmptyProofData.into());
+        Err(ExecutionProofError::EmptyProofData)?;
     }
-
-    // Get the domain for execution proof signing
-    let domain = compute_execution_proof_domain(fork_name, genesis_validators_root, spec);
-
-    // Compute the signing root
-    let signing_root = compute_signing_root(&signed_proof.message, domain);
 
     // Decompress the validator's public key
     let pubkey = validator_pubkey
@@ -145,12 +154,24 @@ pub fn verify_signed_execution_proof_signature<E: EthSpec>(
         .decompress()
         .map_err(|_| ExecutionProofError::InvalidSignatureFormat)?;
 
+    // Get the domain for execution proof signing
+    let domain = compute_execution_proof_domain(fork_name, genesis_validators_root, spec);
+
+    // Compute the signing root
+    let signing_root = compute_signing_root(&signed_proof.message, domain);
+
     // Verify the signature
     if !signature.verify(&pubkey, signing_root) {
-        return Err(ExecutionProofError::InvalidSignature.into());
+        Err(ExecutionProofError::InvalidSignature)?;
     }
 
     Ok(())
+}
+
+impl From<ProofEngineError> for BeaconChainError {
+    fn from(engine_error: ProofEngineError) -> Self {
+        BeaconChainError::ExecutionProofError(ExecutionProofError::ProofEngineError(engine_error))
+    }
 }
 
 #[cfg(test)]

@@ -136,7 +136,26 @@ async fn notify_new_payload<T: BeaconChainTypes>(
         .ok_or(ExecutionPayloadError::NoExecutionConnection)?;
 
     let execution_block_hash = block.execution_payload()?.block_hash();
-    let new_payload_response = execution_layer.notify_new_payload(block.try_into()?).await;
+    let new_payload_request: NewPayloadRequest<'_, <T as BeaconChainTypes>::EthSpec> =
+        block.try_into()?;
+    let new_payload_request_root = new_payload_request.tree_hash_root();
+    let block_root = block.tree_hash_root();
+    let new_payload_response = execution_layer
+        .notify_new_payload(new_payload_request)
+        .await;
+
+    // Store bidirectional mapping for EIP-8025 execution proofs
+    // This enables proofs to be mapped to beacon blocks for fork choice updates
+    // TODO: If we store proofs in Store then we can remove the need for this mapping and just store the block root in the proof.
+    // TODO: We should consider if this is the optimal mapping. We could consider using the execution block hash.
+    debug!(
+        ?block_root,
+        ?new_payload_request_root,
+        "Stored request_root mapping in cache"
+    );
+    chain
+        .store
+        .put_request_root_mapping(new_payload_request_root, block_root);
 
     match new_payload_response {
         Ok(status) => match status {
