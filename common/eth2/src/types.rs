@@ -981,6 +981,14 @@ pub struct SseBlock {
 }
 
 #[derive(PartialEq, Debug, Serialize, Deserialize, Clone)]
+#[serde(bound = "E: EthSpec")]
+pub struct SseBlockFull<E: EthSpec> {
+    pub slot: Slot,
+    pub block: BeaconBlock<E>,
+    pub execution_optimistic: bool,
+}
+
+#[derive(PartialEq, Debug, Serialize, Deserialize, Clone)]
 pub struct SseBlobSidecar {
     pub block_root: Hash256,
     #[serde(with = "serde_utils::quoted_u64")]
@@ -1180,6 +1188,7 @@ pub enum EventKind<E: EthSpec> {
     Attestation(Box<Attestation<E>>),
     SingleAttestation(Box<SingleAttestation>),
     Block(SseBlock),
+    BlockFull(Box<SseBlockFull<E>>),
     BlobSidecar(SseBlobSidecar),
     DataColumnSidecar(SseDataColumnSidecar),
     FinalizedCheckpoint(SseFinalizedCheckpoint),
@@ -1204,6 +1213,7 @@ impl<E: EthSpec> EventKind<E> {
         match self {
             EventKind::Head(_) => "head",
             EventKind::Block(_) => "block",
+            EventKind::BlockFull(_) => "block_full",
             EventKind::BlobSidecar(_) => "blob_sidecar",
             EventKind::DataColumnSidecar(_) => "data_column_sidecar",
             EventKind::Attestation(_) => "attestation",
@@ -1334,6 +1344,7 @@ pub struct EventQuery {
 pub enum EventTopic {
     Head,
     Block,
+    BlockFull,
     BlobSidecar,
     DataColumnSidecar,
     Attestation,
@@ -1389,6 +1400,7 @@ impl fmt::Display for EventTopic {
         match self {
             EventTopic::Head => write!(f, "head"),
             EventTopic::Block => write!(f, "block"),
+            EventTopic::BlockFull => write!(f, "block_full"),
             EventTopic::BlobSidecar => write!(f, "blob_sidecar"),
             EventTopic::DataColumnSidecar => write!(f, "data_column_sidecar"),
             EventTopic::Attestation => write!(f, "attestation"),

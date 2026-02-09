@@ -90,6 +90,8 @@ pub struct Config {
     #[serde(flatten)]
     pub initialized_validators: InitializedValidatorsConfig,
     pub disable_attesting: bool,
+    /// URL of the proof engine HTTP JSON-RPC endpoint for EIP-8025 execution proofs
+    pub proof_engine_endpoint: Option<SensitiveUrl>,
 }
 
 impl Default for Config {
@@ -136,6 +138,7 @@ impl Default for Config {
             distributed: false,
             initialized_validators: <_>::default(),
             disable_attesting: false,
+            proof_engine_endpoint: None,
         }
     }
 }
@@ -279,6 +282,17 @@ impl Config {
             config
                 .initialized_validators
                 .web3_signer_max_idle_connections = Some(n);
+        }
+
+        /*
+         * Proof Engine (EIP-8025)
+         */
+        if let Some(proof_engine_endpoint) = validator_client_config.proof_engine_endpoint.as_ref()
+        {
+            config.proof_engine_endpoint = Some(
+                SensitiveUrl::parse(proof_engine_endpoint)
+                    .map_err(|e| format!("Unable to parse proof engine URL: {:?}", e))?,
+            );
         }
 
         /*

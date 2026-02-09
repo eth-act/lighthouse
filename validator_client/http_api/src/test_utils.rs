@@ -142,6 +142,7 @@ impl ApiTester {
             config: http_config,
             sse_logging_components: None,
             slot_clock,
+            proof_service: None,
         });
         let ctx = context;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();

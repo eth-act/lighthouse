@@ -1827,19 +1827,16 @@ pub fn serve<T: BeaconChainTypes>(
             },
         );
 
-    // POST beacon/execution_proofs/submit
-    let post_prover_execution_proofs = eth_v1
+    // POST beacon/execution_proofs
+    let post_prover_execution_proofs = beacon_proofs_path
         .clone()
-        .and(warp::path("submit"))
         .and(warp::path::end())
         .and(warp_utils::json::json())
-        .and(task_spawner_filter.clone())
-        .and(chain_filter.clone())
         .and(network_tx_filter.clone())
         .then(
-            |proofs: eip8025::SubmitExecutionProofsRequest,
-             task_spawner: TaskSpawner<T::EthSpec>,
+            |task_spawner: TaskSpawner<T::EthSpec>,
              chain: Arc<BeaconChain<T>>,
+             proofs: eip8025::SubmitExecutionProofsRequest,
              network_send: UnboundedSender<NetworkMessage<T::EthSpec>>| {
                 task_spawner.spawn_async_with_rejection(Priority::P1, async move {
                     eip8025::submit_execution_proofs(proofs, chain, network_send).await
@@ -3181,6 +3178,9 @@ pub fn serve<T: BeaconChainTypes>(
                             let receiver = match topic {
                                 api_types::EventTopic::Head => event_handler.subscribe_head(),
                                 api_types::EventTopic::Block => event_handler.subscribe_block(),
+                                api_types::EventTopic::BlockFull => {
+                                    event_handler.subscribe_block_full()
+                                }
                                 api_types::EventTopic::BlobSidecar => {
                                     event_handler.subscribe_blob_sidecar()
                                 }

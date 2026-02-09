@@ -295,7 +295,10 @@ pub fn get_config<E: EthSpec>(
 
     // Validation: at least one endpoint must be provided
     if execution_endpoint.is_none() && proof_engine_endpoint.is_none() {
-        return Err("At least one of --execution-endpoint or --proof-engine-endpoint must be provided".to_string());
+        return Err(
+            "At least one of --execution-endpoint or --proof-engine-endpoint must be provided"
+                .to_string(),
+        );
     }
 
     let mut el_config = execution_layer::Config::default();
@@ -304,10 +307,15 @@ pub fn get_config<E: EthSpec>(
     let secret_file: Option<PathBuf> = if execution_endpoint.is_some() {
         // Parse a single JWT secret from a given file_path, logging warnings if multiple are supplied.
         if let Some(secret_files) = cli_args.get_one::<String>("execution-jwt") {
-            Some(parse_only_one_value(secret_files, PathBuf::from_str, "--execution-jwt")?)
+            Some(parse_only_one_value(
+                secret_files,
+                PathBuf::from_str,
+                "--execution-jwt",
+            )?)
         // Check if the JWT secret key is passed directly via cli flag and persist it to the default
         // file location.
-        } else if let Some(jwt_secret_key) = cli_args.get_one::<String>("execution-jwt-secret-key") {
+        } else if let Some(jwt_secret_key) = cli_args.get_one::<String>("execution-jwt-secret-key")
+        {
             use std::fs::File;
             use std::io::Write;
             let secret_file_path = client_config.data_dir().join(DEFAULT_JWT_FILE);

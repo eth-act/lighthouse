@@ -5,10 +5,11 @@ use std::fmt::Debug;
 use std::future::Future;
 use std::sync::Arc;
 use types::{
-    Address, Attestation, AttestationError, BlindedBeaconBlock, Epoch, EthSpec, Graffiti, Hash256,
-    SelectionProof, SignedAggregateAndProof, SignedBlindedBeaconBlock, SignedContributionAndProof,
-    SignedValidatorRegistrationData, Slot, SyncCommitteeContribution, SyncCommitteeMessage,
-    SyncSelectionProof, SyncSubnetId, ValidatorRegistrationData,
+    Address, Attestation, AttestationError, BlindedBeaconBlock, Epoch, EthSpec, ExecutionProof,
+    Graffiti, Hash256, SelectionProof, SignedAggregateAndProof, SignedBlindedBeaconBlock,
+    SignedContributionAndProof, SignedExecutionProof, SignedValidatorRegistrationData, Slot,
+    SyncCommitteeContribution, SyncCommitteeMessage, SyncSelectionProof, SyncSubnetId,
+    ValidatorRegistrationData,
 };
 
 #[derive(Debug, PartialEq, Clone)]
@@ -159,6 +160,16 @@ pub trait ValidatorStore: Send + Sync {
         contribution: SyncCommitteeContribution<Self::E>,
         selection_proof: SyncSelectionProof,
     ) -> impl Future<Output = Result<SignedContributionAndProof<Self::E>, Error<Self::Error>>> + Send;
+
+    /// Signs an execution proof for EIP-8025.
+    ///
+    /// This allows validators to sign execution proofs for optional execution verification.
+    fn sign_execution_proof(
+        &self,
+        validator_pubkey: PublicKeyBytes,
+        execution_proof: ExecutionProof,
+        signing_epoch: Epoch,
+    ) -> impl Future<Output = Result<SignedExecutionProof, Error<Self::Error>>> + Send;
 
     /// Prune the slashing protection database so that it remains performant.
     ///

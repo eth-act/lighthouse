@@ -508,4 +508,14 @@ pub struct ValidatorClient {
         display_order = 0
     )]
     pub web3_signer_max_idle_connections: Option<usize>,
+
+    #[clap(
+        long,
+        value_name = "HTTP-JSON-RPC-URL",
+        help = "URL of the proof engine HTTP JSON-RPC endpoint for EIP-8025 execution proofs. \
+                When set, the validator client will proactively monitor for new blocks and \
+                request execution proofs from this endpoint.",
+        display_order = 0
+    )]
+    pub proof_engine_endpoint: Option<String>,
 }

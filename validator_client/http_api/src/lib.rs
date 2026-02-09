@@ -4,7 +4,6 @@ mod create_validator;
 mod graffiti;
 mod keystores;
 mod remotekeys;
-mod sign_execution_proof;
 mod tests;
 
 pub mod test_utils;
@@ -57,6 +56,7 @@ use tracing::{info, warn};
 use types::{ChainSpec, ConfigAndPreset, EthSpec};
 use validator_dir::Builder as ValidatorDirBuilder;
 use validator_services::block_service::BlockService;
+use validator_services::proof_service::ProofService;
 use warp::{Filter, reply::Response, sse::Event};
 use warp_utils::reject::convert_rejection;
 use warp_utils::task::blocking_json_task;
@@ -82,7 +82,7 @@ impl From<String> for Error {
 /// A wrapper around all the items required to spawn the HTTP server.
 ///
 /// The server will gracefully handle the case where any fields are `None`.
-pub struct Context<T: SlotClock, E> {
+pub struct Context<T: SlotClock + 'static, E: EthSpec> {
     pub task_executor: TaskExecutor,
     pub api_secret: ApiSecret,
     pub block_service: Option<BlockService<LighthouseValidatorStore<T, E>, T>>,
@@ -95,6 +95,7 @@ pub struct Context<T: SlotClock, E> {
     pub config: Config,
     pub sse_logging_components: Option<SSELoggingComponents>,
     pub slot_clock: T,
+    pub proof_service: Option<Arc<ProofService<LighthouseValidatorStore<T, E>, T>>>,
 }
 
 /// Configuration for the HTTP server.
@@ -249,6 +250,19 @@ pub fn serve<T: 'static + SlotClock + Clone, E: EthSpec>(
 
     let inner_spec = ctx.spec.clone();
     let spec_filter = warp::any().map(move || inner_spec.clone());
+
+    let inner_proof_service = ctx.proof_service.clone();
+    let proof_service_filter = warp::any()
+        .map(move || inner_proof_service.clone())
+        .and_then(
+            |service: Option<Arc<ProofService<LighthouseValidatorStore<T, E>, T>>>| async move {
+                service.ok_or_else(|| {
+                    warp_utils::reject::custom_not_found(
+                        "proof service is not initialized.".to_string(),
+                    )
+                })
+            },
+        );
 
     let api_token_path_inner = api_token_path.clone();
     let api_token_path_filter = warp::any().map(move || api_token_path_inner.clone());
@@ -514,7 +528,7 @@ pub fn serve<T: 'static + SlotClock + Clone, E: EthSpec>(
         .and(validator_dir_filter.clone())
         .and(secrets_dir_filter.clone())
         .and(validator_store_filter.clone())
-        .and(spec_filter)
+        .and(spec_filter.clone())
         .and(task_executor_filter.clone())
         .then(
             move |body: api_types::CreateValidatorsMnemonicRequest,
@@ -1159,32 +1173,37 @@ pub fn serve<T: 'static + SlotClock + Clone, E: EthSpec>(
         );
 
     // POST /lighthouse/validators/{pubkey}/execution_proofs
-    // EIP-8025: Sign execution proofs for optional execution verification
+    // EIP-8025: Sign execution proof and submit to beacon node
+    // Request body definition (inline)
+    #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+    struct SignExecutionProofRequest {
+        execution_proof: types::ExecutionProof,
+        #[serde(default)]
+        epoch: Option<types::Epoch>,
+    }
+
     let post_execution_proofs = warp::path("lighthouse")
         .and(warp::path("validators"))
         .and(warp::path::param::<PublicKey>())
         .and(warp::path("execution_proofs"))
         .and(warp::path::end())
         .and(warp::body::json())
-        .and(validator_store_filter.clone())
-        .and(slot_clock_filter.clone())
+        .and(proof_service_filter.clone())
         .and(task_executor_filter.clone())
         .then(
             |pubkey: PublicKey,
-             request: sign_execution_proof::SignExecutionProofRequest,
-             validator_store: Arc<LighthouseValidatorStore<T, E>>,
-             slot_clock: T,
+             request: SignExecutionProofRequest,
+             proof_service: Arc<ProofService<LighthouseValidatorStore<T, E>, T>>,
              task_executor: TaskExecutor| {
                 blocking_json_task(move || {
                     if let Some(handle) = task_executor.handle() {
-                        let signed_proof =
-                            handle.block_on(sign_execution_proof::sign_execution_proof::<T, E>(
+                        handle
+                            .block_on(proof_service.handle_proof_request(
                                 pubkey,
-                                request,
-                                validator_store,
-                                slot_clock,
-                            ))?;
-                        Ok(signed_proof)
+                                request.execution_proof,
+                                request.epoch,
+                            ))
+                            .map_err(warp_utils::reject::custom_server_error)
                     } else {
                         Err(warp_utils::reject::custom_server_error(
                             "Lighthouse shutting down".into(),
@@ -1192,7 +1211,8 @@ pub fn serve<T: 'static + SlotClock + Clone, E: EthSpec>(
                     }
                 })
             },
-        );
+        )
+        .map(|reply| warp::reply::with_status(reply, warp::http::StatusCode::ACCEPTED));
 
     // GET /eth/v1/validator/{pubkey}/graffiti
     let get_graffiti = eth_v1

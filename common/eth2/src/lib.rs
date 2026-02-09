@@ -14,6 +14,7 @@ pub mod lighthouse;
 #[cfg(feature = "lighthouse")]
 pub mod lighthouse_vc;
 pub mod mixin;
+pub mod proof_engine;
 pub mod types;
 
 pub use beacon_response::{
@@ -1751,6 +1752,25 @@ impl BeaconNodeHttpClient {
             .push("bls_to_execution_changes");
 
         self.post(path, &address_changes).await?;
+
+        Ok(())
+    }
+
+    /// `POST beacon/execution_proofs`
+    ///
+    /// Submit signed execution proofs for EIP-8025 optional execution verification.
+    pub async fn post_beacon_execution_proofs(
+        &self,
+        proofs: &[SignedExecutionProof],
+    ) -> Result<(), Error> {
+        let mut path = self.eth_path(V1)?;
+
+        path.path_segments_mut()
+            .map_err(|()| Error::InvalidUrl(self.server.clone()))?
+            .push("beacon")
+            .push("execution_proofs");
+
+        self.post(path, &proofs).await?;
 
         Ok(())
     }
