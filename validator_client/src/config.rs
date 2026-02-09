@@ -92,6 +92,8 @@ pub struct Config {
     pub disable_attesting: bool,
     /// URL of the proof engine HTTP JSON-RPC endpoint for EIP-8025 execution proofs
     pub proof_engine_endpoint: Option<SensitiveUrl>,
+    /// Proof type identifiers to request from the proof engine (e.g., 0, 1, 2)
+    pub proof_types: Option<Vec<u8>>,
 }
 
 impl Default for Config {
@@ -139,6 +141,7 @@ impl Default for Config {
             initialized_validators: <_>::default(),
             disable_attesting: false,
             proof_engine_endpoint: None,
+            proof_types: None,
         }
     }
 }
@@ -294,6 +297,8 @@ impl Config {
                     .map_err(|e| format!("Unable to parse proof engine URL: {:?}", e))?,
             );
         }
+
+        config.proof_types = validator_client_config.proof_types.clone();
 
         /*
          * Http API server

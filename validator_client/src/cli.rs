@@ -518,4 +518,15 @@ pub struct ValidatorClient {
         display_order = 0
     )]
     pub proof_engine_endpoint: Option<String>,
+
+    #[clap(
+        long,
+        value_name = "TYPES",
+        value_delimiter = ',',
+        requires = "proof_engine_endpoint",
+        help = "Comma-separated list of proof type identifiers to request from the proof engine \
+                (e.g., 0,1,2). If not specified, defaults to all available types.",
+        display_order = 0
+    )]
+    pub proof_types: Option<Vec<u8>>,
 }

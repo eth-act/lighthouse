@@ -12,14 +12,16 @@
 
 use beacon_node_fallback::BeaconNodeFallback;
 use bls::PublicKey;
-use eth2::proof_engine::ProofEngineHttpClient;
 use eth2::types::EventTopic;
+use execution_layer::NewPayloadRequest;
+use execution_layer::eip8025::{HttpProofEngine, ProofEngine};
 use futures::StreamExt;
 use slot_clock::SlotClock;
 use std::sync::Arc;
 use task_executor::TaskExecutor;
 use tracing::{debug, error, info, warn};
-use types::{Epoch, EthSpec, ExecutionProof};
+use types::execution::eip8025::ProofAttributes;
+use types::{BeaconBlock, Epoch, EthSpec, ExecutionProof};
 use validator_store::ValidatorStore;
 
 /// Background service for execution proof handling
@@ -30,10 +32,10 @@ pub struct ProofService<S: ValidatorStore, T: SlotClock> {
 struct Inner<S: ValidatorStore, T: SlotClock> {
     validator_store: Arc<S>,
     beacon_nodes: Arc<BeaconNodeFallback<T>>,
-    proof_engine: Arc<ProofEngineHttpClient>,
+    proof_engine: Arc<HttpProofEngine>,
     slot_clock: T,
     executor: TaskExecutor,
-    validator_http_api_url: String,
+    proof_types: Vec<u8>,
 }
 
 impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> ProofService<S, T> {
@@ -41,11 +43,15 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> ProofService<S
     pub fn new(
         validator_store: Arc<S>,
         beacon_nodes: Arc<BeaconNodeFallback<T>>,
-        proof_engine: Arc<ProofEngineHttpClient>,
+        proof_engine: Arc<HttpProofEngine>,
         slot_clock: T,
         executor: TaskExecutor,
-        validator_http_api_url: String,
+        proof_types: Option<Vec<u8>>,
     ) -> Self {
+        // Default to all available proof types if not specified
+        // TODO: Update when proof types are standardized
+        let proof_types = proof_types.unwrap_or_else(|| vec![0, 1, 2]);
+
         Self {
             inner: Arc::new(Inner {
                 validator_store,
@@ -53,7 +59,7 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> ProofService<S
                 proof_engine,
                 slot_clock,
                 executor,
-                validator_http_api_url,
+                proof_types,
             }),
         }
     }
@@ -111,9 +117,8 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> Inner<S, T> {
                                         "Received execution optimistic block event"
                                     );
                                 }
-                                // Extract block root from the full beacon block
-                                let block_root = block_event.block.canonical_root();
-                                self.handle_block_event(block_root, block_event.slot).await;
+                                self.handle_block_event(&block_event.block, block_event.slot)
+                                    .await;
                             }
                             Ok(_) => {
                                 // Ignore other event types (shouldn't happen with our topic filter)
@@ -158,29 +163,49 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> Inner<S, T> {
     }
 
     /// Handle a new block event by requesting proofs from proof engine
-    async fn handle_block_event(&self, block_root: types::Hash256, slot: types::Slot) {
+    async fn handle_block_event(&self, block: &BeaconBlock<S::E>, slot: types::Slot) {
+        let block_root = block.canonical_root();
+
         info!(
             slot = slot.as_u64(),
             block = %block_root,
             "New block detected, requesting proofs from proof engine"
         );
 
-        // Request proofs from proof engine with callback URL
+        // Construct NewPayloadRequest from beacon block
+        let new_payload_request = match NewPayloadRequest::try_from(block.to_ref()) {
+            Ok(req) => req,
+            Err(e) => {
+                error!(
+                    error = ?e,
+                    block = %block_root,
+                    "Failed to construct NewPayloadRequest from block"
+                );
+                return;
+            }
+        };
+
+        // Use configured proof types
+        let proof_attributes = ProofAttributes {
+            proof_types: self.proof_types.clone(),
+        };
+
+        // Request proofs from proof engine - HttpProofEngine handles JSON serialization
         match self
             .proof_engine
-            .request_proofs_for_block(block_root, self.validator_http_api_url.clone())
+            .request_proofs(new_payload_request, proof_attributes)
             .await
         {
             Ok(proof_gen_id) => {
                 debug!(
-                    proof_gen_id = %proof_gen_id,
+                    proof_gen_id = ?proof_gen_id,
                     block = %block_root,
                     "Proof generation requested, awaiting callback to HTTP API"
                 );
             }
             Err(e) => {
                 error!(
-                    error = %e,
+                    error = ?e,
                     block = %block_root,
                     "Failed to request proofs from proof engine"
                 );

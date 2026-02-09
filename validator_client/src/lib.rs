@@ -536,15 +536,10 @@ impl<E: EthSpec> ProductionValidatorClient<E> {
 
         // Create proof service (EIP-8025) if proof engine endpoint is configured
         let proof_service = config.proof_engine_endpoint.as_ref().map(|endpoint| {
-            // Construct validator HTTP API URL for proof engine callbacks
-            let validator_http_api_url = format!(
-                "http://{}:{}",
-                config.http_api.listen_addr, config.http_api.listen_port
-            );
-
             info!(endpoint = %endpoint, "Initializing proof engine client");
-            let proof_engine_client = Arc::new(eth2::proof_engine::ProofEngineHttpClient::new(
+            let proof_engine_client = Arc::new(execution_layer::eip8025::HttpProofEngine::new(
                 endpoint.clone(),
+                None, // No custom timeout
             ));
 
             Arc::new(ProofService::new(
@@ -553,7 +548,7 @@ impl<E: EthSpec> ProductionValidatorClient<E> {
                 proof_engine_client,
                 slot_clock.clone(),
                 context.executor.clone(),
-                validator_http_api_url,
+                config.proof_types.clone(),
             ))
         });
 

@@ -9,11 +9,14 @@ beacon_node_fallback = { workspace = true }
 bls = { workspace = true }
 either = { workspace = true }
 eth2 = { workspace = true, features = ["events"] }
+execution_layer = { workspace = true }
 futures = { workspace = true }
 graffiti_file = { workspace = true }
+lighthouse_validator_store = { workspace = true }
 logging = { workspace = true }
 parking_lot = { workspace = true }
 safe_arith = { workspace = true }
+serde_json = { workspace = true }
 slot_clock = { workspace = true }
 task_executor = { workspace = true }
 tokio = { workspace = true }
@@ -22,5 +25,4 @@ tree_hash = { workspace = true }
 types = { workspace = true }
 validator_metrics = { workspace = true }
 validator_store = { workspace = true }
-lighthouse_validator_store = { workspace = true }
 warp_utils = { workspace = true }

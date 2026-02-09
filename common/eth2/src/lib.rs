@@ -14,7 +14,6 @@ pub mod lighthouse;
 #[cfg(feature = "lighthouse")]
 pub mod lighthouse_vc;
 pub mod mixin;
-pub mod proof_engine;
 pub mod types;
 
 pub use beacon_response::{
