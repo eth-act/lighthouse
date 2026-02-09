@@ -817,8 +817,20 @@ pub fn cli_app() -> Command {
                 .alias("execution-endpoints")
                 .help("Server endpoint for an execution layer JWT-authenticated HTTP \
                        JSON-RPC connection. Uses the same endpoint to populate the \
-                       deposit cache.")
-                .required(true)
+                       deposit cache. Optional - at least one of --execution-endpoint \
+                       or --proof-engine-endpoint must be provided.")
+                .required(false)
+                .action(ArgAction::Set)
+                .display_order(0)
+        )
+        .arg(
+            Arg::new("proof-engine-endpoint")
+                .long("proof-engine-endpoint")
+                .value_name("PROOF-ENGINE-ENDPOINT")
+                .help("Server endpoint for an EIP-8025 proof engine HTTP JSON-RPC connection. \
+                       Does not require JWT authentication. Optional - at least one of \
+                       --execution-endpoint or --proof-engine-endpoint must be provided.")
+                .required(false)
                 .action(ArgAction::Set)
                 .display_order(0)
         )

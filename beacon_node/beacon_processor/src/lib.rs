@@ -332,7 +332,7 @@ impl<E: EthSpec> BeaconProcessorSend<E> {
     }
 }
 
-pub type AsyncFn = Pin<Box<dyn Future<Output = ()> + Send + Sync>>;
+pub type AsyncFn = Pin<Box<dyn Future<Output = ()> + Send>>;
 pub type BlockingFn = Box<dyn FnOnce() + Send + Sync>;
 pub type BlockingFnWithManualSendOnIdle = Box<dyn FnOnce(SendOnDrop) + Send + Sync>;
 pub enum BlockingOrAsync {

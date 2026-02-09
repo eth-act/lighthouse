@@ -750,7 +750,10 @@ impl<T: BeaconChainTypes> SyncManager<T> {
                 .as_ref()
                 .map(|el| el.get_responsiveness_watch())
                 .into();
-            futures::stream::iter(ee_responsiveness_watch.await).flatten()
+            match ee_responsiveness_watch.await.flatten() {
+                Some(watch) => watch.left_stream(),
+                None => futures::stream::empty().right_stream(),
+            }
         };
 
         // min(LOOKUP_MAX_DURATION_*) is 15 seconds. The cost of calling prune_lookups more often is

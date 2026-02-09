@@ -269,42 +269,65 @@ pub fn get_config<E: EthSpec>(
         client_config.http_metrics.allocator_metrics_enabled = false;
     }
 
-    // `--execution-endpoint` is required now.
-    let endpoints: String = clap_utils::parse_required(cli_args, "execution-endpoint")?;
+    // Parse execution endpoint (optional)
+    let execution_endpoint: Option<SensitiveUrl> =
+        if let Some(endpoints) = cli_args.get_one::<String>("execution-endpoint") {
+            Some(parse_only_one_value(
+                endpoints.as_str(),
+                SensitiveUrl::parse,
+                "--execution-endpoint",
+            )?)
+        } else {
+            None
+        };
+
+    // Parse proof engine endpoint (optional)
+    let proof_engine_endpoint: Option<SensitiveUrl> =
+        if let Some(endpoints) = cli_args.get_one::<String>("proof-engine-endpoint") {
+            Some(parse_only_one_value(
+                endpoints.as_str(),
+                SensitiveUrl::parse,
+                "--proof-engine-endpoint",
+            )?)
+        } else {
+            None
+        };
+
+    // Validation: at least one endpoint must be provided
+    if execution_endpoint.is_none() && proof_engine_endpoint.is_none() {
+        return Err("At least one of --execution-endpoint or --proof-engine-endpoint must be provided".to_string());
+    }
+
     let mut el_config = execution_layer::Config::default();
 
-    // Parse a single execution endpoint, logging warnings if multiple endpoints are supplied.
-    let execution_endpoint = parse_only_one_value(
-        endpoints.as_str(),
-        SensitiveUrl::parse,
-        "--execution-endpoint",
-    )?;
-
-    // JWTs are required if `--execution-endpoint` is supplied. They can be either passed via
-    // file_path or directly as string.
-    let secret_file: PathBuf;
-    // Parse a single JWT secret from a given file_path, logging warnings if multiple are supplied.
-    if let Some(secret_files) = cli_args.get_one::<String>("execution-jwt") {
-        secret_file = parse_only_one_value(secret_files, PathBuf::from_str, "--execution-jwt")?;
-    // Check if the JWT secret key is passed directly via cli flag and persist it to the default
-    // file location.
-    } else if let Some(jwt_secret_key) = cli_args.get_one::<String>("execution-jwt-secret-key") {
-        use std::fs::File;
-        use std::io::Write;
-        secret_file = client_config.data_dir().join(DEFAULT_JWT_FILE);
-        let mut jwt_secret_key_file = File::create(secret_file.clone())
-            .map_err(|e| format!("Error while creating jwt_secret_key file: {:?}", e))?;
-        jwt_secret_key_file
-            .write_all(jwt_secret_key.as_bytes())
-            .map_err(|e| {
-                format!(
-                    "Error occurred while writing to jwt_secret_key file: {:?}",
-                    e
-                )
-            })?;
+    // JWT is required only if execution_endpoint is provided
+    let secret_file: Option<PathBuf> = if execution_endpoint.is_some() {
+        // Parse a single JWT secret from a given file_path, logging warnings if multiple are supplied.
+        if let Some(secret_files) = cli_args.get_one::<String>("execution-jwt") {
+            Some(parse_only_one_value(secret_files, PathBuf::from_str, "--execution-jwt")?)
+        // Check if the JWT secret key is passed directly via cli flag and persist it to the default
+        // file location.
+        } else if let Some(jwt_secret_key) = cli_args.get_one::<String>("execution-jwt-secret-key") {
+            use std::fs::File;
+            use std::io::Write;
+            let secret_file_path = client_config.data_dir().join(DEFAULT_JWT_FILE);
+            let mut jwt_secret_key_file = File::create(secret_file_path.clone())
+                .map_err(|e| format!("Error while creating jwt_secret_key file: {:?}", e))?;
+            jwt_secret_key_file
+                .write_all(jwt_secret_key.as_bytes())
+                .map_err(|e| {
+                    format!(
+                        "Error occurred while writing to jwt_secret_key file: {:?}",
+                        e
+                    )
+                })?;
+            Some(secret_file_path)
+        } else {
+            return Err("--execution-jwt or --execution-jwt-secret-key is required when using --execution-endpoint".to_string());
+        }
     } else {
-        return Err("Error! Please set either --execution-jwt file_path or --execution-jwt-secret-key directly via cli when using --execution-endpoint".to_string());
-    }
+        None
+    };
 
     // Parse and set the payload builder, if any.
     if let Some(endpoint) = cli_args.get_one::<String>("builder") {
@@ -321,8 +344,9 @@ pub fn get_config<E: EthSpec>(
     }
 
     // Set config values from parse values.
-    el_config.secret_file = Some(secret_file.clone());
-    el_config.execution_endpoint = Some(execution_endpoint.clone());
+    el_config.secret_file = secret_file;
+    el_config.execution_endpoint = execution_endpoint;
+    el_config.proof_engine_endpoint = proof_engine_endpoint;
     el_config.suggested_fee_recipient =
         clap_utils::parse_optional(cli_args, "suggested-fee-recipient")?;
     el_config.jwt_id = clap_utils::parse_optional(cli_args, "execution-jwt-id")?;

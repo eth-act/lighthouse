@@ -107,7 +107,7 @@ impl<E: EthSpec> TaskSpawner<E> {
     pub async fn spawn_async_with_rejection(
         self,
         priority: Priority,
-        func: impl Future<Output = Result<Response, warp::Rejection>> + Send + Sync + 'static,
+        func: impl Future<Output = Result<Response, warp::Rejection>> + Send + 'static,
     ) -> Response {
         let result = self
             .spawn_async_with_rejection_no_conversion(priority, func)
@@ -122,7 +122,7 @@ impl<E: EthSpec> TaskSpawner<E> {
     pub async fn spawn_async_with_rejection_no_conversion(
         self,
         priority: Priority,
-        func: impl Future<Output = Result<Response, warp::Rejection>> + Send + Sync + 'static,
+        func: impl Future<Output = Result<Response, warp::Rejection>> + Send + 'static,
     ) -> Result<Response, warp::Rejection> {
         if let Some(beacon_processor_send) = &self.beacon_processor_send {
             // Create a wrapper future that will execute `func` and send the

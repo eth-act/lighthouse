@@ -6,7 +6,7 @@
 use super::{errors::ProofEngineError, json_structures::*};
 use crate::{
     ForkchoiceState, ForkchoiceUpdatedResponse, NewPayloadRequest, NewPayloadRequestFulu,
-    PayloadStatus,
+    PayloadStatusV1, PayloadStatusV1Status,
     eip8025::state::State,
     json_structures::{JsonExecutionPayload, JsonRequestBody, JsonResponseBody},
 };
@@ -65,7 +65,7 @@ pub trait ProofEngine: Send + Sync {
     async fn new_payload<E: EthSpec>(
         &self,
         header: &NewPayloadRequest<'_, E>,
-    ) -> Result<PayloadStatus, ProofEngineError>;
+    ) -> Result<PayloadStatusV1, ProofEngineError>;
 
     /// Notify the proof engine of a forkchoice update.
     async fn forkchoice_updated(
@@ -193,11 +193,15 @@ impl ProofEngine for HttpProofEngine {
     async fn new_payload<E: EthSpec>(
         &self,
         request: &NewPayloadRequest<'_, E>,
-    ) -> Result<PayloadStatus, ProofEngineError> {
+    ) -> Result<PayloadStatusV1, ProofEngineError> {
         // We buffer the request in state for future proof association and return Syncing.
         // TODO: Currently we don't support proof verification before payload processing to prevent DOS so its not possible that proofs are verified yet. Is this reasonable?
         self.state.write().buffer_request(request.into());
-        Ok(PayloadStatus::Syncing)
+        Ok(PayloadStatusV1 {
+            status: PayloadStatusV1Status::Syncing,
+            latest_valid_hash: None,
+            validation_error: None,
+        })
     }
 
     async fn forkchoice_updated(
