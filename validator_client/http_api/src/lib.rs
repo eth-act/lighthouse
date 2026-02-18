@@ -32,7 +32,7 @@ use eth2::lighthouse_vc::{
     std_types::{AuthResponse, GetFeeRecipientResponse, GetGasLimitResponse},
     types::{
         self as api_types, GenericResponse, GetGraffitiResponse, Graffiti, SetGraffitiRequest,
-        UpdateCandidatesRequest, UpdateCandidatesResponse,
+        SignExecutionProofRequest, UpdateCandidatesRequest, UpdateCandidatesResponse,
     },
 };
 use health_metrics::observe::Observe;
@@ -1171,16 +1171,6 @@ pub fn serve<T: 'static + SlotClock + Clone, E: EthSpec>(
                 })
             },
         );
-
-    // POST /lighthouse/validators/{pubkey}/execution_proofs
-    // EIP-8025: Sign execution proof and submit to beacon node
-    // Request body definition (inline)
-    #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-    struct SignExecutionProofRequest {
-        execution_proof: types::ExecutionProof,
-        #[serde(default)]
-        epoch: Option<types::Epoch>,
-    }
 
     let post_execution_proofs = warp::path("lighthouse")
         .and(warp::path("validators"))

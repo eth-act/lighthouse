@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, ops::Deref};
 
 use fixed_bytes::FixedBytesExtended;
 use rand::RngCore;
@@ -11,6 +11,14 @@ use crate::{core::Hash256, test_utils::TestRandom};
 #[derive(Default, Clone, Copy, Serialize, Deserialize, Eq, PartialEq, Hash)]
 #[serde(transparent)]
 pub struct ExecutionBlockHash(#[serde(with = "serde_utils::b256_hex")] pub Hash256);
+
+impl Deref for ExecutionBlockHash {
+    type Target = Hash256;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 impl fmt::Debug for ExecutionBlockHash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

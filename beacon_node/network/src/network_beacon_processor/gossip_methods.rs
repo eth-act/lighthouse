@@ -1921,6 +1921,15 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                 );
                 self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Accept);
             }
+            Ok(ProofStatus::Syncing) => {
+                debug!(
+                    ?request_root,
+                    validator_index,
+                    proof_type,
+                    "Execution proof cannot be fully verified while syncing"
+                );
+                self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Ignore);
+            }
             // TODO: Should we do this check earlier. This is a quick and cheap check, so it may be better to do it before the more expensive verification steps.
             Ok(ProofStatus::NotSupported) => {
                 debug!(

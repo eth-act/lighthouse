@@ -37,24 +37,12 @@ pub struct SubmitExecutionProofsRequest {
 /// Get execution proofs for a given block.
 ///
 /// Returns execution proofs from the ProofEngine for the block's execution payload.
-/// This endpoint is gated by EIP-8025 fork activation.
+/// This endpoint requires `--proof-engine-endpoint` to be configured.
 pub fn get_execution_proofs<T: BeaconChainTypes>(
     block_id: BlockId,
     chain: Arc<BeaconChain<T>>,
 ) -> Result<ExecutionProofsResponse, warp::Rejection> {
-    // Check if EIP-8025 is enabled
-    let current_slot = chain
-        .slot()
-        .map_err(|e| custom_server_error(format!("Failed to get current slot: {:?}", e)))?;
-
-    let fork_name = chain.spec.fork_name_at_slot::<T::EthSpec>(current_slot);
-    if !fork_name.eip8025_enabled() {
-        return Err(custom_bad_request(
-            "EIP-8025 is not active at the current fork".to_string(),
-        ));
-    }
-
-    // Get the execution layer's proof engine
+    // Get the execution layer's proof engine — presence is the only gate.
     let execution_layer = chain
         .execution_layer
         .as_ref()
@@ -62,7 +50,9 @@ pub fn get_execution_proofs<T: BeaconChainTypes>(
 
     let proof_engine = execution_layer
         .proof_engine()
-        .ok_or_else(|| custom_server_error("Proof engine not available".to_string()))?;
+        .ok_or_else(|| custom_bad_request(
+            "Proof engine not configured. Start with --proof-engine-endpoint to enable EIP-8025.".to_string(),
+        ))?;
 
     // Get the block to retrieve its execution payload root
     let (block_root, execution_optimistic, finalized) = block_id.root(&chain)?;
@@ -99,15 +89,16 @@ pub async fn submit_execution_proofs<T: BeaconChainTypes>(
 ) -> Result<Response<Body>, warp::Rejection> {
     // TODO: should we add a verify: bool to verify_execution_proof to allow skipping verification checks from this endpoint if we trust the source?
 
-    // Check if EIP-8025 is enabled
-    let current_slot = chain
-        .slot()
-        .map_err(|e| custom_server_error(format!("Failed to get current slot: {:?}", e)))?;
-
-    let fork_name = chain.spec.fork_name_at_slot::<T::EthSpec>(current_slot);
-    if !fork_name.eip8025_enabled() {
+    // Require proof engine to be configured — presence is the only gate.
+    if chain
+        .execution_layer
+        .as_ref()
+        .and_then(|el| el.proof_engine())
+        .is_none()
+    {
         return Err(custom_bad_request(
-            "EIP-8025 is not active at the current fork".to_string(),
+            "Proof engine not configured. Start with --proof-engine-endpoint to enable EIP-8025."
+                .to_string(),
         ));
     }
 

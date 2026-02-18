@@ -7,12 +7,23 @@ edition = { workspace = true }
 [dependencies]
 beacon_node = { workspace = true }
 beacon_node_fallback = { workspace = true }
+bls = { workspace = true }
 environment = { workspace = true }
-eth2 = { workspace = true }
+eth2 = { workspace = true, features = ["events"] }
 execution_layer = { workspace = true }
+hex = { workspace = true }
+mockito = { workspace = true }
+parking_lot = { workspace = true }
+reqwest = { workspace = true }
 sensitive_url = { workspace = true }
+serde_json = { workspace = true }
+ssz_types = { workspace = true }
+task_executor = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
+tracing = { workspace = true }
+tree_hash = { workspace = true}
 types = { workspace = true }
 validator_client = { workspace = true }
 validator_dir = { workspace = true, features = ["insecure_keys"] }
+validator_store = { workspace = true }

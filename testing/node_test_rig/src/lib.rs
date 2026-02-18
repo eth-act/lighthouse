@@ -4,6 +4,7 @@
 
 use beacon_node::ProductionBeaconNode;
 use environment::RuntimeContext;
+use eth2::lighthouse_vc::http_client::ValidatorClientHttpClient;
 use eth2::{BeaconNodeHttpClient, Timeouts, reqwest::ClientBuilder};
 use sensitive_url::SensitiveUrl;
 use std::path::PathBuf;
@@ -22,7 +23,12 @@ pub use eth2;
 pub use execution_layer::test_utils::{
     Config as MockServerConfig, MockExecutionConfig, MockServer,
 };
-pub use validator_client::Config as ValidatorConfig;
+pub use validator_client::{ApiSecret, Config as ValidatorConfig};
+
+mod mock_proof_engine_server;
+pub use mock_proof_engine_server::{
+    MockProofEngineConfig, MockProofEngineServer, ProofEngineServerConfig, ProofRequestRecord,
+};
 
 /// The global timeout for HTTP requests to the beacon node.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
@@ -227,6 +233,24 @@ impl<E: EthSpec> LocalValidatorClient<E> {
             .expect("should start validator services");
         Ok(Self { client, files })
     }
+
+    pub fn http_client(&self) -> Result<Option<ValidatorClientHttpClient>, String> {
+        let client = if let Some(listen_addr) = self.client.listen_addr() {
+            let token_path = self.client.config().http_api.http_token_path.clone();
+            let api_secret = ApiSecret::create_or_open(token_path)?;
+            let validator_client_url: SensitiveUrl = SensitiveUrl::parse(
+                format!("http://{}:{}", listen_addr.ip(), listen_addr.port()).as_str(),
+            )
+            .map_err(|e| format!("Unable to parse validator client URL: {:?}", e))?;
+            Some(
+                ValidatorClientHttpClient::new(validator_client_url, api_secret.api_token())
+                    .map_err(|e| format!("failed to create http client: {:?}", e))?,
+            )
+        } else {
+            None
+        };
+        Ok(client)
+    }
 }
 
 /// Provides an execution engine api server that is running in the current process on a given tokio executor (it
@@ -252,5 +276,30 @@ impl<E: EthSpec> LocalExecutionNode<E> {
             server: MockServer::new_with_config(&context.executor.handle().unwrap(), config, None),
             datadir,
         }
+    }
+}
+
+/// Provides a mock proof engine that is running in the current process.
+///
+/// Intended for use in testing and simulation. Not for production.
+pub struct LocalProofEngine<E: EthSpec> {
+    pub server: MockProofEngineServer<E>,
+    pub datadir: TempDir,
+}
+
+impl<E: EthSpec> LocalProofEngine<E> {
+    pub async fn new(context: RuntimeContext<E>, config: MockProofEngineConfig) -> Self {
+        let datadir = TempBuilder::new()
+            .prefix("lighthouse_proof_engine")
+            .tempdir()
+            .expect("should create temp directory for proof engine");
+
+        let server = MockProofEngineServer::new(config, context.executor.clone()).await;
+
+        Self { server, datadir }
+    }
+
+    pub fn set_validator_client(&mut self, client: ValidatorClientHttpClient) {
+        self.server.set_validator_callback(client.into());
     }
 }

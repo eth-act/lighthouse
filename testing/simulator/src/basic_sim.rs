@@ -1,4 +1,5 @@
 use crate::local_network::LocalNetworkParams;
+use crate::local_network::NodeType;
 use crate::local_network::TERMINAL_BLOCK;
 use crate::{LocalNetwork, checks};
 use clap::ArgMatches;
@@ -35,7 +36,7 @@ const ELECTRA_FORK_EPOCH: u64 = 2;
 // const FULU_FORK_EPOCH: u64 = 3;
 // const GLOAS_FORK_EPOCH: u64 = 4;
 
-const SUGGESTED_FEE_RECIPIENT: [u8; 20] =
+pub const SUGGESTED_FEE_RECIPIENT: [u8; 20] =
     [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
 
 #[allow(clippy::large_stack_frames)]
@@ -209,6 +210,8 @@ pub fn run_basic_sim(matches: &ArgMatches) -> Result<(), String> {
                     extra_nodes,
                     proposer_nodes,
                     genesis_delay,
+                    proof_generator_nodes: 0,
+                    proof_verifier_nodes: 0,
                 },
                 context.clone(),
             ))
@@ -218,7 +221,11 @@ pub fn run_basic_sim(matches: &ArgMatches) -> Result<(), String> {
         // Add nodes to the network.
         for _ in 0..node_count {
             network
-                .add_beacon_node(beacon_config.clone(), mock_execution_config.clone(), false)
+                .add_beacon_node(
+                    beacon_config.clone(),
+                    mock_execution_config.clone(),
+                    NodeType::Default,
+                )
                 .await?;
         }
 
@@ -228,7 +235,11 @@ pub fn run_basic_sim(matches: &ArgMatches) -> Result<(), String> {
         for _ in 0..proposer_nodes {
             println!("Adding a proposer node");
             network
-                .add_beacon_node(beacon_config.clone(), mock_execution_config.clone(), true)
+                .add_beacon_node(
+                    beacon_config.clone(),
+                    mock_execution_config.clone(),
+                    NodeType::Proposer,
+                )
                 .await?;
         }
 
@@ -259,7 +270,7 @@ pub fn run_basic_sim(matches: &ArgMatches) -> Result<(), String> {
                             .await
                     } else {
                         network_1
-                            .add_validator_client(validator_config, i, files)
+                            .add_validator_client(validator_config, i, files, NodeType::Default)
                             .await
                     }
                     .expect("should add validator");

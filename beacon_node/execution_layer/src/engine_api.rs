@@ -61,7 +61,7 @@ pub enum Error {
     ExecutionHeadBlockNotFound,
     ParentHashEqualsBlockHash(ExecutionBlockHash),
     PayloadIdUnavailable,
-    SszError(ssz_types::Error),
+    Ssz(ssz_types::Error),
     DeserializeWithdrawals(ssz_types::Error),
     DeserializeDepositRequests(ssz_types::Error),
     DeserializeWithdrawalRequests(ssz_types::Error),
@@ -106,7 +106,7 @@ impl From<builder_client::Error> for Error {
 
 impl From<ssz_types::Error> for Error {
     fn from(e: ssz_types::Error) -> Self {
-        Error::SszError(e)
+        Error::Ssz(e)
     }
 }
 

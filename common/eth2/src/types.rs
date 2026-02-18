@@ -989,6 +989,30 @@ pub struct SseBlockFull<E: EthSpec> {
 }
 
 #[derive(PartialEq, Debug, Serialize, Deserialize, Clone)]
+struct SseBlockFullGeneric<T> {
+    pub slot: Slot,
+    pub block: T,
+    pub execution_optimistic: bool,
+}
+
+type VersionedSseBlockFull<E> = ForkVersionedResponse<SseBlockFull<E>>;
+
+impl<'de, E: EthSpec> ContextDeserialize<'de, ForkName> for SseBlockFull<E> {
+    fn context_deserialize<D>(deserializer: D, context: ForkName) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let helper = SseBlockFullGeneric::<serde_json::Value>::deserialize(deserializer)?;
+        Ok(SseBlockFull {
+            slot: helper.slot,
+            block: BeaconBlock::context_deserialize(helper.block, context)
+                .map_err(serde::de::Error::custom)?,
+            execution_optimistic: helper.execution_optimistic,
+        })
+    }
+}
+
+#[derive(PartialEq, Debug, Serialize, Deserialize, Clone)]
 pub struct SseBlobSidecar {
     pub block_root: Hash256,
     #[serde(with = "serde_utils::quoted_u64")]
@@ -1188,7 +1212,7 @@ pub enum EventKind<E: EthSpec> {
     Attestation(Box<Attestation<E>>),
     SingleAttestation(Box<SingleAttestation>),
     Block(SseBlock),
-    BlockFull(Box<SseBlockFull<E>>),
+    BlockFull(Box<VersionedSseBlockFull<E>>),
     BlobSidecar(SseBlobSidecar),
     DataColumnSidecar(SseDataColumnSidecar),
     FinalizedCheckpoint(SseFinalizedCheckpoint),
@@ -1247,6 +1271,9 @@ impl<E: EthSpec> EventKind<E> {
             )),
             "block" => Ok(EventKind::Block(serde_json::from_str(data).map_err(
                 |e| ServerError::InvalidServerSentEvent(format!("Block: {:?}", e)),
+            )?)),
+            "block_full" => Ok(EventKind::BlockFull(serde_json::from_str(data).map_err(
+                |e| ServerError::InvalidServerSentEvent(format!("Block Full: {:?}", e)),
             )?)),
             "blob_sidecar" => Ok(EventKind::BlobSidecar(serde_json::from_str(data).map_err(
                 |e| ServerError::InvalidServerSentEvent(format!("Blob Sidecar: {:?}", e)),
@@ -1372,6 +1399,7 @@ impl FromStr for EventTopic {
         match s {
             "head" => Ok(EventTopic::Head),
             "block" => Ok(EventTopic::Block),
+            "block_full" => Ok(EventTopic::BlockFull),
             "blob_sidecar" => Ok(EventTopic::BlobSidecar),
             "data_column_sidecar" => Ok(EventTopic::DataColumnSidecar),
             "attestation" => Ok(EventTopic::Attestation),
@@ -2536,5 +2564,32 @@ mod test {
     ) {
         let roundtrip = O::context_deserialize::<D>(deserializer, fork_name).unwrap();
         assert_eq!(original, roundtrip);
+    }
+
+    #[test]
+    fn test_versioned_sse_block_full_round_trip() {
+        let rng = &mut XorShiftRng::from_seed([42; 16]);
+        for fork_name in ForkName::list_all() {
+            let beacon_block = map_fork_name!(fork_name, BeaconBlock, <_>::random_for_test(rng));
+            let slot = Slot::random_for_test(rng);
+
+            let versioned_response = VersionedSseBlockFull::<MainnetEthSpec> {
+                version: fork_name,
+                metadata: EmptyMetadata {},
+                data: SseBlockFull {
+                    slot,
+                    block: beacon_block,
+                    execution_optimistic: true,
+                },
+            };
+
+            let json_str = serde_json::to_string(&versioned_response).unwrap();
+            let deserialized: VersionedSseBlockFull<MainnetEthSpec> =
+                serde_json::from_str(&json_str).unwrap();
+
+            assert_eq!(versioned_response, deserialized);
+            assert!(deserialized.data.execution_optimistic);
+            println!("fork_name: {:?} PASSED", fork_name);
+        }
     }
 }

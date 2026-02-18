@@ -599,7 +599,7 @@ impl<E: EthSpec> ExecutionLayer<E> {
         Ok(el)
     }
 
-    fn engine(&self) -> Option<&Arc<Engine>> {
+    pub fn engine(&self) -> Option<&Arc<Engine>> {
         self.inner.engine.as_ref()
     }
 
@@ -1655,10 +1655,9 @@ impl<E: EthSpec> ExecutionLayer<E> {
         age_limit: Option<Duration>,
     ) -> Result<EngineCapabilities, Error> {
         if let Some(engine) = self.engine() {
-            engine
+            Ok(engine
                 .request(|engine| engine.get_engine_capabilities(age_limit))
-                .await
-                .map_err(Into::into)
+                .await?)
         } else {
             Ok(EngineCapabilities {
                 new_payload_v1: true,
@@ -1670,11 +1669,11 @@ impl<E: EthSpec> ExecutionLayer<E> {
                 forkchoice_updated_v3: true,
                 get_payload_bodies_by_hash_v1: false,
                 get_payload_bodies_by_range_v1: false,
-                get_payload_v1: false,
-                get_payload_v2: false,
-                get_payload_v3: false,
-                get_payload_v4: false,
-                get_payload_v5: false,
+                get_payload_v1: true,
+                get_payload_v2: true,
+                get_payload_v3: true,
+                get_payload_v4: true,
+                get_payload_v5: true,
                 get_client_version_v1: false,
                 get_blobs_v1: false,
                 get_blobs_v2: false,

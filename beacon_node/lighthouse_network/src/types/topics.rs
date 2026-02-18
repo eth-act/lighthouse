@@ -33,6 +33,7 @@ pub struct TopicConfig {
     pub enable_light_client_server: bool,
     pub subscribe_all_subnets: bool,
     pub sampling_subnets: HashSet<DataColumnSubnetId>,
+    pub execution_proof: bool,
 }
 
 /// Returns all the topics the node should subscribe at `fork_name`
@@ -87,8 +88,9 @@ pub fn core_topics_to_subscribe<E: EthSpec>(
         }
     }
 
-    // EIP-8025: Subscribe to execution proof topic when Gloas is enabled
-    if fork_name.eip8025_enabled() {
+    // EIP-8025: Subscribe to execution proof topic only when a proof engine is configured.
+    // This is an opt-in per-node feature, not tied to any fork.
+    if opts.execution_proof {
         topics.push(GossipKind::ExecutionProof);
     }
 
@@ -121,13 +123,18 @@ pub fn is_fork_non_core_topic(topic: &GossipTopic, _fork_name: ForkName) -> bool
     }
 }
 
-pub fn all_topics_at_fork<E: EthSpec>(fork: ForkName, spec: &ChainSpec) -> Vec<GossipKind> {
+pub fn all_topics_at_fork<E: EthSpec>(
+    fork: ForkName,
+    spec: &ChainSpec,
+    execution_proof: bool,
+) -> Vec<GossipKind> {
     // Compute the worst case of all forks
     let sampling_subnets = HashSet::from_iter(spec.all_data_column_sidecar_subnets());
     let opts = TopicConfig {
         enable_light_client_server: true,
         subscribe_all_subnets: true,
         sampling_subnets,
+        execution_proof,
     };
     core_topics_to_subscribe::<E>(fork, &opts, spec)
 }
@@ -526,6 +533,7 @@ mod tests {
             enable_light_client_server: false,
             subscribe_all_subnets: false,
             sampling_subnets: sampling_subnets.clone(),
+            execution_proof: false,
         }
     }
 
@@ -570,6 +578,7 @@ mod tests {
         let s = HashSet::from_iter([1, 2].map(DataColumnSubnetId::new));
         let mut topic_config = get_topic_config(&s);
         topic_config.enable_light_client_server = true;
+        topic_config.execution_proof = true;
         let latest_fork = *ForkName::list_all().last().unwrap();
         let topics = core_topics_to_subscribe::<E>(latest_fork, &topic_config, &spec);
 
@@ -587,8 +596,8 @@ mod tests {
         for subnet in s {
             expected_topics.push(GossipKind::DataColumnSidecar(subnet));
         }
-        // EIP-8025: ExecutionProof topic is added when Gloas is enabled
-        if latest_fork.eip8025_enabled() {
+        // EIP-8025: ExecutionProof topic is added when execution_proof is enabled in TopicConfig
+        if topic_config.execution_proof {
             expected_topics.push(GossipKind::ExecutionProof);
         }
         // Need to check all the topics exist in an order independent manner

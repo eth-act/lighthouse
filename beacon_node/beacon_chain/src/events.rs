@@ -267,6 +267,10 @@ impl<E: EthSpec> ServerSentEventHandler<E> {
         self.block_tx.receiver_count() > 0
     }
 
+    pub fn has_block_full_subscribers(&self) -> bool {
+        self.block_full_tx.receiver_count() > 0
+    }
+
     pub fn has_blob_sidecar_subscribers(&self) -> bool {
         self.blob_sidecar_tx.receiver_count() > 0
     }

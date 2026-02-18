@@ -3,7 +3,7 @@ use context_deserialize::context_deserialize;
 use educe::Educe;
 use ethereum_hashing::{DynamicContext, Sha256Context};
 use serde::{Deserialize, Serialize};
-use ssz::Encode;
+use ssz::{Decode, Encode};
 use ssz_derive::{Decode, Encode};
 use ssz_types::VariableList;
 use test_random_derive::TestRandom;
@@ -69,6 +69,44 @@ impl<E: EthSpec> ExecutionRequests<E> {
             ));
         }
         requests_list
+    }
+
+    pub fn from_execution_requests_list(requests_list: Vec<Bytes>) -> Result<Self, String> {
+        let mut execution_requests = ExecutionRequests::default();
+
+        for request_bytes in requests_list {
+            let prefix = request_bytes
+                .first()
+                .copied()
+                .ok_or_else(|| "Empty request bytes".to_string())?;
+            let request_type = RequestType::from_u8(prefix)
+                .ok_or_else(|| format!("Invalid request type prefix: {}", prefix))?;
+
+            let request_data = request_bytes
+                .get(1..)
+                .ok_or_else(|| "Empty request data".to_string())?;
+            match request_type {
+                RequestType::Deposit => {
+                    let deposits = DepositRequests::<E>::from_ssz_bytes(request_data)
+                        .map_err(|e| format!("Failed to decode deposit requests: {:?}", e))?;
+                    execution_requests.deposits = deposits;
+                }
+                RequestType::Withdrawal => {
+                    let withdrawals = WithdrawalRequests::<E>::from_ssz_bytes(request_data)
+                        .map_err(|e| format!("Failed to decode withdrawal requests: {:?}", e))?;
+                    execution_requests.withdrawals = withdrawals;
+                }
+                RequestType::Consolidation => {
+                    let consolidations = ConsolidationRequests::<E>::from_ssz_bytes(request_data)
+                        .map_err(|e| {
+                        format!("Failed to decode consolidation requests: {:?}", e)
+                    })?;
+                    execution_requests.consolidations = consolidations;
+                }
+            }
+        }
+
+        Ok(execution_requests)
     }
 
     /// Generate the execution layer `requests_hash` based on EIP-7685.

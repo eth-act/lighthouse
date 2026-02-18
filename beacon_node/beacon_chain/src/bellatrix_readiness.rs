@@ -2,7 +2,8 @@
 //! transition.
 
 use crate::{BeaconChain, BeaconChainError as Error, BeaconChainTypes};
-use execution_layer::BlockByNumberQuery;
+use execution_layer::eip8025::ProofEngine;
+use execution_layer::{BlockByNumberQuery, ForkchoiceState};
 use serde::{Deserialize, Serialize, Serializer};
 use std::fmt;
 use std::fmt::Write;
@@ -205,19 +206,31 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             .ok_or(Error::ExecutionLayerMissing)?;
         let exec_block_hash = latest_execution_payload_header.block_hash();
 
+        if let Some(proof_engine) = execution_layer.proof_engine() {
+            proof_engine
+                .forkchoice_updated(ForkchoiceState {
+                    head_block_hash: exec_block_hash,
+                    safe_block_hash: exec_block_hash,
+                    finalized_block_hash: exec_block_hash,
+                })
+                .await?;
+        }
+
         // Use getBlockByNumber(0) to check that the block hash matches.
         // At present, Geth does not respond to engine_getPayloadBodiesByRange before genesis.
-        let execution_block = execution_layer
-            .get_block_by_number(BlockByNumberQuery::Tag("0x0"))
-            .await
-            .map_err(|e| Error::ExecutionLayerGetBlockByNumberFailed(Box::new(e)))?
-            .ok_or(Error::BlockHashMissingFromExecutionLayer(exec_block_hash))?;
+        if execution_layer.engine().is_some() {
+            let execution_block = execution_layer
+                .get_block_by_number(BlockByNumberQuery::Tag("0x0"))
+                .await
+                .map_err(|e| Error::ExecutionLayerGetBlockByNumberFailed(Box::new(e)))?
+                .ok_or(Error::BlockHashMissingFromExecutionLayer(exec_block_hash))?;
 
-        if execution_block.block_hash != exec_block_hash {
-            return Ok(GenesisExecutionPayloadStatus::BlockHashMismatch {
-                got: execution_block.block_hash,
-                expected: exec_block_hash,
-            });
+            if execution_block.block_hash != exec_block_hash {
+                return Ok(GenesisExecutionPayloadStatus::BlockHashMismatch {
+                    got: execution_block.block_hash,
+                    expected: exec_block_hash,
+                });
+            }
         }
 
         Ok(GenesisExecutionPayloadStatus::Correct(exec_block_hash))

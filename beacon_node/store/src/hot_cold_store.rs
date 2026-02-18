@@ -44,6 +44,12 @@ use types::data::{ColumnIndex, DataColumnSidecar, DataColumnSidecarList};
 use types::*;
 use zstd::{Decoder, Encoder};
 
+/// Number of entries in the always-on EIP-8025 request root <-> block root mapping caches.
+///
+/// Sized to cover several epochs of recent blocks: proofs are expected to arrive well within
+/// this window after a block is imported.
+const EIP8025_REQUEST_ROOT_CACHE_SIZE: usize = 512;
+
 /// On-disk database that stores finalized states efficiently.
 ///
 /// Stores vector fields like the `block_roots` and `state_roots` separately, and only stores
@@ -73,6 +79,16 @@ pub struct HotColdDB<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> {
     pub hot_db: Hot,
     /// LRU cache of deserialized blocks and blobs. Updated whenever a block or blob is loaded.
     block_cache: Option<Mutex<BlockCache<E>>>,
+    /// EIP-8025: always-on cache mapping request_root -> block_root.
+    ///
+    /// Kept separate from `block_cache` so it is always available regardless of whether the
+    /// block cache is enabled. Required for proof verification to look up the beacon block root
+    /// associated with an execution payload.
+    request_root_to_block_root: Mutex<LruCache<Hash256, Hash256>>,
+    /// EIP-8025: always-on cache mapping block_root -> request_root.
+    ///
+    /// Used by the HTTP API to retrieve the request root for a given block root.
+    block_root_to_request_root: Mutex<LruCache<Hash256, Hash256>>,
     /// Cache of beacon states.
     ///
     /// LOCK ORDERING: this lock must always be locked *after* the `split` if both are required.
@@ -94,8 +110,6 @@ struct BlockCache<E: EthSpec> {
     blob_cache: LruCache<Hash256, BlobSidecarList<E>>,
     data_column_cache: LruCache<Hash256, HashMap<ColumnIndex, Arc<DataColumnSidecar<E>>>>,
     data_column_custody_info_cache: Option<DataColumnCustodyInfo>,
-    request_root_to_block_root: LruCache<Hash256, Hash256>,
-    block_root_to_request_root: LruCache<Hash256, Hash256>,
 }
 
 impl<E: EthSpec> BlockCache<E> {
@@ -105,8 +119,6 @@ impl<E: EthSpec> BlockCache<E> {
             blob_cache: LruCache::new(size),
             data_column_cache: LruCache::new(size),
             data_column_custody_info_cache: None,
-            request_root_to_block_root: LruCache::new(size),
-            block_root_to_request_root: LruCache::new(size),
         }
     }
     pub fn put_block(&mut self, block_root: Hash256, block: SignedBeaconBlock<E>) {
@@ -155,34 +167,10 @@ impl<E: EthSpec> BlockCache<E> {
     pub fn delete_data_columns(&mut self, block_root: &Hash256) {
         let _ = self.data_column_cache.pop(block_root);
     }
-    pub fn delete_request_root(&mut self, block_root: &Hash256) {
-        if let Some(request_root) = self.block_root_to_request_root.pop(block_root) {
-            self.request_root_to_block_root.pop(&request_root);
-        }
-    }
     pub fn delete(&mut self, block_root: &Hash256) {
         self.delete_block(block_root);
         self.delete_blobs(block_root);
         self.delete_data_columns(block_root);
-        self.delete_request_root(block_root);
-    }
-
-    /// Store bidirectional mapping between request_root and block_root
-    pub fn put_request_root_mapping(&mut self, request_root: Hash256, block_root: Hash256) {
-        self.request_root_to_block_root
-            .put(request_root, block_root);
-        self.block_root_to_request_root
-            .put(block_root, request_root);
-    }
-
-    /// Look up block_root by request_root
-    pub fn get_block_root_by_request_root(&mut self, request_root: &Hash256) -> Option<Hash256> {
-        self.request_root_to_block_root.get(request_root).copied()
-    }
-
-    /// Look up request_root by block_root
-    pub fn get_request_root_by_block_root(&mut self, block_root: &Hash256) -> Option<Hash256> {
-        self.block_root_to_request_root.get(block_root).copied()
     }
 }
 
@@ -255,6 +243,8 @@ impl<E: EthSpec> HotColdDB<E, MemoryStore<E>, MemoryStore<E>> {
 
         // NOTE: Anchor slot is initialized to 0, which is only valid for new DBs. We shouldn't
         // be reusing memory stores, but if we want to do that we should redo this.
+        let eip8025_cache_size = NonZeroUsize::new(EIP8025_REQUEST_ROOT_CACHE_SIZE)
+            .expect("EIP8025_REQUEST_ROOT_CACHE_SIZE is non-zero");
         let db = HotColdDB {
             split: RwLock::new(Split::default()),
             anchor_info: RwLock::new(ANCHOR_UNINITIALIZED),
@@ -266,6 +256,8 @@ impl<E: EthSpec> HotColdDB<E, MemoryStore<E>, MemoryStore<E>> {
             block_cache: NonZeroUsize::new(config.block_cache_size)
                 .map(BlockCache::new)
                 .map(Mutex::new),
+            request_root_to_block_root: Mutex::new(LruCache::new(eip8025_cache_size)),
+            block_root_to_request_root: Mutex::new(LruCache::new(eip8025_cache_size)),
             state_cache: Mutex::new(StateCache::new(
                 config.state_cache_size,
                 config.state_cache_headroom,
@@ -309,6 +301,8 @@ impl<E: EthSpec> HotColdDB<E, BeaconNodeBackend<E>, BeaconNodeBackend<E>> {
         let anchor_info = RwLock::new(Self::load_anchor_info(&hot_db)?);
         debug!(?anchor_info, "Loaded anchor info");
 
+        let eip8025_cache_size = NonZeroUsize::new(EIP8025_REQUEST_ROOT_CACHE_SIZE)
+            .expect("EIP8025_REQUEST_ROOT_CACHE_SIZE is non-zero");
         let db = HotColdDB {
             split: RwLock::new(Split::default()),
             anchor_info,
@@ -320,6 +314,8 @@ impl<E: EthSpec> HotColdDB<E, BeaconNodeBackend<E>, BeaconNodeBackend<E>> {
             block_cache: NonZeroUsize::new(config.block_cache_size)
                 .map(BlockCache::new)
                 .map(Mutex::new),
+            request_root_to_block_root: Mutex::new(LruCache::new(eip8025_cache_size)),
+            block_root_to_request_root: Mutex::new(LruCache::new(eip8025_cache_size)),
             state_cache: Mutex::new(StateCache::new(
                 config.state_cache_size,
                 config.state_cache_headroom,
@@ -1055,28 +1051,32 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
         }
     }
 
-    /// Store bidirectional mapping between request_root and block_root (EIP-8025)
-    /// This is in-memory only and not persisted to database in initial implementation.
+    /// Store bidirectional mapping between request_root and block_root (EIP-8025).
+    ///
+    /// This is in-memory only and not persisted to database in the initial implementation.
     pub fn put_request_root_mapping(&self, request_root: Hash256, block_root: Hash256) {
-        if let Some(cache) = self.block_cache.as_ref() {
-            cache
-                .lock()
-                .put_request_root_mapping(request_root, block_root);
-        }
+        self.request_root_to_block_root
+            .lock()
+            .put(request_root, block_root);
+        self.block_root_to_request_root
+            .lock()
+            .put(block_root, request_root);
     }
 
-    /// Look up block_root by request_root (cache-only, no database)
+    /// Look up block_root by request_root (EIP-8025, cache-only, no database).
     pub fn get_block_root_by_request_root(&self, request_root: &Hash256) -> Option<Hash256> {
-        self.block_cache
-            .as_ref()
-            .and_then(|cache| cache.lock().get_block_root_by_request_root(request_root))
+        self.request_root_to_block_root
+            .lock()
+            .get(request_root)
+            .copied()
     }
 
-    /// Look up request_root by block_root (for future req/resp support)
+    /// Look up request_root by block_root (EIP-8025, cache-only, no database).
     pub fn get_request_root_by_block_root(&self, block_root: &Hash256) -> Option<Hash256> {
-        self.block_cache
-            .as_ref()
-            .and_then(|cache| cache.lock().get_request_root_by_block_root(block_root))
+        self.block_root_to_request_root
+            .lock()
+            .get(block_root)
+            .copied()
     }
 
     /// Store a state in the store.

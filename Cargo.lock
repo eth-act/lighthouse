@@ -6232,15 +6232,26 @@ version = "0.2.0"
 dependencies = [
  "beacon_node",
  "beacon_node_fallback",
+ "bls",
  "environment",
  "eth2",
  "execution_layer",
+ "hex",
+ "mockito",
+ "parking_lot",
+ "reqwest",
  "sensitive_url",
+ "serde_json",
+ "ssz_types",
+ "task_executor",
  "tempfile",
  "tokio",
+ "tracing",
+ "tree_hash",
  "types",
  "validator_client",
  "validator_dir",
+ "validator_store",
 ]
 
 [[package]]
@@ -7006,6 +7017,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.110",
+]
+
+[[package]]
+name = "proof_engine_test"
+version = "8.0.1"
+dependencies = [
+ "anyhow",
+ "simulator",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -8262,22 +8283,28 @@ dependencies = [
 name = "simulator"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
  "clap",
  "environment",
+ "eth2",
  "execution_layer",
  "futures",
  "kzg",
+ "lighthouse_network",
  "logging",
  "node_test_rig",
  "parking_lot",
  "rayon",
  "sensitive_url",
  "serde_json",
+ "task_executor",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "typenum",
  "types",
+ "validator_http_api",
 ]
 
 [[package]]

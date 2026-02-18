@@ -297,13 +297,17 @@ impl<E: EthSpec> Network<E> {
             let all_topics_for_digests = current_and_future_digests
                 .map(|(epoch, digest)| {
                     let fork = ctx.chain_spec.fork_name_at_epoch(epoch);
-                    all_topics_at_fork::<E>(fork, &ctx.chain_spec)
-                        .into_iter()
-                        .map(|topic| {
-                            Topic::new(GossipTopic::new(topic, GossipEncoding::default(), digest))
-                                .into()
-                        })
-                        .collect::<Vec<TopicHash>>()
+                    all_topics_at_fork::<E>(
+                        fork,
+                        &ctx.chain_spec,
+                        network_globals.execution_proof(),
+                    )
+                    .into_iter()
+                    .map(|topic| {
+                        Topic::new(GossipTopic::new(topic, GossipEncoding::default(), digest))
+                            .into()
+                    })
+                    .collect::<Vec<TopicHash>>()
                 })
                 .collect::<Vec<_>>();
 

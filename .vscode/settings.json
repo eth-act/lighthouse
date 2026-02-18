@@ -1,53 +1,8 @@
 {
-  // Lighthouse-specific rust-analyzer optimizations
+"rust-analyzer.checkOnSave.enable": true,
+"rust-analyzer.check.command": "clippy",
+"rust-analyzer.check.allTargets": false,
 
-  // Disable check on save temporarily to reduce load
-  "rust-analyzer.checkOnSave": true,
-
-  // Use clippy for better diagnostics when enabled
-  // "rust-analyzer.check.command": "clippy",
-
-  // Limit the number of parallel cargo check jobs
-  "rust-analyzer.cargo.extraEnv": {
-    "CARGO_BUILD_JOBS": "4"
-  },
-
-  // Only check the workspace, not all targets
-  "rust-analyzer.cargo.allTargets": false,
-
-  // Disable proc macros if they cause issues (re-enable if you need them)
-  "rust-analyzer.procMacro.enable": true,
-
-  // Enable build scripts (needed for some dependencies)
-  "rust-analyzer.cargo.buildScripts.enable": true,
-
-  // Reduce memory usage by disabling cache priming
-  "rust-analyzer.cachePriming.enable": false,
-
-  // Don't load sysroot crates (reduces memory usage)
-  "rust-analyzer.cargo.sysroot": "discover",
-
-  // Focus on specific crates if needed (comment out to analyze all)
-  "rust-analyzer.linkedProjects": [
-    "validator_client/Cargo.toml",
-    "beacon_node/Cargo.toml"
-  ],
-
-  // Exclude target and large directories from file watching
-  "files.watcherExclude": {
-    "**/target/**": true,
-    "**/.git/**": true,
-    "**/node_modules/**": true
-  },
-
-  "search.exclude": {
-    "**/target/**": true,
-    "**/.git/**": true,
-    "**/node_modules/**": true
-  },
-
-  // Increase timeout for long-running operations
-  "rust-analyzer.server.extraEnv": {
-    "RA_LOG": "info"
-  }
+"rust-analyzer.check.extraEnv": { "CARGO_BUILD_JOBS": "4" },
+"rust-analyzer.cargo.features": ["test-utils"]
 }

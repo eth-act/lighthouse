@@ -207,3 +207,10 @@ pub struct UpdateCandidatesRequest {
 pub struct UpdateCandidatesResponse {
     pub new_beacon_nodes_list: Vec<String>,
 }
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SignExecutionProofRequest {
+    pub execution_proof: types::ExecutionProof,
+    #[serde(default)]
+    pub epoch: Option<types::Epoch>,
+}

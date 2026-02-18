@@ -21,7 +21,7 @@ use task_executor::{ShutdownReason, TaskExecutor};
 use tokio::runtime::{Builder as RuntimeBuilder, Runtime};
 use tracing::{error, info, warn};
 use tracing_subscriber::filter::LevelFilter;
-use types::{EthSpec, GnosisEthSpec, MainnetEthSpec, MinimalEthSpec};
+use types::{ChainSpec, EthSpec, GnosisEthSpec, MainnetEthSpec, MinimalEthSpec};
 
 #[cfg(target_family = "unix")]
 use {
@@ -32,6 +32,9 @@ use {
 
 #[cfg(not(target_family = "unix"))]
 use {futures::channel::oneshot, std::cell::RefCell};
+
+#[cfg(feature = "test-utils")]
+pub mod test_utils;
 
 pub mod tracing_common;
 
@@ -284,6 +287,14 @@ impl<E: EthSpec> EnvironmentBuilder<E> {
         Ok(self)
     }
 
+    /// Map the `ChainSpec` used for the environment using the provided function.
+    pub fn map_spec(mut self, f: impl FnOnce(&mut ChainSpec)) -> Self {
+        let mut spec = Arc::unwrap_or_clone(self.eth2_config.spec);
+        f(&mut spec);
+        self.eth2_config.spec = spec.into();
+        self
+    }
+
     /// Consumes the builder, returning an `Environment`.
     pub fn build(self) -> Result<Environment<E>, String> {
         let (signal, exit) = async_channel::bounded(1);
@@ -296,6 +307,25 @@ impl<E: EthSpec> EnvironmentBuilder<E> {
             signal_rx: Some(signal_rx),
             signal: Some(signal),
             exit,
+            sse_logging_components: self.sse_logging_components,
+            eth_spec_instance: self.eth_spec_instance,
+            eth2_config: self.eth2_config,
+            eth2_network_config: self.eth2_network_config.map(Arc::new),
+        })
+    }
+
+    #[cfg(feature = "test-utils")]
+    pub fn build_test_environment(self) -> Result<test_utils::TestEnvironment<E>, String> {
+        let (signal, exit) = async_channel::bounded(1);
+        let (signal_tx, signal_rx) = channel(1);
+        Ok(test_utils::TestEnvironment {
+            executor: TaskExecutor::new(
+                tokio::runtime::Handle::try_current().expect("failed to get tokio handle"),
+                exit.clone(),
+                signal_tx.clone(),
+            ),
+            signal_rx: Some(signal_rx),
+            signal: Some(signal),
             sse_logging_components: self.sse_logging_components,
             eth_spec_instance: self.eth_spec_instance,
             eth2_config: self.eth2_config,

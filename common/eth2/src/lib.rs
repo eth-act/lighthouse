@@ -1762,6 +1762,13 @@ impl BeaconNodeHttpClient {
         &self,
         proofs: &[SignedExecutionProof],
     ) -> Result<(), Error> {
+        use serde::Serialize;
+
+        #[derive(Serialize)]
+        struct SubmitExecutionProofsRequest {
+            proofs: Vec<SignedExecutionProof>,
+        }
+
         let mut path = self.eth_path(V1)?;
 
         path.path_segments_mut()
@@ -1769,7 +1776,11 @@ impl BeaconNodeHttpClient {
             .push("beacon")
             .push("execution_proofs");
 
-        self.post(path, &proofs).await?;
+        let request = SubmitExecutionProofsRequest {
+            proofs: proofs.to_vec(),
+        };
+
+        self.post(path, &request).await?;
 
         Ok(())
     }

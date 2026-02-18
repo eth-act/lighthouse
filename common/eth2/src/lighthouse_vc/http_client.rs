@@ -681,4 +681,21 @@ impl ValidatorClientHttpClient {
         let url = self.make_graffiti_url(pubkey)?;
         self.delete(url).await
     }
+
+    pub async fn post_execution_proof(
+        &self,
+        pubkey: &PublicKeyBytes,
+        req: SignExecutionProofRequest,
+    ) -> Result<Response, Error> {
+        let mut path = self.server.expose_full().clone();
+
+        path.path_segments_mut()
+            .map_err(|()| Error::InvalidUrl(self.server.clone()))?
+            .push("lighthouse")
+            .push("validators")
+            .push(&pubkey.to_string())
+            .push("execution_proofs");
+
+        self.post_with_raw_response(path, &req).await
+    }
 }

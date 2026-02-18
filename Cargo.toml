@@ -69,6 +69,7 @@ members = [
     "testing/ef_tests",
     "testing/execution_engine_integration",
     "testing/node_test_rig",
+    "testing/proof_engine",
     "testing/simulator",
     "testing/state_transition_vectors",
     "testing/validator_test_rig",

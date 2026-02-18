@@ -206,10 +206,6 @@ impl ForkName {
         self >= ForkName::Gloas
     }
 
-    pub fn eip8025_enabled(self) -> bool {
-        self.fulu_enabled()
-    }
-
     pub fn fork_ascii(self) {
         if self == ForkName::Fulu {
             println!(

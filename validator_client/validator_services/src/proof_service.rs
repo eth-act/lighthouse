@@ -111,14 +111,14 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> Inner<S, T> {
                     while let Some(event_result) = stream.next().await {
                         match event_result {
                             Ok(eth2::types::EventKind::BlockFull(block_event)) => {
-                                if block_event.execution_optimistic {
+                                let block = block_event.data;
+                                if block.execution_optimistic {
                                     debug!(
-                                        slot = block_event.slot.as_u64(),
+                                        slot = block.slot.as_u64(),
                                         "Received execution optimistic block event"
                                     );
                                 }
-                                self.handle_block_event(&block_event.block, block_event.slot)
-                                    .await;
+                                self.handle_block_event(&block.block, block.slot).await;
                             }
                             Ok(_) => {
                                 // Ignore other event types (shouldn't happen with our topic filter)

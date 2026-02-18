@@ -133,11 +133,6 @@ pub fn verify_signed_execution_proof_signature<E: EthSpec>(
     genesis_validators_root: Hash256,
     spec: &ChainSpec,
 ) -> Result<(), BeaconChainError> {
-    // Check fork support
-    if !fork_name.eip8025_enabled() {
-        Err(ExecutionProofError::UnsupportedFork)?;
-    }
-
     // Check proof data is not empty
     if signed_proof.message.proof_data.is_empty() {
         Err(ExecutionProofError::EmptyProofData)?;

@@ -7,7 +7,7 @@ use super::{errors::ProofEngineError, json_structures::*};
 use crate::{
     ForkchoiceState, ForkchoiceUpdatedResponse, NewPayloadRequest, NewPayloadRequestFulu,
     PayloadStatusV1, PayloadStatusV1Status,
-    eip8025::state::State,
+    eip8025::state::{RequestMetadata, State},
     json_structures::{JsonExecutionPayload, JsonRequestBody, JsonResponseBody},
 };
 use parking_lot::RwLock;
@@ -16,6 +16,7 @@ use reqwest::header::CONTENT_TYPE;
 use sensitive_url::SensitiveUrl;
 use serde::de::DeserializeOwned;
 use serde_json::json;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use types::execution::eip8025::{ProofAttributes, ProofGenId, ProofStatus, SignedExecutionProof};
@@ -99,6 +100,8 @@ pub struct HttpProofEngine {
     url: SensitiveUrl,
     /// The internal state storing execution proofs in a tree structure and buffer.
     state: RwLock<State>,
+    /// Buffered proofs for request roots not yet seen.
+    buffered_proofs: RwLock<HashMap<Hash256, Vec<SignedExecutionProof>>>,
 }
 
 impl HttpProofEngine {
@@ -113,6 +116,7 @@ impl HttpProofEngine {
             client,
             url,
             state: RwLock::new(State::new()),
+            buffered_proofs: RwLock::new(HashMap::new()),
         }
     }
 
@@ -169,6 +173,20 @@ impl ProofEngine for HttpProofEngine {
         &self,
         proof: &SignedExecutionProof,
     ) -> Result<ProofStatus, ProofEngineError> {
+        if !self
+            .state
+            .read()
+            .contains_request_root(&proof.request_root())
+        {
+            tracing::info!(target: "execution_layer", "Received proof for unknown request root {}, buffering", proof.request_root());
+            self.buffered_proofs
+                .write()
+                .entry(proof.request_root())
+                .or_default()
+                .push(proof.clone());
+            return Ok(ProofStatus::Syncing);
+        }
+
         let json_proof: JsonExecutionProofV1 = proof.message.clone().into();
         let params = json!([json_proof]);
 
@@ -196,9 +214,24 @@ impl ProofEngine for HttpProofEngine {
     ) -> Result<PayloadStatusV1, ProofEngineError> {
         // We buffer the request in state for future proof association and return Syncing.
         // TODO: Currently we don't support proof verification before payload processing to prevent DOS so its not possible that proofs are verified yet. Is this reasonable?
-        self.state.write().buffer_request(request.into());
+        let request: RequestMetadata = request.into();
+        let buffered_proofs = self
+            .buffered_proofs
+            .write()
+            .remove(&request.request_root)
+            .unwrap_or_default();
+        self.state.write().buffer_request(request);
+
+        let mut status = PayloadStatusV1Status::Syncing;
+        for proof in buffered_proofs {
+            let proof_status = self.verify_execution_proof(&proof).await?;
+            if proof_status.is_valid() {
+                status = PayloadStatusV1Status::Valid;
+            }
+        }
+
         Ok(PayloadStatusV1 {
-            status: PayloadStatusV1Status::Syncing,
+            status,
             latest_valid_hash: None,
             validation_error: None,
         })
@@ -208,6 +241,7 @@ impl ProofEngine for HttpProofEngine {
         &self,
         forkchoice_state: ForkchoiceState,
     ) -> Result<ForkchoiceUpdatedResponse, ProofEngineError> {
+        tracing::info!(target: "execution_layer", "Received forkchoice update: head {}, safe {}, finalized {}", forkchoice_state.head_block_hash, forkchoice_state.safe_block_hash, forkchoice_state.finalized_block_hash);
         Ok(self.state.write().forkchoice_updated(forkchoice_state)?)
     }
 

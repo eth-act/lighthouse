@@ -104,14 +104,16 @@ pub struct ProofAttributes {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ProofStatus {
-    /// The proof is valid
+    /// The proof is valid.
     Valid,
-    /// The proof/header verification failed
+    /// The proof/header verification failed.
     Invalid,
     /// The proof is valid but does not change the canonical head.
     Accepted,
-    /// The proof type is not supported by this client
+    /// The proof type is not supported by this client.
     NotSupported,
+    /// The request root that the proof is associated with is not yet known.
+    Syncing,
 }
 
 impl ProofStatus {
@@ -122,6 +124,11 @@ impl ProofStatus {
 
     /// Returns true if the status indicates the node is still syncing proofs.
     pub fn is_syncing(&self) -> bool {
+        matches!(self, ProofStatus::Syncing)
+    }
+
+    /// Returns true if the status indicates the node has accepted the proof.
+    pub fn is_accepted(&self) -> bool {
         matches!(self, ProofStatus::Accepted)
     }
 }
@@ -135,6 +142,7 @@ impl std::fmt::Display for ProofStatus {
             ProofStatus::Invalid => write!(f, "INVALID"),
             ProofStatus::Accepted => write!(f, "ACCEPTED"),
             ProofStatus::NotSupported => write!(f, "NOT_SUPPORTED"),
+            ProofStatus::Syncing => write!(f, "SYNCING"),
         }
     }
 }
@@ -306,7 +314,8 @@ mod tests {
 
     #[test]
     fn proof_status_is_syncing() {
-        assert!(ProofStatus::Accepted.is_syncing());
+        assert!(ProofStatus::Syncing.is_syncing());
+        assert!(!ProofStatus::Accepted.is_syncing());
         assert!(!ProofStatus::Valid.is_syncing());
         assert!(!ProofStatus::Invalid.is_syncing());
         assert!(!ProofStatus::NotSupported.is_syncing());

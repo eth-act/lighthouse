@@ -17,7 +17,7 @@ directory = { workspace = true }
 dirs = { workspace = true }
 doppelganger_service = { workspace = true }
 environment = { workspace = true }
-eth2 = { workspace = true }
+eth2 = { workspace = true, features = ["events"] }
 execution_layer = { workspace = true }
 fdlimit = "0.3.0"
 graffiti_file = { workspace = true }

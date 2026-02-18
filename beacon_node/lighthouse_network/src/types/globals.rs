@@ -228,6 +228,7 @@ impl<E: EthSpec> NetworkGlobals<E> {
             enable_light_client_server: self.config.enable_light_client_server,
             subscribe_all_subnets: self.config.subscribe_all_subnets,
             sampling_subnets: self.sampling_subnets.read().clone(),
+            execution_proof: self.config.enable_execution_proof,
         }
     }
 
@@ -261,6 +262,10 @@ impl<E: EthSpec> NetworkGlobals<E> {
         let enr_key: discv5::enr::CombinedKey = discv5::enr::CombinedKey::from_secp256k1(&keypair);
         let enr = discv5::enr::Enr::builder().build(&enr_key).unwrap();
         NetworkGlobals::new(enr, metadata, trusted_peers, false, config, spec)
+    }
+
+    pub fn execution_proof(&self) -> bool {
+        self.config.enable_execution_proof
     }
 }
 

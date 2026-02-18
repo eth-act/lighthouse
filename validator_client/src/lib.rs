@@ -36,7 +36,7 @@ use tokio::{
 };
 use tracing::{debug, error, info, warn};
 use types::{EthSpec, Hash256};
-use validator_http_api::ApiSecret;
+pub use validator_http_api::ApiSecret;
 use validator_services::notifier_service::spawn_notifier;
 use validator_services::{
     attestation_service::{AttestationService, AttestationServiceBuilder},
@@ -674,6 +674,16 @@ impl<E: EthSpec> ProductionValidatorClient<E> {
         }
 
         Ok(())
+    }
+
+    /// Returns the listen address of the HTTP API, if enabled.
+    pub fn listen_addr(&self) -> Option<SocketAddr> {
+        self.http_api_listen_addr
+    }
+
+    /// Returns a reference to the validator client config.
+    pub fn config(&self) -> &Config {
+        &self.config
     }
 }
 

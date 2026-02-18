@@ -16,7 +16,7 @@ pub struct State {
     /// The latest fork choice state received that has not yet been marked as valid.
     pub latest_fcs: Option<ForkchoiceState>,
     /// The last fork choice state that was marked as valid.
-    pub last_valid_fcs: Option<ForkchoiceState>,
+    pub last_valid_fcs: ForkchoiceState,
     /// State of the execution proofs tree.
     pub tree: TreeState,
     /// Buffer of unassociated execution proofs.
@@ -30,11 +30,23 @@ impl State {
     pub fn new() -> Self {
         Self {
             latest_fcs: None,
-            last_valid_fcs: None,
+            last_valid_fcs: ForkchoiceState {
+                head_block_hash: ExecutionBlockHash::zero(),
+                safe_block_hash: ExecutionBlockHash::zero(),
+                finalized_block_hash: ExecutionBlockHash::zero(),
+            },
             tree: TreeState::default(),
             buffer: RequestBuffer::new(),
             min_required_proofs: MIN_REQUIRED_EXECUTION_PROOFS,
         }
+    }
+
+    /// Check if the state contains any proofs associated with the given new payload request root.
+    pub fn contains_request_root(&self, request_root: &Hash256) -> bool {
+        self.tree
+            .request_root_to_block_hash
+            .contains_key(request_root)
+            || self.buffer.proofs.contains_key(request_root)
     }
 
     /// Buffer a new payload request for future proof association.
@@ -44,12 +56,12 @@ impl State {
             .request_root_to_block_hash
             .contains_key(&request.request_root)
         {
-            tracing::warn!(target: "proof_engine", request_root = ?request.request_root, "Attempting to buffer a request that is already associated with a block hash in the tree - skipping buffer insertion");
+            tracing::warn!(target: "execution_layer", request_root = ?request.request_root, "Attempting to buffer a request that is already associated with a block hash in the tree - skipping buffer insertion");
             return;
         }
 
         if self.buffer.proofs.contains_key(&request.request_root) {
-            tracing::debug!(target: "proof_engine", request_root = ?request.request_root, "Request is already buffered - skipping buffer insertion");
+            tracing::debug!(target: "execution_layer", request_root = ?request.request_root, "Request is already buffered - skipping buffer insertion");
             return;
         }
 
@@ -68,73 +80,98 @@ impl State {
         // When tree is empty, always update last_valid_fcs to track finalized block
         // This allows finalized to advance during sync before any blocks are promoted
         // TODO: Reconsider this logic - maybe we just always update the finalized block in last_valid_fcs and allow syncing until we have observed the head block hash?
-        if self.tree.is_empty() {
+        if self.tree.is_empty() && finalized != ExecutionBlockHash::zero() {
             // Create a baseline forkchoice state anchored at finalized block
             let bootstrap_fcs = ForkchoiceState {
                 head_block_hash: finalized,
                 safe_block_hash: finalized,
                 finalized_block_hash: finalized,
             };
-            self.last_valid_fcs = Some(bootstrap_fcs);
+            self.last_valid_fcs = bootstrap_fcs;
             self.latest_fcs = Some(forkchoice_state);
             self.tree.current_canonical_head = finalized;
 
-            tracing::info!(target: "proof_engine", ?finalized, "Updated last_valid_fcs to finalized block (tree empty)");
-            return Ok(self.forkchoice_response_syncing());
+            tracing::info!(target: "execution_layer", ?finalized, "Updated last_valid_fcs to finalized block (tree empty)");
+            return Ok(self.forkchoice_response_valid());
         }
+
+        let new_safe_zero = safe.is_zero();
+        let new_finalized_zero = finalized.is_zero();
+        let safe = if !new_safe_zero {
+            safe
+        } else {
+            self.last_valid_fcs.safe_block_hash
+        };
+        let finalized = if !new_finalized_zero {
+            finalized
+        } else {
+            self.last_valid_fcs.finalized_block_hash
+        };
 
         // If we have not observed the head block hash yet, we cannot validate the forkchoice
         if !self.tree.proofs_by_block_hash.contains_key(&head) {
-            tracing::debug!(target: "proof_engine", ?head, "Forkchoice update head not found in tree state, marking as syncing");
+            tracing::debug!(target: "execution_layer", ?head, "Forkchoice update head not found in tree state, marking as syncing");
             self.latest_fcs = Some(forkchoice_state);
             return Ok(self.forkchoice_response_syncing());
         }
 
         // Validate that the safe block is in the tree (this is a quick sanity check so we don't have to traverse the tree)
-        if !self.tree.proofs_by_block_hash.contains_key(&safe) {
-            tracing::warn!(target: "proof_engine", ?safe, "Forkchoice update safe block hash not found in tree state - invalid forkchoice");
+        if !new_safe_zero && !self.tree.proofs_by_block_hash.contains_key(&safe) {
+            tracing::warn!(target: "execution_layer", ?safe, "Forkchoice update safe block hash not found in tree state - invalid forkchoice");
             return Ok(self.forkchoice_response_invalid());
         }
 
         // Validate that the finalized block is in the tree (this is a quick sanity check so we don't have to traverse the tree)
-        if !self.tree.proofs_by_block_hash.contains_key(&finalized) {
-            tracing::warn!(target: "proof_engine", ?finalized, "Forkchoice update finalized block hash not found in tree state - invalid forkchoice");
+        if !new_finalized_zero && !self.tree.proofs_by_block_hash.contains_key(&finalized) {
+            tracing::warn!(target: "execution_layer", ?finalized, "Forkchoice update finalized block hash not found in tree state - invalid forkchoice");
             return Ok(self.forkchoice_response_invalid());
         }
 
         // Validate the ancestry chain: head -> safe -> finalized
-        if !self.is_descendant(safe, head) || !self.is_descendant(finalized, safe) {
-            tracing::error!(target: "proof_engine", ?head, ?safe, ?finalized, "Forkchoice update is invalid - chain of ancestry broken");
+        if !self.is_descendant(safe, head) {
+            tracing::error!(target: "execution_layer", ?head, ?safe, "Forkchoice update is invalid - safe block is not an ancestor of head");
+            return Ok(self.forkchoice_response_invalid());
+        }
+
+        if !new_safe_zero && !self.is_descendant(finalized, safe) {
+            tracing::error!(target: "execution_layer", ?safe, ?finalized, "Forkchoice update is invalid - finalized block is not an ancestor of safe");
+            return Ok(self.forkchoice_response_invalid());
+        }
+
+        if !self.is_descendant(self.last_valid_fcs.finalized_block_hash, finalized) {
+            tracing::error!(target: "execution_layer", ?head, ?safe, ?finalized, "Forkchoice update is invalid -  new finalized block is not a descendant of last valid finalized block");
             return Ok(self.forkchoice_response_invalid());
         }
 
         // Determine if we need to update the canonical head
         let update_canonical_head = if head == self.tree.current_canonical_head {
-            tracing::debug!(target: "proof_engine", ?head, "Forkchoice update head matches current canonical head");
+            tracing::debug!(target: "execution_layer", ?head, "Forkchoice update head matches current canonical head");
             false
         } else if self.is_descendant(head, self.tree.current_canonical_head) {
-            tracing::debug!(target: "proof_engine", ?head, "Forkchoice update head is a ancestor of current canonical head - skip head update");
+            tracing::debug!(target: "execution_layer", ?head, "Forkchoice update head is a ancestor of current canonical head - skip head update");
             false
         } else {
-            tracing::debug!(target: "proof_engine", ?head, "Forkchoice update head is on a fork, updating canonical head pending validation");
+            tracing::debug!(target: "execution_layer", ?head, "Forkchoice update head is on a fork, updating canonical head pending validation");
             true
         };
 
         if update_canonical_head {
-            tracing::info!(target: "proof_engine", ?head, "Updating canonical head to new forkchoice head");
+            tracing::info!(target: "execution_layer", ?head, "Updating canonical head to new forkchoice head");
             self.tree.current_canonical_head = head;
         }
 
-        let prune_finalized = self
-            .last_valid_fcs
-            .map(|fcs| fcs.finalized_block_hash != finalized)
-            .unwrap_or(false);
+        let prune_finalized =
+            !new_finalized_zero && (self.last_valid_fcs.finalized_block_hash != finalized);
 
         if prune_finalized {
             self.prune_finalized_sidechains(finalized)?;
         }
 
-        self.last_valid_fcs = Some(forkchoice_state);
+        self.last_valid_fcs = ForkchoiceState {
+            head_block_hash: head,
+            safe_block_hash: safe,
+            finalized_block_hash: finalized,
+        };
         Ok(self.forkchoice_response_valid())
     }
 
@@ -180,7 +217,7 @@ impl State {
         if self.can_promote(&request_root)?
             && let Some(latest_canonical_head) = self.promote_buffered_requests(request_root)?
         {
-            tracing::info!(target: "proof_engine", ?latest_canonical_head, "Updated canonical head after promoting buffered proofs");
+            tracing::info!(target: "execution_layer", ?latest_canonical_head, "Updated canonical head after promoting buffered proofs");
             return Ok(ProofStatus::Valid);
         }
 
@@ -281,7 +318,7 @@ impl State {
         ForkchoiceUpdatedResponse {
             payload_status: PayloadStatusV1 {
                 status: PayloadStatusV1Status::Valid,
-                latest_valid_hash: None,
+                latest_valid_hash: self.tree.current_canonical_head.into(),
                 validation_error: None,
             },
             payload_id: None,
@@ -303,7 +340,7 @@ impl State {
         ForkchoiceUpdatedResponse {
             payload_status: PayloadStatusV1 {
                 status: PayloadStatusV1Status::Invalid,
-                latest_valid_hash: self.last_valid_fcs.map(|fcs| fcs.head_block_hash),
+                latest_valid_hash: self.tree.current_canonical_head.into(),
                 validation_error: Some("invalid forkchoice state".to_string()),
             },
             payload_id: None,
@@ -337,10 +374,10 @@ impl State {
         }
 
         // Bootstrap case: allow finalized block when starting empty tree
-        if Some(request.metadata.block_hash)
-            == self.last_valid_fcs.map(|fcs| fcs.finalized_block_hash)
+        if request.metadata.block_hash == self.tree.current_canonical_head
+            || request.metadata.parent_hash == self.tree.current_canonical_head
         {
-            tracing::debug!(target: "proof_engine", block_hash = ?request.metadata.block_hash, "Allowing promotion of finalized block during bootstrap");
+            tracing::debug!(target: "execution_layer", block_hash = ?request.metadata.block_hash, "Allowing promotion of finalized block during bootstrap");
             return Ok(true);
         }
 
@@ -461,7 +498,11 @@ impl State {
     pub fn with_min_required_proofs(min_required_proofs: usize) -> Self {
         Self {
             latest_fcs: None,
-            last_valid_fcs: None,
+            last_valid_fcs: ForkchoiceState {
+                head_block_hash: ExecutionBlockHash::zero(),
+                safe_block_hash: ExecutionBlockHash::zero(),
+                finalized_block_hash: ExecutionBlockHash::zero(),
+            },
             tree: TreeState::default(),
             buffer: RequestBuffer::new(),
             min_required_proofs,
@@ -931,7 +972,7 @@ mod tests {
         state.buffer_request(request.metadata.clone());
 
         // Add multiple proofs
-        for i in 0..3 {
+        for i in 0..2 {
             state.insert_proof(request.proofs[i].clone())?;
         }
 
@@ -944,8 +985,8 @@ mod tests {
             .proofs
             .len();
         assert_eq!(
-            proofs_before, 3,
-            "should have 3 proofs before re-buffer attempt"
+            proofs_before, 2,
+            "should have 2 proofs before re-buffer attempt"
         );
 
         // Attempt to buffer again
@@ -965,7 +1006,7 @@ mod tests {
             .proofs
             .len();
         assert_eq!(
-            proofs_after, 3,
+            proofs_after, 2,
             "all proofs should be preserved after duplicate buffer attempt"
         );
 

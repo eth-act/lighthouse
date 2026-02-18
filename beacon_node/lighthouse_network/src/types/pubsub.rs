@@ -391,18 +391,12 @@ impl<E: EthSpec> PubsubMessage<E> {
                         )))
                     }
                     GossipKind::ExecutionProof => {
-                        // EIP-8025: Execution proofs are only valid for Fulu+
-                        match fork_context.get_fork_from_context_bytes(gossip_topic.fork_digest) {
-                            Some(fork) if fork.eip8025_enabled() => {
-                                let execution_proof = SignedExecutionProof::from_ssz_bytes(data)
-                                    .map_err(|e| format!("{:?}", e))?;
-                                Ok(PubsubMessage::ExecutionProof(Box::new(execution_proof)))
-                            }
-                            Some(_) | None => Err(format!(
-                                "execution_proof topic invalid for given fork digest {:?}",
-                                gossip_topic.fork_digest
-                            )),
-                        }
+                        // EIP-8025: Nodes only subscribe to this topic when a proof engine is
+                        // configured (opt-in per node). No fork check needed — subscription
+                        // itself is the gate.
+                        let execution_proof = SignedExecutionProof::from_ssz_bytes(data)
+                            .map_err(|e| format!("{:?}", e))?;
+                        Ok(PubsubMessage::ExecutionProof(Box::new(execution_proof)))
                     }
                 }
             }
