@@ -26,6 +26,7 @@ use crate::peer_manager::peerdb::client::ClientKind;
 use crate::types::GossipKind;
 use libp2p::multiaddr;
 use network_utils::discovery_metrics;
+use crate::discovery::enr::Eth2Enr;
 use network_utils::enr_ext::{EnrExt, peer_id_to_node_id};
 pub use peerdb::peer_info::{ConnectionDirection, PeerConnectionStatus, PeerInfo};
 use peerdb::score::{PeerAction, ReportSource};
@@ -59,6 +60,8 @@ pub const PEER_RECONNECTION_TIMEOUT: Duration = Duration::from_secs(600);
 pub const MIN_SYNC_COMMITTEE_PEERS: u64 = 2;
 /// Avoid pruning sampling peers if subnet peer count is below this number.
 pub const MIN_SAMPLING_COLUMN_SUBNET_PEERS: u64 = 2;
+/// Minimum connected peers that advertise execution proof engine support.
+pub const MIN_EXECUTION_PROOF_PEERS: u64 = 1;
 /// A fraction of `PeerManager::target_peers` that we allow to connect to us in excess of
 /// `PeerManager::target_peers`. For clarity, if `PeerManager::target_peers` is 50 and
 /// PEER_EXCESS_FACTOR = 0.1 we allow 10% more nodes, i.e 55.
@@ -599,6 +602,8 @@ impl<E: EthSpec> PeerManager<E> {
                     Protocol::BlobsByRoot => PeerAction::MidToleranceError,
                     Protocol::DataColumnsByRoot => PeerAction::MidToleranceError,
                     Protocol::DataColumnsByRange => PeerAction::MidToleranceError,
+                    Protocol::ExecutionProofsByRange => PeerAction::MidToleranceError,
+                    Protocol::ExecutionProofsByRoot => PeerAction::MidToleranceError,
                     Protocol::Goodbye => PeerAction::LowToleranceError,
                     Protocol::MetaData => PeerAction::LowToleranceError,
                     Protocol::Status => PeerAction::LowToleranceError,
@@ -619,6 +624,8 @@ impl<E: EthSpec> PeerManager<E> {
                     Protocol::BlobsByRoot => return,
                     Protocol::DataColumnsByRoot => return,
                     Protocol::DataColumnsByRange => return,
+                    Protocol::ExecutionProofsByRange => return,
+                    Protocol::ExecutionProofsByRoot => return,
                     Protocol::Goodbye => return,
                     Protocol::LightClientBootstrap => return,
                     Protocol::LightClientOptimisticUpdate => return,
@@ -642,6 +649,8 @@ impl<E: EthSpec> PeerManager<E> {
                     Protocol::BlobsByRoot => PeerAction::MidToleranceError,
                     Protocol::DataColumnsByRoot => PeerAction::MidToleranceError,
                     Protocol::DataColumnsByRange => PeerAction::MidToleranceError,
+                    Protocol::ExecutionProofsByRange => PeerAction::MidToleranceError,
+                    Protocol::ExecutionProofsByRoot => PeerAction::MidToleranceError,
                     Protocol::LightClientBootstrap => return,
                     Protocol::LightClientOptimisticUpdate => return,
                     Protocol::LightClientFinalityUpdate => return,
@@ -1009,6 +1018,29 @@ impl<E: EthSpec> PeerManager<E> {
         }
     }
 
+    /// Trigger subnet-targeted discovery when we are below the minimum number of connected peers
+    /// that advertise execution proof engine support (`ep=true` ENR).
+    fn maintain_proof_capable_peers(&mut self) {
+        let count = self
+            .network_globals
+            .peers
+            .read()
+            .good_peers_on_subnet(Subnet::ExecutionProof)
+            .count() as u64;
+        if count < MIN_EXECUTION_PROOF_PEERS {
+            debug!(
+                count,
+                target = MIN_EXECUTION_PROOF_PEERS,
+                "Insufficient proof-capable peers; triggering discovery"
+            );
+            self.events
+                .push(PeerManagerEvent::DiscoverSubnetPeers(vec![SubnetDiscovery {
+                    subnet: Subnet::ExecutionProof,
+                    min_ttl: None,
+                }]));
+        }
+    }
+
     /// This function checks the status of our current peers and optionally requests a discovery
     /// query if we need to find more peers to maintain the current number of peers
     fn maintain_peer_count(&mut self, dialing_peers: usize) {
@@ -1079,6 +1111,8 @@ impl<E: EthSpec> PeerManager<E> {
                     Subnet::DataColumn(id) => {
                         peer_info.custody_subnets.insert(id);
                     }
+                    // ExecutionProof is a capability flag, not a subnet tracked in peer_subnet_info.
+                    Subnet::ExecutionProof => {}
                 }
             }
 
@@ -1161,6 +1195,27 @@ impl<E: EthSpec> PeerManager<E> {
 
         if should_protect_sync {
             return true;
+        }
+
+        // Protect proof-capable peers when at or below the minimum threshold
+        if self.network_globals.execution_proof() {
+            let is_proof_capable = candidate_info
+                .info
+                .enr()
+                .is_some_and(|enr| enr.execution_proof_enabled());
+            if is_proof_capable {
+                let proof_capable_count = peer_subnet_info
+                    .values()
+                    .filter(|p| {
+                        p.info
+                            .enr()
+                            .is_some_and(|enr| enr.execution_proof_enabled())
+                    })
+                    .count();
+                if proof_capable_count <= MIN_EXECUTION_PROOF_PEERS as usize {
+                    return true;
+                }
+            }
         }
 
         // Check attestation subnet to avoid pruning from subnets with the lowest peer count
@@ -1446,6 +1501,11 @@ impl<E: EthSpec> PeerManager<E> {
 
         // Maintain minimum count for sync committee peers.
         self.maintain_sync_committee_peers();
+
+        // Maintain minimum count for execution-proof-capable peers.
+        if self.network_globals.execution_proof() {
+            self.maintain_proof_capable_peers();
+        }
 
         // Prune any excess peers back to our target in such a way that incentivises good scores and
         // a uniform distribution of subnets.

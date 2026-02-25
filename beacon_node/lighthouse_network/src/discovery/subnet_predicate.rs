@@ -41,6 +41,7 @@ where
                     false
                 }
             }
+            Subnet::ExecutionProof => enr.execution_proof_enabled(),
         });
 
         if !predicate {

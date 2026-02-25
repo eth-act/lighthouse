@@ -5,8 +5,8 @@
 
 use super::{errors::ProofEngineError, json_structures::*};
 use crate::{
-    ForkchoiceState, ForkchoiceUpdatedResponse, NewPayloadRequest, NewPayloadRequestFulu,
-    PayloadStatusV1, PayloadStatusV1Status,
+    ForkchoiceState, ForkchoiceUpdatedResponse, MissingProofInfo, NewPayloadRequest,
+    NewPayloadRequestFulu, PayloadStatusV1, PayloadStatusV1Status,
     eip8025::state::{RequestMetadata, State},
     json_structures::{JsonExecutionPayload, JsonRequestBody, JsonResponseBody},
 };
@@ -51,6 +51,13 @@ pub const PROOF_ENGINE_TIMEOUT: Duration = Duration::from_secs(1);
 pub trait ProofEngine: Send + Sync {
     /// Get all proofs for a given new_payload_request_root.
     fn get_proofs_by_root(&self, root: &Hash256) -> Vec<SignedExecutionProof>;
+
+    /// Return all buffer entries that do not yet have sufficient proofs for promotion.
+    ///
+    /// `MissingProofInfo.root` is populated with the new-payload request root.
+    /// The beacon chain layer replaces it with the beacon block root before the
+    /// sync manager issues `ExecutionProofsByRoot` RPC requests.
+    fn missing_proofs(&self) -> Vec<MissingProofInfo>;
 
     /// Verify an individual execution proof via RPC.
     ///
@@ -167,6 +174,10 @@ impl ProofEngine for HttpProofEngine {
             .get_proofs(root)
             .map(<[SignedExecutionProof]>::to_vec)
             .unwrap_or_default()
+    }
+
+    fn missing_proofs(&self) -> Vec<MissingProofInfo> {
+        self.state.read().missing_proofs()
     }
 
     async fn verify_execution_proof(

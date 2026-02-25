@@ -374,6 +374,7 @@ impl<E: EthSpec> Network<E> {
         let eth2_rpc = RPC::new(
             ctx.fork_context.clone(),
             config.enable_light_client_server,
+            config.enable_execution_proof,
             config.inbound_rate_limiter_config.clone(),
             config.outbound_rate_limiter_config.clone(),
             seq_number,
@@ -1611,6 +1612,28 @@ impl<E: EthSpec> Network<E> {
                             request_type,
                         })
                     }
+                    RequestType::ExecutionProofsByRange(_) => {
+                        metrics::inc_counter_vec(
+                            &metrics::TOTAL_RPC_REQUESTS,
+                            &["execution_proofs_by_range"],
+                        );
+                        Some(NetworkEvent::RequestReceived {
+                            peer_id,
+                            inbound_request_id,
+                            request_type,
+                        })
+                    }
+                    RequestType::ExecutionProofsByRoot(_) => {
+                        metrics::inc_counter_vec(
+                            &metrics::TOTAL_RPC_REQUESTS,
+                            &["execution_proofs_by_root"],
+                        );
+                        Some(NetworkEvent::RequestReceived {
+                            peer_id,
+                            inbound_request_id,
+                            request_type,
+                        })
+                    }
                 }
             }
             Ok(RPCReceived::Response(id, resp)) => {
@@ -1671,6 +1694,12 @@ impl<E: EthSpec> Network<E> {
                         peer_id,
                         Response::LightClientUpdatesByRange(Some(update)),
                     ),
+                    RpcSuccessResponse::ExecutionProofsByRange(proof) => {
+                        self.build_response(id, peer_id, Response::ExecutionProofsByRange(Some(proof)))
+                    }
+                    RpcSuccessResponse::ExecutionProofsByRoot(proof) => {
+                        self.build_response(id, peer_id, Response::ExecutionProofsByRoot(Some(proof)))
+                    }
                 }
             }
             Ok(RPCReceived::EndOfStream(id, termination)) => {
@@ -1683,6 +1712,12 @@ impl<E: EthSpec> Network<E> {
                     ResponseTermination::DataColumnsByRange => Response::DataColumnsByRange(None),
                     ResponseTermination::LightClientUpdatesByRange => {
                         Response::LightClientUpdatesByRange(None)
+                    }
+                    ResponseTermination::ExecutionProofsByRange => {
+                        Response::ExecutionProofsByRange(None)
+                    }
+                    ResponseTermination::ExecutionProofsByRoot => {
+                        Response::ExecutionProofsByRoot(None)
                     }
                 };
                 self.build_response(id, peer_id, response)

@@ -118,6 +118,19 @@ pub static LIGHT_CLIENT_UPDATES_BY_RANGE_DENEB_MAX: LazyLock<usize> =
 pub static LIGHT_CLIENT_UPDATES_BY_RANGE_ELECTRA_MAX: LazyLock<usize> =
     LazyLock::new(|| LightClientUpdate::<MainnetEthSpec>::ssz_max_len_for_fork(ForkName::Electra));
 
+/// Minimum SSZ size of a `SignedExecutionProof` (empty proof_data):
+/// - message offset: 4 bytes
+/// - validator_index: 8 bytes
+/// - signature: 96 bytes
+/// - ExecutionProof fixed header (proof_data offset + proof_type + public_input): 4 + 1 + 32 = 37
+pub const SIGNED_EXECUTION_PROOF_MIN_SIZE: usize = 4 + 8 + 96 + 37;
+
+/// Maximum SSZ size of a `SignedExecutionProof` (MaxProofSize = 307200 bytes):
+/// - SignedExecutionProof fixed header: 4 + 8 + 96 = 108 bytes
+/// - ExecutionProof fixed header: 4 + 1 + 32 = 37 bytes
+/// - proof_data: MaxProofSize = 75 * 4096 = 307200 bytes
+pub const SIGNED_EXECUTION_PROOF_MAX_SIZE: usize = 4 + 8 + 96 + 37 + 307200;
+
 /// The protocol prefix the RPC protocol id.
 const PROTOCOL_PREFIX: &str = "/eth2/beacon_chain/req";
 /// The number of seconds to wait for the first bytes of a request once a protocol has been
@@ -267,6 +280,12 @@ pub enum Protocol {
     /// The `LightClientUpdatesByRange` protocol name
     #[strum(serialize = "light_client_updates_by_range")]
     LightClientUpdatesByRange,
+    /// The `ExecutionProofsByRange` protocol name.
+    #[strum(serialize = "execution_proofs_by_range")]
+    ExecutionProofsByRange,
+    /// The `ExecutionProofsByRoot` protocol name.
+    #[strum(serialize = "execution_proofs_by_root")]
+    ExecutionProofsByRoot,
 }
 
 impl Protocol {
@@ -286,6 +305,8 @@ impl Protocol {
             Protocol::LightClientOptimisticUpdate => None,
             Protocol::LightClientFinalityUpdate => None,
             Protocol::LightClientUpdatesByRange => None,
+            Protocol::ExecutionProofsByRange => Some(ResponseTermination::ExecutionProofsByRange),
+            Protocol::ExecutionProofsByRoot => Some(ResponseTermination::ExecutionProofsByRoot),
         }
     }
 }
@@ -318,6 +339,8 @@ pub enum SupportedProtocol {
     LightClientOptimisticUpdateV1,
     LightClientFinalityUpdateV1,
     LightClientUpdatesByRangeV1,
+    ExecutionProofsByRangeV1,
+    ExecutionProofsByRootV1,
 }
 
 impl SupportedProtocol {
@@ -342,6 +365,8 @@ impl SupportedProtocol {
             SupportedProtocol::LightClientOptimisticUpdateV1 => "1",
             SupportedProtocol::LightClientFinalityUpdateV1 => "1",
             SupportedProtocol::LightClientUpdatesByRangeV1 => "1",
+            SupportedProtocol::ExecutionProofsByRangeV1 => "1",
+            SupportedProtocol::ExecutionProofsByRootV1 => "1",
         }
     }
 
@@ -368,6 +393,8 @@ impl SupportedProtocol {
             }
             SupportedProtocol::LightClientFinalityUpdateV1 => Protocol::LightClientFinalityUpdate,
             SupportedProtocol::LightClientUpdatesByRangeV1 => Protocol::LightClientUpdatesByRange,
+            SupportedProtocol::ExecutionProofsByRangeV1 => Protocol::ExecutionProofsByRange,
+            SupportedProtocol::ExecutionProofsByRootV1 => Protocol::ExecutionProofsByRoot,
         }
     }
 
@@ -426,6 +453,7 @@ pub struct RPCProtocol<E: EthSpec> {
     pub fork_context: Arc<ForkContext>,
     pub max_rpc_size: usize,
     pub enable_light_client_server: bool,
+    pub enable_execution_proof: bool,
     pub phantom: PhantomData<E>,
 }
 
@@ -447,6 +475,16 @@ impl<E: EthSpec> UpgradeInfo for RPCProtocol<E> {
             ));
             supported_protocols.push(ProtocolId::new(
                 SupportedProtocol::LightClientFinalityUpdateV1,
+                Encoding::SSZSnappy,
+            ));
+        }
+        if self.enable_execution_proof {
+            supported_protocols.push(ProtocolId::new(
+                SupportedProtocol::ExecutionProofsByRangeV1,
+                Encoding::SSZSnappy,
+            ));
+            supported_protocols.push(ProtocolId::new(
+                SupportedProtocol::ExecutionProofsByRootV1,
                 Encoding::SSZSnappy,
             ));
         }
@@ -535,6 +573,14 @@ impl ProtocolId {
                 LightClientUpdatesByRangeRequest::ssz_max_len(),
             ),
             Protocol::MetaData => RpcLimits::new(0, 0), // Metadata requests are empty
+            Protocol::ExecutionProofsByRange => RpcLimits::new(
+                ExecutionProofsByRangeRequest::ssz_min_len(),
+                ExecutionProofsByRangeRequest::ssz_max_len(),
+            ),
+            // ExecutionProofsByRoot request is a list of block roots — same size limit as BlocksByRoot.
+            Protocol::ExecutionProofsByRoot => {
+                RpcLimits::new(0, spec.max_blocks_by_root_request)
+            }
         }
     }
 
@@ -576,6 +622,10 @@ impl ProtocolId {
             Protocol::LightClientUpdatesByRange => {
                 rpc_light_client_updates_by_range_limits_by_fork(fork_context.current_fork_name())
             }
+            Protocol::ExecutionProofsByRange | Protocol::ExecutionProofsByRoot => RpcLimits::new(
+                SIGNED_EXECUTION_PROOF_MIN_SIZE,
+                SIGNED_EXECUTION_PROOF_MAX_SIZE,
+            ),
         }
     }
 
@@ -601,7 +651,10 @@ impl ProtocolId {
             | SupportedProtocol::MetaDataV1
             | SupportedProtocol::MetaDataV2
             | SupportedProtocol::MetaDataV3
-            | SupportedProtocol::GoodbyeV1 => false,
+            | SupportedProtocol::GoodbyeV1
+            // Execution proof types are not fork-dependent, no context bytes needed.
+            | SupportedProtocol::ExecutionProofsByRangeV1
+            | SupportedProtocol::ExecutionProofsByRootV1 => false,
         }
     }
 }
@@ -729,6 +782,8 @@ pub enum RequestType<E: EthSpec> {
     LightClientOptimisticUpdate,
     LightClientFinalityUpdate,
     LightClientUpdatesByRange(LightClientUpdatesByRangeRequest),
+    ExecutionProofsByRange(ExecutionProofsByRangeRequest),
+    ExecutionProofsByRoot(ExecutionProofsByRootRequest),
     Ping(Ping),
     MetaData(MetadataRequest<E>),
 }
@@ -754,6 +809,13 @@ impl<E: EthSpec> RequestType<E> {
             RequestType::LightClientOptimisticUpdate => 1,
             RequestType::LightClientFinalityUpdate => 1,
             RequestType::LightClientUpdatesByRange(req) => req.count,
+            RequestType::ExecutionProofsByRange(req) => req.max_requested(),
+            RequestType::ExecutionProofsByRoot(req) => {
+                use typenum::Unsigned;
+                use types::execution::eip8025::MaxExecutionProofsPerPayload;
+                (req.block_roots.len() as u64)
+                    .saturating_mul(MaxExecutionProofsPerPayload::to_u64())
+            }
         }
     }
 
@@ -793,6 +855,8 @@ impl<E: EthSpec> RequestType<E> {
             RequestType::LightClientUpdatesByRange(_) => {
                 SupportedProtocol::LightClientUpdatesByRangeV1
             }
+            RequestType::ExecutionProofsByRange(_) => SupportedProtocol::ExecutionProofsByRangeV1,
+            RequestType::ExecutionProofsByRoot(_) => SupportedProtocol::ExecutionProofsByRootV1,
         }
     }
 
@@ -808,6 +872,8 @@ impl<E: EthSpec> RequestType<E> {
             RequestType::BlobsByRoot(_) => ResponseTermination::BlobsByRoot,
             RequestType::DataColumnsByRoot(_) => ResponseTermination::DataColumnsByRoot,
             RequestType::DataColumnsByRange(_) => ResponseTermination::DataColumnsByRange,
+            RequestType::ExecutionProofsByRange(_) => ResponseTermination::ExecutionProofsByRange,
+            RequestType::ExecutionProofsByRoot(_) => ResponseTermination::ExecutionProofsByRoot,
             RequestType::Status(_) => unreachable!(),
             RequestType::Goodbye(_) => unreachable!(),
             RequestType::Ping(_) => unreachable!(),
@@ -879,6 +945,14 @@ impl<E: EthSpec> RequestType<E> {
                 SupportedProtocol::LightClientUpdatesByRangeV1,
                 Encoding::SSZSnappy,
             )],
+            RequestType::ExecutionProofsByRange(_) => vec![ProtocolId::new(
+                SupportedProtocol::ExecutionProofsByRangeV1,
+                Encoding::SSZSnappy,
+            )],
+            RequestType::ExecutionProofsByRoot(_) => vec![ProtocolId::new(
+                SupportedProtocol::ExecutionProofsByRootV1,
+                Encoding::SSZSnappy,
+            )],
         }
     }
 
@@ -898,6 +972,8 @@ impl<E: EthSpec> RequestType<E> {
             RequestType::LightClientOptimisticUpdate => true,
             RequestType::LightClientFinalityUpdate => true,
             RequestType::LightClientUpdatesByRange(_) => true,
+            RequestType::ExecutionProofsByRange(_) => false,
+            RequestType::ExecutionProofsByRoot(_) => false,
         }
     }
 }
@@ -1019,6 +1095,8 @@ impl<E: EthSpec> std::fmt::Display for RequestType<E> {
             RequestType::LightClientUpdatesByRange(_) => {
                 write!(f, "Light client updates by range request")
             }
+            RequestType::ExecutionProofsByRange(req) => write!(f, "{}", req),
+            RequestType::ExecutionProofsByRoot(req) => write!(f, "{}", req),
         }
     }
 }

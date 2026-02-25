@@ -1,4 +1,7 @@
-use crate::{ForkchoiceState, ForkchoiceUpdatedResponse, PayloadStatusV1, PayloadStatusV1Status};
+use crate::{
+    ForkchoiceState, ForkchoiceUpdatedResponse, MissingProofInfo, PayloadStatusV1,
+    PayloadStatusV1Status,
+};
 use crate::{NewPayloadRequest, eip8025::errors::ProofEngineStateError};
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -39,6 +42,25 @@ impl State {
             buffer: RequestBuffer::new(),
             min_required_proofs: MIN_REQUIRED_EXECUTION_PROOFS,
         }
+    }
+
+    /// Return all buffer entries that do not yet have sufficient proofs for promotion.
+    ///
+    /// Only the `buffer` is scanned: by design, every entry in the buffer has not been
+    /// promoted to the tree, meaning it lacks sufficient proofs. Tree entries are already done.
+    pub fn missing_proofs(&self) -> Vec<MissingProofInfo> {
+        self.buffer
+            .proofs
+            .iter()
+            .map(|(request_root, payload_request)| MissingProofInfo {
+                root: *request_root,
+                existing_proof_types: payload_request
+                    .proofs
+                    .iter()
+                    .map(|p| p.message.proof_type)
+                    .collect(),
+            })
+            .collect()
     }
 
     /// Check if the state contains any proofs associated with the given new payload request root.

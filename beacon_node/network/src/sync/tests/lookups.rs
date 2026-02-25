@@ -353,6 +353,17 @@ impl TestRig {
         k256::ecdsa::SigningKey::random(&mut self.rng_08).into()
     }
 
+    pub fn new_connected_proof_capable_peer(&mut self) -> PeerId {
+        let key = self.determinstic_key();
+        let peer_id = self
+            .network_globals
+            .peers
+            .write()
+            .__add_connected_proof_capable_peer_testing_only(key);
+        self.log(&format!("Added proof-capable peer {peer_id:?}"));
+        peer_id
+    }
+
     pub fn new_connected_peers_for_peerdas(&mut self) {
         // Enough sampling peers with few columns
         for _ in 0..100 {
@@ -705,7 +716,7 @@ impl TestRig {
         self.send_sync_message(SyncMessage::Disconnect(peer_id));
     }
 
-    fn drain_network_rx(&mut self) {
+    pub fn drain_network_rx(&mut self) {
         while let Ok(event) = self.network_rx.try_recv() {
             self.network_rx_queue.push(event);
         }

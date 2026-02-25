@@ -443,6 +443,27 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         })
     }
 
+    /// EIP-8025: Verify an execution proof received over RPC.
+    ///
+    /// Reuses `GossipExecutionProof` work queue — the verification logic is identical.
+    /// Peer penalization on invalid proof uses `ReportSource::SyncService`.
+    pub fn send_rpc_execution_proof(
+        self: &Arc<Self>,
+        peer_id: PeerId,
+        execution_proof: Arc<SignedExecutionProof>,
+    ) -> Result<(), Error<T::EthSpec>> {
+        let processor = self.clone();
+        let process_fn = async move {
+            processor
+                .process_rpc_execution_proof(peer_id, (*execution_proof).clone())
+                .await
+        };
+        self.try_send(BeaconWorkEvent {
+            drop_during_sync: false,
+            work: Work::GossipExecutionProof(Box::pin(process_fn)),
+        })
+    }
+
     /// Create a new `Work` event for some block, where the result from computation (if any) is
     /// sent to the other side of `result_tx`.
     pub fn send_rpc_beacon_block(

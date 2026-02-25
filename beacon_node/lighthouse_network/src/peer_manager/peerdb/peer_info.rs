@@ -92,6 +92,10 @@ impl<E: EthSpec> PeerInfo<E> {
     /// Returns if the peer is subscribed to a given `Subnet` from the metadata attnets/syncnets field.
     /// Also returns true if the peer is assigned to custody a given data column `Subnet` computed from the metadata `custody_group_count` field or ENR `cgc` field.
     pub fn on_subnet_metadata(&self, subnet: &Subnet) -> bool {
+        // ExecutionProof capability is advertised in the ENR, not a metadata bitfield.
+        if matches!(subnet, Subnet::ExecutionProof) {
+            return self.enr().is_some_and(|enr| enr.execution_proof_enabled());
+        }
         if let Some(meta_data) = &self.meta_data {
             match subnet {
                 Subnet::Attestation(id) => {
@@ -105,6 +109,7 @@ impl<E: EthSpec> PeerInfo<E> {
                 Subnet::DataColumn(subnet_id) => {
                     return self.is_assigned_to_custody_subnet(subnet_id);
                 }
+                Subnet::ExecutionProof => unreachable!("handled above"),
             }
         }
         false

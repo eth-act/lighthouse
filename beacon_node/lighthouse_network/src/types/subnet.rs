@@ -14,6 +14,8 @@ pub enum Subnet {
     SyncCommittee(SyncSubnetId),
     /// Represents a gossipsub data column subnet.
     DataColumn(DataColumnSubnetId),
+    /// EIP-8025: Capability flag — peers with a proof engine (ENR `ep=true`).
+    ExecutionProof,
 }
 
 /// A subnet to discover peers on along with the instant after which it's no longer useful.

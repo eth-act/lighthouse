@@ -5,6 +5,7 @@ use std::sync::Arc;
 use types::{
     BlobSidecar, DataColumnSidecar, Epoch, EthSpec, LightClientBootstrap,
     LightClientFinalityUpdate, LightClientOptimisticUpdate, LightClientUpdate, SignedBeaconBlock,
+    execution::eip8025::SignedExecutionProof,
 };
 
 pub type Id = u32;
@@ -30,6 +31,10 @@ pub enum SyncRequestId {
     BlobsByRange(BlobsByRangeRequestId),
     /// Data columns by range request
     DataColumnsByRange(DataColumnsByRangeRequestId),
+    /// Execution proofs by range request
+    ExecutionProofsByRange(ExecutionProofsByRangeRequestId),
+    /// Execution proofs by root request
+    ExecutionProofsByRoot(ExecutionProofsByRootRequestId),
 }
 
 /// Request ID for data_columns_by_root requests. Block lookups do not issue this request directly.
@@ -73,6 +78,18 @@ pub struct DataColumnsByRangeRequestId {
 pub enum DataColumnsByRangeRequester {
     ComponentsByRange(ComponentsByRangeRequestId),
     CustodyBackfillSync(CustodyBackFillBatchRequestId),
+}
+
+/// Request ID for execution_proofs_by_range requests.
+#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
+pub struct ExecutionProofsByRangeRequestId {
+    pub id: Id,
+}
+
+/// Request ID for execution_proofs_by_root requests.
+#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
+pub struct ExecutionProofsByRootRequestId {
+    pub id: Id,
 }
 
 /// Block components by range request for range sync. Includes an ID for downstream consumers to
@@ -172,6 +189,10 @@ pub enum Response<E: EthSpec> {
     LightClientFinalityUpdate(Arc<LightClientFinalityUpdate<E>>),
     /// A response to a LightClientUpdatesByRange request.
     LightClientUpdatesByRange(Option<Arc<LightClientUpdate<E>>>),
+    /// A response to a get EXECUTION_PROOFS_BY_RANGE request. A None response signals end of batch.
+    ExecutionProofsByRange(Option<Arc<SignedExecutionProof>>),
+    /// A response to a get EXECUTION_PROOFS_BY_ROOT request. A None response signals end of batch.
+    ExecutionProofsByRoot(Option<Arc<SignedExecutionProof>>),
 }
 
 impl<E: EthSpec> std::convert::From<Response<E>> for RpcResponse<E> {
@@ -217,6 +238,18 @@ impl<E: EthSpec> std::convert::From<Response<E>> for RpcResponse<E> {
                     RpcResponse::StreamTermination(ResponseTermination::LightClientUpdatesByRange)
                 }
             },
+            Response::ExecutionProofsByRange(r) => match r {
+                Some(p) => RpcResponse::Success(RpcSuccessResponse::ExecutionProofsByRange(p)),
+                None => {
+                    RpcResponse::StreamTermination(ResponseTermination::ExecutionProofsByRange)
+                }
+            },
+            Response::ExecutionProofsByRoot(r) => match r {
+                Some(p) => RpcResponse::Success(RpcSuccessResponse::ExecutionProofsByRoot(p)),
+                None => {
+                    RpcResponse::StreamTermination(ResponseTermination::ExecutionProofsByRoot)
+                }
+            },
         }
     }
 }
@@ -234,6 +267,8 @@ macro_rules! impl_display {
 // Since each request Id is deeply nested with various types, if rendered with Debug on logs they
 // take too much visual space. This custom Display implementations make the overall Id short while
 // not losing information
+impl_display!(ExecutionProofsByRangeRequestId, "ExecProofsByRange/{}", id);
+impl_display!(ExecutionProofsByRootRequestId, "ExecProofsByRoot/{}", id);
 impl_display!(BlocksByRangeRequestId, "{}/{}", id, parent_request_id);
 impl_display!(BlobsByRangeRequestId, "{}/{}", id, parent_request_id);
 impl_display!(DataColumnsByRangeRequestId, "{}/{}", id, parent_request_id);

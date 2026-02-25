@@ -39,6 +39,7 @@ use super::network_context::{
     CustodyByRootResult, RangeBlockComponent, RangeRequestId, RpcEvent, SyncNetworkContext,
 };
 use super::peer_sync_info::{PeerSyncType, remote_sync_type};
+use super::proof_sync::ProofSync;
 use super::range_sync::{EPOCHS_PER_BATCH, RangeSync, RangeSyncType};
 use crate::network_beacon_processor::{ChainSegmentProcessId, NetworkBeaconProcessor};
 use crate::service::NetworkMessage;
@@ -72,6 +73,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace};
+use types::execution::eip8025::SignedExecutionProof;
 use types::{
     BlobSidecar, DataColumnSidecar, EthSpec, ForkContext, Hash256, SignedBeaconBlock, Slot,
 };
@@ -130,6 +132,13 @@ pub enum SyncMessage<E: EthSpec> {
         peer_id: PeerId,
         data_column: Option<Arc<DataColumnSidecar<E>>>,
         seen_timestamp: Duration,
+    },
+
+    /// An execution proof has been received from the RPC.
+    RpcExecutionProof {
+        sync_request_id: SyncRequestId,
+        peer_id: PeerId,
+        execution_proof: Option<Arc<SignedExecutionProof>>,
     },
 
     /// A block with an unknown parent has been received.
@@ -248,6 +257,9 @@ pub struct SyncManager<T: BeaconChainTypes> {
     /// The object handling long-range batch load-balanced syncing.
     range_sync: RangeSync<T>,
 
+    /// EIP-8025: catch-up mechanism for missing execution proofs.
+    proof_sync: ProofSync<T>,
+
     /// Backfill syncing.
     backfill_sync: BackFillSync<T>,
 
@@ -314,11 +326,15 @@ impl<T: BeaconChainTypes> SyncManager<T> {
             ),
             range_sync: RangeSync::new(beacon_chain.clone()),
             backfill_sync: BackFillSync::new(beacon_chain.clone(), network_globals.clone()),
-            custody_backfill_sync: CustodyBackFillSync::new(beacon_chain.clone(), network_globals),
+            custody_backfill_sync: CustodyBackFillSync::new(
+                beacon_chain.clone(),
+                network_globals.clone(),
+            ),
             block_lookups: BlockLookups::new(),
             notified_unknown_roots: LRUTimeCache::new(Duration::from_secs(
                 NOTIFIED_UNKNOWN_ROOT_EXPIRY_SECONDS,
             )),
+            proof_sync: ProofSync::new(beacon_chain.clone()),
         }
     }
 
@@ -366,6 +382,44 @@ impl<T: BeaconChainTypes> SyncManager<T> {
     #[cfg(test)]
     pub(crate) fn update_execution_engine_state(&mut self, state: EngineState) {
         self.handle_new_execution_engine_state(state);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn poll_proof_sync(&mut self) {
+        self.proof_sync.poll(&mut self.network);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn proof_sync_state(&self) -> super::proof_sync::ProofSyncState {
+        self.proof_sync.state()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn proof_sync_in_flight_count(&self) -> usize {
+        self.proof_sync.in_flight_count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_proof_sync_missing(
+        &mut self,
+        missing: Vec<execution_layer::MissingProofInfo>,
+    ) {
+        self.proof_sync.test_missing_proofs = Some(missing);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start_proof_sync(&mut self) {
+        self.proof_sync.start();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pause_proof_sync(&mut self) {
+        self.proof_sync.pause();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_proof_sync_fill_mode(&mut self) {
+        self.proof_sync.enter_fill_mode_for_testing();
     }
 
     fn network_globals(&self) -> &NetworkGlobals<T::EthSpec> {
@@ -502,6 +556,12 @@ impl<T: BeaconChainTypes> SyncManager<T> {
             }
             SyncRequestId::DataColumnsByRange(req_id) => {
                 self.on_data_columns_by_range_response(req_id, peer_id, RpcEvent::RPCError(error))
+            }
+            SyncRequestId::ExecutionProofsByRange(req_id) => {
+                debug!(%peer_id, ?req_id, "Execution proofs by range request failed");
+            }
+            SyncRequestId::ExecutionProofsByRoot(req_id) => {
+                debug!(%peer_id, ?req_id, "Execution proofs by root request failed");
             }
         }
     }
@@ -697,6 +757,7 @@ impl<T: BeaconChainTypes> SyncManager<T> {
                     self.backfill_sync.pause();
                     self.custody_backfill_sync
                         .pause("Range sync in progress".to_string());
+                    self.proof_sync.pause();
 
                     SyncState::SyncingFinalized {
                         start_slot,
@@ -710,6 +771,7 @@ impl<T: BeaconChainTypes> SyncManager<T> {
                     self.backfill_sync.pause();
                     self.custody_backfill_sync
                         .pause("Range sync in progress".to_string());
+                    self.proof_sync.pause();
 
                     SyncState::SyncingHead {
                         start_slot,
@@ -726,15 +788,9 @@ impl<T: BeaconChainTypes> SyncManager<T> {
             // If we have become synced - Subscribe to all the core subnet topics
             // We don't need to subscribe if the old state is a state that would have already
             // invoked this call.
-            if new_state.is_synced()
-                && !matches!(
-                    old_state,
-                    SyncState::Synced
-                        | SyncState::BackFillSyncing { .. }
-                        | SyncState::CustodyBackFillSyncing { .. }
-                )
-            {
+            if new_state.is_synced() && !old_state.is_synced() {
                 self.network.subscribe_core_topics();
+                self.proof_sync.start();
             }
         }
     }
@@ -770,6 +826,9 @@ impl<T: BeaconChainTypes> SyncManager<T> {
             self.chain.slot_clock.slot_duration().as_secs() * T::EthSpec::slots_per_epoch();
         let mut epoch_interval = tokio::time::interval(Duration::from_secs(epoch_duration));
 
+        // Poll ProofSync every slot to request any missing execution proofs.
+        let mut proof_sync_interval = tokio::time::interval(self.chain.slot_clock.slot_duration());
+
         // process any inbound messages
         loop {
             tokio::select! {
@@ -790,6 +849,9 @@ impl<T: BeaconChainTypes> SyncManager<T> {
                 }
                 _ = epoch_interval.tick() => {
                     self.update_sync_state();
+                }
+                _ = proof_sync_interval.tick() => {
+                    self.proof_sync.poll(&mut self.network);
                 }
             }
         }
@@ -835,6 +897,13 @@ impl<T: BeaconChainTypes> SyncManager<T> {
                 seen_timestamp,
             } => {
                 self.rpc_data_column_received(sync_request_id, peer_id, data_column, seen_timestamp)
+            }
+            SyncMessage::RpcExecutionProof {
+                sync_request_id,
+                peer_id,
+                execution_proof,
+            } => {
+                self.rpc_execution_proof_received(sync_request_id, peer_id, execution_proof);
             }
             SyncMessage::UnknownParentBlock(peer_id, block, block_root) => {
                 let block_slot = block.slot();
@@ -1186,6 +1255,41 @@ impl<T: BeaconChainTypes> SyncManager<T> {
             _ => {
                 crit!(%peer_id, "bad request id for data_column");
             }
+        }
+    }
+
+    fn rpc_execution_proof_received(
+        &mut self,
+        sync_request_id: SyncRequestId,
+        peer_id: PeerId,
+        execution_proof: Option<Arc<SignedExecutionProof>>,
+    ) {
+        let Some(proof) = execution_proof else {
+            // Stream termination: clean up tracking map entry.
+            match &sync_request_id {
+                SyncRequestId::ExecutionProofsByRange(id) => {
+                    self.network.on_execution_proofs_by_range_terminated(id);
+                    self.proof_sync.on_range_request_terminated(id);
+                }
+                SyncRequestId::ExecutionProofsByRoot(id) => {
+                    self.network.on_execution_proofs_by_root_terminated(id);
+                    self.proof_sync.on_request_terminated(id);
+                }
+                other => {
+                    debug!(%peer_id, ?other, "Unexpected sync_request_id for execution proof stream termination");
+                }
+            }
+            return;
+        };
+
+        // Forward to the beacon processor for async BLS + proof engine verification.
+        // Peer penalization for invalid proofs is handled inside `process_rpc_execution_proof`.
+        if let Err(e) = self
+            .network
+            .beacon_processor()
+            .send_rpc_execution_proof(peer_id, proof)
+        {
+            debug!(%peer_id, error = ?e, "Failed to send RPC execution proof to beacon processor");
         }
     }
 

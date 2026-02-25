@@ -1941,6 +1941,45 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         };
     }
 
+    /// Process an execution proof received via RPC.
+    ///
+    /// Runs the same BLS + proof engine verification as the gossip path, but without gossip
+    /// propagation. Penalizes the serving peer if the proof is invalid.
+    pub async fn process_rpc_execution_proof(
+        self: &Arc<Self>,
+        peer_id: PeerId,
+        execution_proof: SignedExecutionProof,
+    ) {
+        let verification_result = self.chain.verify_execution_proof(execution_proof).await;
+
+        match verification_result {
+            Err(e) => {
+                debug!(%peer_id, error = ?e, "Error verifying RPC execution proof");
+            }
+            Ok(ProofStatus::Valid) => {
+                debug!(%peer_id, "RPC execution proof valid");
+            }
+            Ok(ProofStatus::Invalid) => {
+                debug!(%peer_id, "RPC execution proof invalid, penalizing peer");
+                self.send_network_message(NetworkMessage::ReportPeer {
+                    peer_id,
+                    action: PeerAction::HighToleranceError,
+                    source: ReportSource::SyncService,
+                    msg: "invalid_rpc_execution_proof",
+                });
+            }
+            Ok(ProofStatus::Accepted) => {
+                debug!(%peer_id, "RPC execution proof accepted");
+            }
+            Ok(ProofStatus::NotSupported) => {
+                debug!(%peer_id, "RPC execution proof type not supported by local engine");
+            }
+            Ok(ProofStatus::Syncing) => {
+                debug!(%peer_id, "RPC execution proof received while block still syncing");
+            }
+        }
+    }
+
     /// Process the sync committee signature received from the gossip network and:
     ///
     /// - If it passes gossip propagation criteria, tell the network thread to forward it.

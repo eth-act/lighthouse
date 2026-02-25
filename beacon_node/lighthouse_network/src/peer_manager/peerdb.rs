@@ -1,5 +1,5 @@
 use crate::discovery::CombinedKey;
-use crate::discovery::enr::PEERDAS_CUSTODY_GROUP_COUNT_ENR_KEY;
+use crate::discovery::enr::{EXECUTION_PROOF_ENR_KEY, PEERDAS_CUSTODY_GROUP_COUNT_ENR_KEY};
 use crate::{Enr, Gossipsub, PeerId, SyncInfo, metrics, multiaddr::Multiaddr, types::Subnet};
 use itertools::Itertools;
 use logging::crit;
@@ -849,6 +849,42 @@ impl<E: EthSpec> PeerDB<E> {
                     .expect("should compute custody subnets");
             peer_info.set_custody_subnets(subnets);
         }
+
+        peer_id
+    }
+
+    /// Like `__add_connected_peer_testing_only`, but sets `ep=true` in the peer's ENR so that
+    /// `execution_proof_enabled()` returns true for this peer. MUST ONLY BE USED IN TESTS.
+    pub fn __add_connected_proof_capable_peer_testing_only(
+        &mut self,
+        enr_key: CombinedKey,
+    ) -> PeerId {
+        let mut enr = Enr::builder().build(&enr_key).unwrap();
+        let peer_id = enr.peer_id();
+        enr.insert(EXECUTION_PROOF_ENR_KEY, &true, &enr_key)
+            .expect("bool can be encoded");
+
+        self.update_connection_state(
+            &peer_id,
+            NewConnectionState::Connected {
+                enr: Some(enr),
+                seen_address: Multiaddr::empty(),
+                direction: ConnectionDirection::Outgoing,
+            },
+        );
+
+        self.update_sync_status(
+            &peer_id,
+            SyncStatus::Synced {
+                info: SyncInfo {
+                    head_slot: Slot::new(0),
+                    head_root: Hash256::ZERO,
+                    finalized_epoch: Epoch::new(0),
+                    finalized_root: Hash256::ZERO,
+                    earliest_available_slot: Some(Slot::new(0)),
+                },
+            },
+        );
 
         peer_id
     }

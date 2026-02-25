@@ -82,7 +82,7 @@ use eth2::types::{
 };
 use execution_layer::{
     BlockProposalContents, BlockProposalContentsType, BuilderParams, ChainHealth, ExecutionLayer,
-    FailedCondition, PayloadAttributes, PayloadStatus, eip8025::ProofEngine,
+    FailedCondition, MissingProofInfo, PayloadAttributes, PayloadStatus, eip8025::ProofEngine,
 };
 use fixed_bytes::FixedBytesExtended;
 use fork_choice::{
@@ -7444,6 +7444,27 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         self.data_availability_checker
             .custody_context()
             .custody_columns_for_epoch(epoch_opt, &self.spec)
+    }
+
+    /// Return all proof-engine buffer entries that are still missing sufficient proofs,
+    /// with `MissingProofInfo.root` replaced by the corresponding beacon block root.
+    ///
+    /// Entries whose `request_root → block_root` mapping is not yet in the store LRU cache
+    /// are filtered out (the block may not have been imported yet).
+    pub fn missing_execution_proofs(&self) -> Vec<MissingProofInfo> {
+        let Some(el) = self.execution_layer.as_ref() else {
+            return vec![];
+        };
+        let Some(pe) = el.proof_engine() else {
+            return vec![];
+        };
+        pe.missing_proofs()
+            .into_iter()
+            .filter_map(|mut info| {
+                info.root = self.store.get_block_root_by_request_root(&info.root)?;
+                Some(info)
+            })
+            .collect()
     }
 
     /// Verify a signed execution proof (EIP-8025).

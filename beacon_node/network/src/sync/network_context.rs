@@ -21,14 +21,19 @@ use beacon_chain::block_verification_types::RpcBlock;
 use beacon_chain::{BeaconChain, BeaconChainTypes, BlockProcessStatus, EngineState};
 use custody::CustodyRequestResult;
 use fnv::FnvHashMap;
-use lighthouse_network::rpc::methods::{BlobsByRangeRequest, DataColumnsByRangeRequest};
+use lighthouse_network::Eth2Enr;
+use lighthouse_network::rpc::methods::{
+    BlobsByRangeRequest, DataColumnsByRangeRequest, ExecutionProofsByRangeRequest,
+    ExecutionProofsByRootRequest,
+};
 use lighthouse_network::rpc::{BlocksByRangeRequest, GoodbyeReason, RPCError, RequestType};
 pub use lighthouse_network::service::api_types::RangeRequestId;
 use lighthouse_network::service::api_types::{
     AppRequestId, BlobsByRangeRequestId, BlocksByRangeRequestId, ComponentsByRangeRequestId,
     CustodyBackFillBatchRequestId, CustodyBackfillBatchId, CustodyId, CustodyRequester,
     DataColumnsByRangeRequestId, DataColumnsByRangeRequester, DataColumnsByRootRequestId,
-    DataColumnsByRootRequester, Id, SingleLookupReqId, SyncRequestId,
+    DataColumnsByRootRequester, ExecutionProofsByRangeRequestId, ExecutionProofsByRootRequestId,
+    Id, SingleLookupReqId, SyncRequestId,
 };
 use lighthouse_network::{Client, NetworkGlobals, PeerAction, PeerId, ReportSource};
 use lighthouse_tracing::{SPAN_OUTGOING_BLOCK_BY_ROOT_REQUEST, SPAN_OUTGOING_RANGE_REQUEST};
@@ -117,6 +122,8 @@ pub enum RpcRequestSendError {
 pub enum NoPeerError {
     BlockPeer,
     CustodyPeer(ColumnIndex),
+    /// No connected peer with `execution_proof_enabled()` in their ENR.
+    ProofPeer,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -224,6 +231,11 @@ pub struct SyncNetworkContext<T: BeaconChainTypes> {
     custody_backfill_data_column_batch_requests:
         FnvHashMap<CustodyBackFillBatchRequestId, RangeDataColumnBatchRequest<T>>,
 
+    /// Tracking map for active ExecutionProofsByRange requests (request ID → serving peer).
+    execution_proofs_by_range_requests: FnvHashMap<ExecutionProofsByRangeRequestId, PeerId>,
+    /// Tracking map for active ExecutionProofsByRoot requests (request ID → serving peer).
+    execution_proofs_by_root_requests: FnvHashMap<ExecutionProofsByRootRequestId, PeerId>,
+
     /// Whether the ee is online. If it's not, we don't allow access to the
     /// `beacon_processor_send`.
     execution_engine_state: EngineState,
@@ -301,6 +313,8 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             custody_by_root_requests: <_>::default(),
             components_by_range_requests: FnvHashMap::default(),
             custody_backfill_data_column_batch_requests: FnvHashMap::default(),
+            execution_proofs_by_range_requests: FnvHashMap::default(),
+            execution_proofs_by_root_requests: FnvHashMap::default(),
             network_beacon_processor,
             chain,
             fork_context,
@@ -331,6 +345,8 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             // components_by_range_requests is a meta request of various _by_range requests
             components_by_range_requests: _,
             custody_backfill_data_column_batch_requests: _,
+            execution_proofs_by_range_requests,
+            execution_proofs_by_root_requests,
             execution_engine_state: _,
             network_beacon_processor: _,
             chain: _,
@@ -361,18 +377,129 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             .active_requests_of_peer(peer_id)
             .into_iter()
             .map(|req_id| SyncRequestId::DataColumnsByRange(*req_id));
+        // Collect execution proof request IDs for this peer. These are soft requests and failures
+        // are handled gracefully (debug log only), so they don't block sync.
+        let ep_by_range_ids = execution_proofs_by_range_requests
+            .iter()
+            .filter(|(_, p)| *p == peer_id)
+            .map(|(id, _)| SyncRequestId::ExecutionProofsByRange(*id))
+            .collect::<Vec<_>>();
+        let ep_by_root_ids = execution_proofs_by_root_requests
+            .iter()
+            .filter(|(_, p)| *p == peer_id)
+            .map(|(id, _)| SyncRequestId::ExecutionProofsByRoot(*id))
+            .collect::<Vec<_>>();
         blocks_by_root_ids
             .chain(blobs_by_root_ids)
             .chain(data_column_by_root_ids)
             .chain(blocks_by_range_ids)
             .chain(blobs_by_range_ids)
             .chain(data_column_by_range_ids)
+            .chain(ep_by_range_ids)
+            .chain(ep_by_root_ids)
             .collect()
     }
 
     pub fn get_custodial_peers(&self, column_index: ColumnIndex) -> Vec<PeerId> {
         self.network_globals()
             .custody_peers_for_column(column_index)
+    }
+
+    /// Returns the first connected peer whose ENR advertises execution proof support (`ep = true`).
+    fn find_any_proof_capable_peer(&self) -> Option<PeerId> {
+        let db = self.network_globals().peers.read();
+        db.connected_peer_ids()
+            .find(|peer_id| {
+                db.peer_info(peer_id)
+                    .and_then(|info| info.enr())
+                    .map(|enr| enr.execution_proof_enabled())
+                    .unwrap_or(false)
+            })
+            .copied()
+    }
+
+    /// Send a `ExecutionProofsByRange` request to any connected proof-capable peer.
+    ///
+    /// Returns `Err(NoPeer)` if no connected peer has `ep = true` in their ENR. Callers
+    /// treat this as a soft failure — gossip serves as the fallback.
+    pub fn request_execution_proofs_by_range(
+        &mut self,
+        start_slot: Slot,
+        count: u64,
+    ) -> Result<ExecutionProofsByRangeRequestId, RpcRequestSendError> {
+        let peer_id = self
+            .find_any_proof_capable_peer()
+            .ok_or(RpcRequestSendError::NoPeer(NoPeerError::ProofPeer))?;
+        let id = ExecutionProofsByRangeRequestId { id: self.next_id() };
+        let request = ExecutionProofsByRangeRequest {
+            start_slot: start_slot.as_u64(),
+            count,
+        };
+        self.network_send
+            .send(NetworkMessage::SendRequest {
+                peer_id,
+                request: RequestType::ExecutionProofsByRange(request),
+                app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofsByRange(id)),
+            })
+            .map_err(|_| RpcRequestSendError::InternalError("network send error".to_owned()))?;
+        debug!(
+            method = "ExecutionProofsByRange",
+            %start_slot,
+            count,
+            peer = %peer_id,
+            %id,
+            "Sync RPC request sent"
+        );
+        self.execution_proofs_by_range_requests.insert(id, peer_id);
+        Ok(id)
+    }
+
+    /// Send a `ExecutionProofsByRoot` request for `block_root` to any connected proof-capable peer.
+    ///
+    /// Returns `Err(NoPeer)` if no connected peer has `ep = true` in their ENR.
+    pub fn request_execution_proofs_by_root(
+        &mut self,
+        block_root: Hash256,
+    ) -> Result<ExecutionProofsByRootRequestId, RpcRequestSendError> {
+        let peer_id = self
+            .find_any_proof_capable_peer()
+            .ok_or(RpcRequestSendError::NoPeer(NoPeerError::ProofPeer))?;
+        let max_request_blocks = self
+            .chain
+            .spec
+            .max_request_blocks(self.fork_context.current_fork_name());
+        let request = ExecutionProofsByRootRequest::new(vec![block_root], max_request_blocks)
+            .map_err(RpcRequestSendError::InternalError)?;
+        let id = ExecutionProofsByRootRequestId { id: self.next_id() };
+        self.network_send
+            .send(NetworkMessage::SendRequest {
+                peer_id,
+                request: RequestType::ExecutionProofsByRoot(request),
+                app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofsByRoot(id)),
+            })
+            .map_err(|_| RpcRequestSendError::InternalError("network send error".to_owned()))?;
+        debug!(
+            method = "ExecutionProofsByRoot",
+            block_root = %block_root,
+            peer = %peer_id,
+            %id,
+            "Sync RPC request sent"
+        );
+        self.execution_proofs_by_root_requests.insert(id, peer_id);
+        Ok(id)
+    }
+
+    /// Remove a completed (or terminated) `ExecutionProofsByRange` request from the tracking map.
+    pub fn on_execution_proofs_by_range_terminated(
+        &mut self,
+        id: &ExecutionProofsByRangeRequestId,
+    ) {
+        self.execution_proofs_by_range_requests.remove(id);
+    }
+
+    /// Remove a completed (or terminated) `ExecutionProofsByRoot` request from the tracking map.
+    pub fn on_execution_proofs_by_root_terminated(&mut self, id: &ExecutionProofsByRootRequestId) {
+        self.execution_proofs_by_root_requests.remove(id);
     }
 
     pub fn network_globals(&self) -> &NetworkGlobals<T::EthSpec> {
@@ -428,6 +555,9 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             // components_by_range_requests is a meta request of various _by_range requests
             components_by_range_requests: _,
             custody_backfill_data_column_batch_requests: _,
+            // execution proof requests are soft, fire-and-forget; not counted for load balancing
+            execution_proofs_by_range_requests: _,
+            execution_proofs_by_root_requests: _,
             execution_engine_state: _,
             network_beacon_processor: _,
             chain: _,

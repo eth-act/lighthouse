@@ -290,6 +290,7 @@ impl GossipTopic {
             GossipKind::Attestation(subnet_id) => Some(Subnet::Attestation(*subnet_id)),
             GossipKind::SyncCommitteeMessage(subnet_id) => Some(Subnet::SyncCommittee(*subnet_id)),
             GossipKind::DataColumnSidecar(subnet_id) => Some(Subnet::DataColumn(*subnet_id)),
+            GossipKind::ExecutionProof => Some(Subnet::ExecutionProof),
             _ => None,
         }
     }
@@ -353,6 +354,7 @@ impl From<Subnet> for GossipKind {
             Subnet::Attestation(s) => GossipKind::Attestation(s),
             Subnet::SyncCommittee(s) => GossipKind::SyncCommitteeMessage(s),
             Subnet::DataColumn(s) => GossipKind::DataColumnSidecar(s),
+            Subnet::ExecutionProof => GossipKind::ExecutionProof,
         }
     }
 }

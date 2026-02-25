@@ -13,6 +13,7 @@ use std::sync::Arc;
 use strum::IntoStaticStr;
 use superstruct::superstruct;
 use types::data::BlobIdentifier;
+use types::execution::eip8025::SignedExecutionProof;
 use types::light_client::consts::MAX_REQUEST_LIGHT_CLIENT_UPDATES;
 use types::{
     ChainSpec, ColumnIndex, DataColumnSidecar, DataColumnsByRootIdentifier, Epoch, EthSpec,
@@ -573,6 +574,72 @@ impl LightClientUpdatesByRangeRequest {
     }
 }
 
+/// Request execution proofs for a slot range from a peer.
+#[derive(Encode, Decode, Clone, Debug, PartialEq)]
+pub struct ExecutionProofsByRangeRequest {
+    /// The starting slot to request execution proofs.
+    pub start_slot: u64,
+    /// The number of slots from the start slot.
+    pub count: u64,
+}
+
+impl ExecutionProofsByRangeRequest {
+    pub fn max_requested(&self) -> u64 {
+        use types::execution::eip8025::MaxExecutionProofsPerPayload;
+        use typenum::Unsigned;
+        self.count
+            .saturating_mul(MaxExecutionProofsPerPayload::to_u64())
+    }
+
+    pub fn ssz_min_len() -> usize {
+        ExecutionProofsByRangeRequest {
+            start_slot: 0,
+            count: 0,
+        }
+        .as_ssz_bytes()
+        .len()
+    }
+
+    pub fn ssz_max_len() -> usize {
+        Self::ssz_min_len()
+    }
+}
+
+impl std::fmt::Display for ExecutionProofsByRangeRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Request: ExecutionProofsByRange: Start Slot: {}, Count: {}",
+            self.start_slot, self.count
+        )
+    }
+}
+
+/// Request execution proofs for specific blocks by root from a peer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExecutionProofsByRootRequest {
+    /// The list of block roots whose execution proofs are being requested.
+    pub block_roots: RuntimeVariableList<Hash256>,
+}
+
+impl ExecutionProofsByRootRequest {
+    pub fn new(block_roots: Vec<Hash256>, max_request_blocks: usize) -> Result<Self, String> {
+        let block_roots = RuntimeVariableList::new(block_roots, max_request_blocks)
+            .map_err(|e| format!("ExecutionProofsByRootRequest too many roots: {e:?}"))?;
+        Ok(Self { block_roots })
+    }
+}
+
+impl std::fmt::Display for ExecutionProofsByRootRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Request: ExecutionProofsByRoot: Number of Requested Roots: {}",
+            self.block_roots.len()
+        )
+    }
+}
+
 /* RPC Handling and Grouping */
 // Collection of enums and structs used by the Codecs to encode/decode RPC messages
 
@@ -612,6 +679,12 @@ pub enum RpcSuccessResponse<E: EthSpec> {
     /// A response to a get DATA_COLUMN_SIDECARS_BY_RANGE request.
     DataColumnsByRange(Arc<DataColumnSidecar<E>>),
 
+    /// A response to a get EXECUTION_PROOFS_BY_RANGE request.
+    ExecutionProofsByRange(Arc<SignedExecutionProof>),
+
+    /// A response to a get EXECUTION_PROOFS_BY_ROOT request.
+    ExecutionProofsByRoot(Arc<SignedExecutionProof>),
+
     /// A PONG response to a PING request.
     Pong(Ping),
 
@@ -642,6 +715,12 @@ pub enum ResponseTermination {
 
     /// Light client updates by range stream termination.
     LightClientUpdatesByRange,
+
+    /// Execution proofs by range stream termination.
+    ExecutionProofsByRange,
+
+    /// Execution proofs by root stream termination.
+    ExecutionProofsByRoot,
 }
 
 impl ResponseTermination {
@@ -654,6 +733,8 @@ impl ResponseTermination {
             ResponseTermination::DataColumnsByRoot => Protocol::DataColumnsByRoot,
             ResponseTermination::DataColumnsByRange => Protocol::DataColumnsByRange,
             ResponseTermination::LightClientUpdatesByRange => Protocol::LightClientUpdatesByRange,
+            ResponseTermination::ExecutionProofsByRange => Protocol::ExecutionProofsByRange,
+            ResponseTermination::ExecutionProofsByRoot => Protocol::ExecutionProofsByRoot,
         }
     }
 }
@@ -756,6 +837,8 @@ impl<E: EthSpec> RpcSuccessResponse<E> {
             }
             RpcSuccessResponse::LightClientFinalityUpdate(_) => Protocol::LightClientFinalityUpdate,
             RpcSuccessResponse::LightClientUpdatesByRange(_) => Protocol::LightClientUpdatesByRange,
+            RpcSuccessResponse::ExecutionProofsByRange(_) => Protocol::ExecutionProofsByRange,
+            RpcSuccessResponse::ExecutionProofsByRoot(_) => Protocol::ExecutionProofsByRoot,
         }
     }
 
@@ -772,7 +855,11 @@ impl<E: EthSpec> RpcSuccessResponse<E> {
             Self::LightClientFinalityUpdate(r) => Some(r.get_attested_header_slot()),
             Self::LightClientOptimisticUpdate(r) => Some(r.get_slot()),
             Self::LightClientUpdatesByRange(r) => Some(r.attested_header_slot()),
-            Self::MetaData(_) | Self::Status(_) | Self::Pong(_) => None,
+            Self::MetaData(_)
+            | Self::Status(_)
+            | Self::Pong(_)
+            | Self::ExecutionProofsByRange(_)
+            | Self::ExecutionProofsByRoot(_) => None,
         }
     }
 }
@@ -858,6 +945,20 @@ impl<E: EthSpec> std::fmt::Display for RpcSuccessResponse<E> {
                     f,
                     "LightClientUpdatesByRange Slot: {}",
                     update.signature_slot(),
+                )
+            }
+            RpcSuccessResponse::ExecutionProofsByRange(proof) => {
+                write!(
+                    f,
+                    "ExecutionProofsByRange: validator_index: {}",
+                    proof.validator_index
+                )
+            }
+            RpcSuccessResponse::ExecutionProofsByRoot(proof) => {
+                write!(
+                    f,
+                    "ExecutionProofsByRoot: validator_index: {}",
+                    proof.validator_index
                 )
             }
         }

@@ -21,7 +21,7 @@ use types::{
     LightClientOptimisticUpdate, LightClientUpdate, SignedBeaconBlock, SignedBeaconBlockAltair,
     SignedBeaconBlockBase, SignedBeaconBlockBellatrix, SignedBeaconBlockCapella,
     SignedBeaconBlockDeneb, SignedBeaconBlockElectra, SignedBeaconBlockFulu,
-    SignedBeaconBlockGloas,
+    SignedBeaconBlockGloas, execution::eip8025::SignedExecutionProof,
 };
 use unsigned_varint::codec::Uvi;
 
@@ -80,6 +80,8 @@ impl<E: EthSpec> SSZSnappyInboundCodec<E> {
                 RpcSuccessResponse::BlobsByRoot(res) => res.as_ssz_bytes(),
                 RpcSuccessResponse::DataColumnsByRoot(res) => res.as_ssz_bytes(),
                 RpcSuccessResponse::DataColumnsByRange(res) => res.as_ssz_bytes(),
+                RpcSuccessResponse::ExecutionProofsByRange(res) => res.as_ssz_bytes(),
+                RpcSuccessResponse::ExecutionProofsByRoot(res) => res.as_ssz_bytes(),
                 RpcSuccessResponse::LightClientBootstrap(res) => res.as_ssz_bytes(),
                 RpcSuccessResponse::LightClientOptimisticUpdate(res) => res.as_ssz_bytes(),
                 RpcSuccessResponse::LightClientFinalityUpdate(res) => res.as_ssz_bytes(),
@@ -363,6 +365,8 @@ impl<E: EthSpec> Encoder<RequestType<E>> for SSZSnappyOutboundCodec<E> {
             RequestType::Ping(req) => req.as_ssz_bytes(),
             RequestType::LightClientBootstrap(req) => req.as_ssz_bytes(),
             RequestType::LightClientUpdatesByRange(req) => req.as_ssz_bytes(),
+            RequestType::ExecutionProofsByRange(req) => req.as_ssz_bytes(),
+            RequestType::ExecutionProofsByRoot(req) => req.block_roots.as_ssz_bytes(),
             // no metadata to encode
             RequestType::MetaData(_)
             | RequestType::LightClientOptimisticUpdate
@@ -587,6 +591,19 @@ fn handle_rpc_request<E: EthSpec>(
                 LightClientUpdatesByRangeRequest::from_ssz_bytes(decoded_buffer)?,
             )))
         }
+        SupportedProtocol::ExecutionProofsByRangeV1 => {
+            Ok(Some(RequestType::ExecutionProofsByRange(
+                ExecutionProofsByRangeRequest::from_ssz_bytes(decoded_buffer)?,
+            )))
+        }
+        SupportedProtocol::ExecutionProofsByRootV1 => Ok(Some(RequestType::ExecutionProofsByRoot(
+            ExecutionProofsByRootRequest {
+                block_roots: RuntimeVariableList::from_ssz_bytes(
+                    decoded_buffer,
+                    spec.max_request_blocks(current_fork),
+                )?,
+            },
+        ))),
         // MetaData requests return early from InboundUpgrade and do not reach the decoder.
         // Handle this case just for completeness.
         SupportedProtocol::MetaDataV3 => {
@@ -841,6 +858,16 @@ fn handle_rpc_response<E: EthSpec>(
                 ),
             )),
         },
+        SupportedProtocol::ExecutionProofsByRangeV1 => {
+            Ok(Some(RpcSuccessResponse::ExecutionProofsByRange(Arc::new(
+                SignedExecutionProof::from_ssz_bytes(decoded_buffer)?,
+            ))))
+        }
+        SupportedProtocol::ExecutionProofsByRootV1 => {
+            Ok(Some(RpcSuccessResponse::ExecutionProofsByRoot(Arc::new(
+                SignedExecutionProof::from_ssz_bytes(decoded_buffer)?,
+            ))))
+        }
         SupportedProtocol::BlocksByRootV2 => match fork_name {
             Some(ForkName::Altair) => Ok(Some(RpcSuccessResponse::BlocksByRoot(Arc::new(
                 SignedBeaconBlock::Altair(SignedBeaconBlockAltair::from_ssz_bytes(decoded_buffer)?),
@@ -1283,6 +1310,12 @@ mod tests {
                     decoded,
                     RequestType::LightClientUpdatesByRange(light_client_updates_by_range)
                 )
+            }
+            RequestType::ExecutionProofsByRange(ep_range) => {
+                assert_eq!(decoded, RequestType::ExecutionProofsByRange(ep_range))
+            }
+            RequestType::ExecutionProofsByRoot(ep_root) => {
+                assert_eq!(decoded, RequestType::ExecutionProofsByRoot(ep_root))
             }
         }
     }

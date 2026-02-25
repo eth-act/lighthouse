@@ -113,6 +113,10 @@ pub struct RPCRateLimiter {
     lc_finality_update_rl: Limiter<PeerId>,
     /// LightClientUpdatesByRange rate limiter.
     lc_updates_by_range_rl: Limiter<PeerId>,
+    /// ExecutionProofsByRange rate limiter.
+    ep_by_range_rl: Limiter<PeerId>,
+    /// ExecutionProofsByRoot rate limiter.
+    ep_by_root_rl: Limiter<PeerId>,
     fork_context: Arc<ForkContext>,
 }
 
@@ -156,6 +160,10 @@ pub struct RPCRateLimiterBuilder {
     lc_finality_update_quota: Option<Quota>,
     /// Quota for the LightClientUpdatesByRange protocol.
     lc_updates_by_range_quota: Option<Quota>,
+    /// Quota for the ExecutionProofsByRange protocol.
+    ep_by_range_quota: Option<Quota>,
+    /// Quota for the ExecutionProofsByRoot protocol.
+    ep_by_root_quota: Option<Quota>,
 }
 
 impl RPCRateLimiterBuilder {
@@ -177,6 +185,8 @@ impl RPCRateLimiterBuilder {
             Protocol::LightClientOptimisticUpdate => self.lc_optimistic_update_quota = q,
             Protocol::LightClientFinalityUpdate => self.lc_finality_update_quota = q,
             Protocol::LightClientUpdatesByRange => self.lc_updates_by_range_quota = q,
+            Protocol::ExecutionProofsByRange => self.ep_by_range_quota = q,
+            Protocol::ExecutionProofsByRoot => self.ep_by_root_quota = q,
         }
         self
     }
@@ -221,6 +231,14 @@ impl RPCRateLimiterBuilder {
             .dcbrange_quota
             .ok_or("DataColumnsByRange quota not specified")?;
 
+        let ep_by_range_quota = self
+            .ep_by_range_quota
+            .ok_or("ExecutionProofsByRange quota not specified")?;
+
+        let ep_by_root_quota = self
+            .ep_by_root_quota
+            .ok_or("ExecutionProofsByRoot quota not specified")?;
+
         // create the rate limiters
         let ping_rl = Limiter::from_quota(ping_quota)?;
         let metadata_rl = Limiter::from_quota(metadata_quota)?;
@@ -236,6 +254,8 @@ impl RPCRateLimiterBuilder {
         let lc_optimistic_update_rl = Limiter::from_quota(lc_optimistic_update_quota)?;
         let lc_finality_update_rl = Limiter::from_quota(lc_finality_update_quota)?;
         let lc_updates_by_range_rl = Limiter::from_quota(lc_updates_by_range_quota)?;
+        let ep_by_range_rl = Limiter::from_quota(ep_by_range_quota)?;
+        let ep_by_root_rl = Limiter::from_quota(ep_by_root_quota)?;
 
         // check for peers to prune every 30 seconds, starting in 30 seconds
         let prune_every = tokio::time::Duration::from_secs(30);
@@ -259,6 +279,8 @@ impl RPCRateLimiterBuilder {
             lc_optimistic_update_rl,
             lc_finality_update_rl,
             lc_updates_by_range_rl,
+            ep_by_range_rl,
+            ep_by_root_rl,
             init_time: Instant::now(),
             fork_context,
         })
@@ -312,6 +334,8 @@ impl RPCRateLimiter {
             light_client_optimistic_update_quota,
             light_client_finality_update_quota,
             light_client_updates_by_range_quota,
+            execution_proofs_by_range_quota,
+            execution_proofs_by_root_quota,
         } = config;
 
         Self::builder()
@@ -338,6 +362,8 @@ impl RPCRateLimiter {
                 Protocol::LightClientUpdatesByRange,
                 light_client_updates_by_range_quota,
             )
+            .set_quota(Protocol::ExecutionProofsByRange, execution_proofs_by_range_quota)
+            .set_quota(Protocol::ExecutionProofsByRoot, execution_proofs_by_root_quota)
             .build(fork_context)
     }
 
@@ -376,6 +402,8 @@ impl RPCRateLimiter {
             Protocol::LightClientOptimisticUpdate => &mut self.lc_optimistic_update_rl,
             Protocol::LightClientFinalityUpdate => &mut self.lc_finality_update_rl,
             Protocol::LightClientUpdatesByRange => &mut self.lc_updates_by_range_rl,
+            Protocol::ExecutionProofsByRange => &mut self.ep_by_range_rl,
+            Protocol::ExecutionProofsByRoot => &mut self.ep_by_root_rl,
         };
         check(limiter)
     }
@@ -400,6 +428,8 @@ impl RPCRateLimiter {
             lc_optimistic_update_rl,
             lc_finality_update_rl,
             lc_updates_by_range_rl,
+            ep_by_range_rl,
+            ep_by_root_rl,
             fork_context: _,
         } = self;
 
@@ -417,6 +447,8 @@ impl RPCRateLimiter {
         lc_optimistic_update_rl.prune(time_since_start);
         lc_finality_update_rl.prune(time_since_start);
         lc_updates_by_range_rl.prune(time_since_start);
+        ep_by_range_rl.prune(time_since_start);
+        ep_by_root_rl.prune(time_since_start);
     }
 }
 

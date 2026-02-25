@@ -25,6 +25,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, error, trace, warn};
 use types::{BlobSidecar, DataColumnSidecar, EthSpec, ForkContext, SignedBeaconBlock};
+use types::execution::eip8025::SignedExecutionProof;
 
 /// Handles messages from the network and routes them to the appropriate service to be handled.
 pub struct Router<T: BeaconChainTypes> {
@@ -308,6 +309,12 @@ impl<T: BeaconChainTypes> Router<T> {
             }
             Response::DataColumnsByRange(data_column) => {
                 self.on_data_columns_by_range_response(peer_id, app_request_id, data_column);
+            }
+            Response::ExecutionProofsByRange(execution_proof) => {
+                self.on_execution_proofs_by_range_response(peer_id, app_request_id, execution_proof);
+            }
+            Response::ExecutionProofsByRoot(execution_proof) => {
+                self.on_execution_proofs_by_root_response(peer_id, app_request_id, execution_proof);
             }
             // Light client responses should not be received
             Response::LightClientBootstrap(_)
@@ -738,6 +745,42 @@ impl<T: BeaconChainTypes> Router<T> {
             });
         } else {
             crit!("All data columns by range responses should belong to sync");
+        }
+    }
+
+    pub fn on_execution_proofs_by_range_response(
+        &mut self,
+        peer_id: PeerId,
+        app_request_id: AppRequestId,
+        execution_proof: Option<Arc<SignedExecutionProof>>,
+    ) {
+        trace!(%peer_id, "Received ExecutionProofsByRange Response");
+        if let AppRequestId::Sync(sync_request_id) = app_request_id {
+            self.send_to_sync(SyncMessage::RpcExecutionProof {
+                peer_id,
+                sync_request_id,
+                execution_proof,
+            });
+        } else {
+            crit!("All execution proofs by range responses should belong to sync");
+        }
+    }
+
+    pub fn on_execution_proofs_by_root_response(
+        &mut self,
+        peer_id: PeerId,
+        app_request_id: AppRequestId,
+        execution_proof: Option<Arc<SignedExecutionProof>>,
+    ) {
+        trace!(%peer_id, "Received ExecutionProofsByRoot Response");
+        if let AppRequestId::Sync(sync_request_id) = app_request_id {
+            self.send_to_sync(SyncMessage::RpcExecutionProof {
+                peer_id,
+                sync_request_id,
+                execution_proof,
+            });
+        } else {
+            crit!("All execution proofs by root responses should belong to sync");
         }
     }
 

@@ -120,6 +120,12 @@ pub enum PayloadStatusV1Status {
     InvalidBlockHash,
 }
 
+impl PayloadStatusV1Status {
+    pub fn is_syncing(&self) -> bool {
+        matches!(self, PayloadStatusV1Status::Syncing)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PayloadStatusV1 {
     pub status: PayloadStatusV1Status,
@@ -248,6 +254,21 @@ impl From<PayloadAttributes> for SsePayloadAttributes {
             }),
         }
     }
+}
+
+/// Info about a buffered proof request that is missing sufficient proofs.
+///
+/// The `root` field is dual-purpose:
+/// - At the execution-layer level it holds the **new-payload request root**.
+/// - After `BeaconChain::missing_execution_proofs()` performs the store LRU lookup it is
+///   replaced with the corresponding **beacon block root** so the sync layer can issue
+///   `ExecutionProofsByRoot` RPC requests directly.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MissingProofInfo {
+    /// New-payload request root (EL) or beacon block root (sync layer).
+    pub root: Hash256,
+    /// Proof types already received for this request root (to avoid redundant requests).
+    pub existing_proof_types: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
