@@ -708,6 +708,46 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         })
     }
 
+    /// Create a new work event to serve an `ExecutionProofsByRange` RPC request (EIP-8025).
+    pub fn send_execution_proofs_by_range_request(
+        self: &Arc<Self>,
+        peer_id: PeerId,
+        inbound_request_id: InboundRequestId,
+        request: lighthouse_network::rpc::methods::ExecutionProofsByRangeRequest,
+    ) -> Result<(), Error<T::EthSpec>> {
+        let processor = self.clone();
+        let process_fn = move || {
+            processor.handle_execution_proofs_by_range_request(
+                peer_id,
+                inbound_request_id,
+                request,
+            )
+        };
+
+        self.try_send(BeaconWorkEvent {
+            drop_during_sync: false,
+            work: Work::ExecutionProofsByRangeRequest(Box::new(process_fn)),
+        })
+    }
+
+    /// Create a new work event to serve an `ExecutionProofsByRoot` RPC request (EIP-8025).
+    pub fn send_execution_proofs_by_root_request(
+        self: &Arc<Self>,
+        peer_id: PeerId,
+        inbound_request_id: InboundRequestId,
+        request: lighthouse_network::rpc::methods::ExecutionProofsByRootRequest,
+    ) -> Result<(), Error<T::EthSpec>> {
+        let processor = self.clone();
+        let process_fn = move || {
+            processor.handle_execution_proofs_by_root_request(peer_id, inbound_request_id, request)
+        };
+
+        self.try_send(BeaconWorkEvent {
+            drop_during_sync: false,
+            work: Work::ExecutionProofsByRootRequest(Box::new(process_fn)),
+        })
+    }
+
     /// Create a new work event to process `LightClientBootstrap`s from the RPC network.
     pub fn send_light_client_bootstrap_request(
         self: &Arc<Self>,

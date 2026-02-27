@@ -114,7 +114,7 @@ impl State {
             self.tree.current_canonical_head = finalized;
 
             tracing::info!(target: "execution_layer", ?finalized, "Updated last_valid_fcs to finalized block (tree empty)");
-            return Ok(self.forkchoice_response_valid());
+            return Ok(self.forkchoice_response_syncing());
         }
 
         let new_safe_zero = safe.is_zero();

@@ -411,6 +411,10 @@ pub enum Work<E: EthSpec> {
     GossipBlsToExecutionChange(BlockingFn),
     /// EIP-8025: A signed execution proof has been received over gossip.
     GossipExecutionProof(AsyncFn),
+    /// EIP-8025: Serve an ExecutionProofsByRange RPC request.
+    ExecutionProofsByRangeRequest(BlockingFn),
+    /// EIP-8025: Serve an ExecutionProofsByRoot RPC request.
+    ExecutionProofsByRootRequest(BlockingFn),
     LightClientBootstrapRequest(BlockingFn),
     LightClientOptimisticUpdateRequest(BlockingFn),
     LightClientFinalityUpdateRequest(BlockingFn),
@@ -464,6 +468,8 @@ pub enum WorkType {
     DataColumnsByRangeRequest,
     GossipBlsToExecutionChange,
     GossipExecutionProof,
+    ExecutionProofsByRangeRequest,
+    ExecutionProofsByRootRequest,
     LightClientBootstrapRequest,
     LightClientOptimisticUpdateRequest,
     LightClientFinalityUpdateRequest,
@@ -514,6 +520,8 @@ impl<E: EthSpec> Work<E> {
             Work::BlobsByRootsRequest(_) => WorkType::BlobsByRootsRequest,
             Work::DataColumnsByRootsRequest(_) => WorkType::DataColumnsByRootsRequest,
             Work::DataColumnsByRangeRequest(_) => WorkType::DataColumnsByRangeRequest,
+            Work::ExecutionProofsByRangeRequest(_) => WorkType::ExecutionProofsByRangeRequest,
+            Work::ExecutionProofsByRootRequest(_) => WorkType::ExecutionProofsByRootRequest,
             Work::LightClientBootstrapRequest(_) => WorkType::LightClientBootstrapRequest,
             Work::LightClientOptimisticUpdateRequest(_) => {
                 WorkType::LightClientOptimisticUpdateRequest
@@ -937,6 +945,10 @@ impl<E: EthSpec> BeaconProcessor<E> {
                             Some(item)
                         } else if let Some(item) = work_queues.dcbrange_queue.pop() {
                             Some(item)
+                        } else if let Some(item) = work_queues.epbroots_queue.pop() {
+                            Some(item)
+                        } else if let Some(item) = work_queues.epbrange_queue.pop() {
+                            Some(item)
                         // Check slashings after all other consensus messages so we prioritize
                         // following head.
                         //
@@ -1162,6 +1174,13 @@ impl<E: EthSpec> BeaconProcessor<E> {
                             Work::DataColumnsByRangeRequest { .. } => {
                                 work_queues.dcbrange_queue.push(work, work_id)
                             }
+                            // EIP-8025: Dedicated queues for serving execution proof RPC requests.
+                            Work::ExecutionProofsByRangeRequest { .. } => {
+                                work_queues.epbrange_queue.push(work, work_id)
+                            }
+                            Work::ExecutionProofsByRootRequest { .. } => {
+                                work_queues.epbroots_queue.push(work, work_id)
+                            }
                             Work::UnknownLightClientOptimisticUpdate { .. } => work_queues
                                 .unknown_light_client_update_queue
                                 .push(work, work_id),
@@ -1236,6 +1255,12 @@ impl<E: EthSpec> BeaconProcessor<E> {
                         WorkType::BlobsByRootsRequest => work_queues.blob_broots_queue.len(),
                         WorkType::DataColumnsByRootsRequest => work_queues.dcbroots_queue.len(),
                         WorkType::DataColumnsByRangeRequest => work_queues.dcbrange_queue.len(),
+                        WorkType::ExecutionProofsByRangeRequest => {
+                            work_queues.epbrange_queue.len()
+                        }
+                        WorkType::ExecutionProofsByRootRequest => {
+                            work_queues.epbroots_queue.len()
+                        }
                         WorkType::GossipBlsToExecutionChange => {
                             work_queues.gossip_bls_to_execution_change_queue.len()
                         }
@@ -1403,7 +1428,9 @@ impl<E: EthSpec> BeaconProcessor<E> {
             Work::BlobsByRangeRequest(process_fn)
             | Work::BlobsByRootsRequest(process_fn)
             | Work::DataColumnsByRootsRequest(process_fn)
-            | Work::DataColumnsByRangeRequest(process_fn) => {
+            | Work::DataColumnsByRangeRequest(process_fn)
+            | Work::ExecutionProofsByRangeRequest(process_fn)
+            | Work::ExecutionProofsByRootRequest(process_fn) => {
                 task_spawner.spawn_blocking(process_fn)
             }
             Work::BlocksByRangeRequest(work) | Work::BlocksByRootsRequest(work) => {

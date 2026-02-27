@@ -22,11 +22,11 @@ pub use libp2p::identity::Keypair;
 
 pub mod peerdb;
 
+use crate::discovery::enr::Eth2Enr;
 use crate::peer_manager::peerdb::client::ClientKind;
 use crate::types::GossipKind;
 use libp2p::multiaddr;
 use network_utils::discovery_metrics;
-use crate::discovery::enr::Eth2Enr;
 use network_utils::enr_ext::{EnrExt, peer_id_to_node_id};
 pub use peerdb::peer_info::{ConnectionDirection, PeerConnectionStatus, PeerInfo};
 use peerdb::score::{PeerAction, ReportSource};
@@ -356,6 +356,13 @@ impl<E: EthSpec> PeerManager<E> {
         let results_count = results.len();
         let connected_or_dialing = self.network_globals.connected_or_dialing_peers();
         for (enr, min_ttl) in results {
+            let peer_id = enr.peer_id();
+
+            self.network_globals
+                .peers
+                .write()
+                .update_peer_enr_if_missing(&peer_id, enr.clone());
+
             // There are two conditions in deciding whether to dial this peer.
             // 1. If we are less than our max connections. Discovery queries are executed to reach
             //    our target peers, so its fine to dial up to our max peers (which will get pruned
@@ -371,7 +378,6 @@ impl<E: EthSpec> PeerManager<E> {
             {
                 // This should be updated with the peer dialing. In fact created once the peer is
                 // dialed
-                let peer_id = enr.peer_id();
                 if let Some(min_ttl) = min_ttl {
                     self.network_globals
                         .peers
@@ -1033,11 +1039,12 @@ impl<E: EthSpec> PeerManager<E> {
                 target = MIN_EXECUTION_PROOF_PEERS,
                 "Insufficient proof-capable peers; triggering discovery"
             );
-            self.events
-                .push(PeerManagerEvent::DiscoverSubnetPeers(vec![SubnetDiscovery {
+            self.events.push(PeerManagerEvent::DiscoverSubnetPeers(vec![
+                SubnetDiscovery {
                     subnet: Subnet::ExecutionProof,
                     min_ttl: None,
-                }]));
+                },
+            ]));
         }
     }
 

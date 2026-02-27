@@ -99,7 +99,14 @@ impl<E: EthSpec> TestNetworkFixtureBuilder<E> {
         // Initialize validator clients
         Self::init_validators(&network, &network_params).await?;
 
-        Ok(TestNetworkFixture { env, network })
+        Ok(TestNetworkFixture {
+            env,
+            network,
+            config: TestConfig {
+                client: beacon_config,
+                execution: mock_execution_config,
+            },
+        })
     }
 
     async fn init_validators(

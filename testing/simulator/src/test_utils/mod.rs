@@ -5,7 +5,7 @@
 //! `basic_sim` and `proof_service_sim`.
 
 pub use crate::basic_sim::SUGGESTED_FEE_RECIPIENT;
-pub use crate::local_network::{LocalNetwork, LocalNetworkParams};
+pub use crate::local_network::{LocalNetwork, LocalNetworkParams, NodeType};
 pub use environment::LoggerConfig;
 pub use environment::test_utils::TestEnvironment;
 pub use logging::build_workspace_filter;
@@ -26,6 +26,12 @@ pub use builder::TestNetworkFixtureBuilder;
 pub struct TestNetworkFixture<E: EthSpec = MinimalEthSpec> {
     pub env: TestEnvironment<E>,
     pub network: LocalNetwork<E>,
+    pub config: TestConfig,
+}
+
+pub struct TestConfig {
+    pub client: ClientConfig,
+    pub execution: MockExecutionConfig,
 }
 
 impl TestNetworkFixture {

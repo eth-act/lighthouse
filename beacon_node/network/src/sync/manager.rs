@@ -790,7 +790,9 @@ impl<T: BeaconChainTypes> SyncManager<T> {
             // invoked this call.
             if new_state.is_synced() && !old_state.is_synced() {
                 self.network.subscribe_core_topics();
-                self.proof_sync.start();
+                if self.network_globals().config.enable_execution_proof {
+                    self.proof_sync.start();
+                }
             }
         }
     }

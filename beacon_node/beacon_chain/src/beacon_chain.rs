@@ -7467,6 +7467,28 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             .collect()
     }
 
+    /// Get execution proofs associated with the given beacon block root (EIP-8025).
+    ///
+    /// Translates beacon block root → new_payload request root → proofs via the proof engine
+    /// state. Returns an empty vec if the node has no proof engine or if there are no proofs for
+    /// the requested block.
+    pub fn get_execution_proofs_by_block_root(
+        &self,
+        block_root: Hash256,
+    ) -> Vec<types::SignedExecutionProof> {
+        let Some(proof_engine) = self
+            .execution_layer
+            .as_ref()
+            .and_then(|el| el.proof_engine())
+        else {
+            return vec![];
+        };
+        let Some(request_root) = self.store.get_request_root_by_block_root(&block_root) else {
+            return vec![];
+        };
+        proof_engine.get_proofs_by_root(&request_root)
+    }
+
     /// Verify a signed execution proof (EIP-8025).
     ///
     /// This method:

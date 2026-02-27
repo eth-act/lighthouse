@@ -7,6 +7,7 @@ use beacon_chain::{BeaconChainError, BeaconChainTypes, BlockProcessStatus, WhenS
 use itertools::{Itertools, process_results};
 use lighthouse_network::rpc::methods::{
     BlobsByRangeRequest, BlobsByRootRequest, DataColumnsByRangeRequest, DataColumnsByRootRequest,
+    ExecutionProofsByRangeRequest, ExecutionProofsByRootRequest,
 };
 use lighthouse_network::rpc::*;
 use lighthouse_network::{PeerId, ReportSource, Response, SyncInfo};
@@ -1318,6 +1319,113 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
             requested = req.count,
             returned = data_columns_sent,
             "DataColumnsByRange Response processed"
+        );
+
+        Ok(())
+    }
+
+    /// Handle an `ExecutionProofsByRange` request from the peer (EIP-8025).
+    ///
+    /// Streams all `SignedExecutionProof` objects known for the requested slot range.
+    pub fn handle_execution_proofs_by_range_request(
+        &self,
+        peer_id: PeerId,
+        inbound_request_id: InboundRequestId,
+        req: ExecutionProofsByRangeRequest,
+    ) {
+        self.terminate_response_stream(
+            peer_id,
+            inbound_request_id,
+            self.handle_execution_proofs_by_range_request_inner(peer_id, inbound_request_id, req),
+            Response::ExecutionProofsByRange,
+        );
+    }
+
+    fn handle_execution_proofs_by_range_request_inner(
+        &self,
+        peer_id: PeerId,
+        inbound_request_id: InboundRequestId,
+        req: ExecutionProofsByRangeRequest,
+    ) -> Result<(), (RpcErrorResponse, &'static str)> {
+        debug!(
+            %peer_id,
+            start_slot = req.start_slot,
+            count = req.count,
+            "Received ExecutionProofsByRange Request"
+        );
+
+        let block_roots =
+            self.get_block_roots_for_slot_range(req.start_slot, req.count, "ExecutionProofsByRange")?;
+
+        let mut proofs_sent = 0usize;
+        for block_root in block_roots {
+            for proof in self.chain.get_execution_proofs_by_block_root(block_root) {
+                self.send_network_message(NetworkMessage::SendResponse {
+                    peer_id,
+                    inbound_request_id,
+                    response: Response::ExecutionProofsByRange(Some(Arc::new(proof))),
+                });
+                proofs_sent += 1;
+            }
+        }
+
+        debug!(
+            %peer_id,
+            start_slot = req.start_slot,
+            count = req.count,
+            returned = proofs_sent,
+            "ExecutionProofsByRange Response processed"
+        );
+
+        Ok(())
+    }
+
+    /// Handle an `ExecutionProofsByRoot` request from the peer (EIP-8025).
+    ///
+    /// Streams all `SignedExecutionProof` objects known for the requested beacon block roots.
+    pub fn handle_execution_proofs_by_root_request(
+        &self,
+        peer_id: PeerId,
+        inbound_request_id: InboundRequestId,
+        req: ExecutionProofsByRootRequest,
+    ) {
+        self.terminate_response_stream(
+            peer_id,
+            inbound_request_id,
+            self.handle_execution_proofs_by_root_request_inner(peer_id, inbound_request_id, req),
+            Response::ExecutionProofsByRoot,
+        );
+    }
+
+    fn handle_execution_proofs_by_root_request_inner(
+        &self,
+        peer_id: PeerId,
+        inbound_request_id: InboundRequestId,
+        req: ExecutionProofsByRootRequest,
+    ) -> Result<(), (RpcErrorResponse, &'static str)> {
+        debug!(
+            %peer_id,
+            num_roots = req.block_roots.len(),
+            "Received ExecutionProofsByRoot Request"
+        );
+
+        let mut proofs_sent = 0usize;
+        for block_root in req.block_roots.iter() {
+            for proof in self.chain.get_execution_proofs_by_block_root(*block_root) {
+                self.send_network_message(NetworkMessage::SendResponse {
+                    peer_id,
+                    inbound_request_id,
+                    response: Response::ExecutionProofsByRoot(Some(Arc::new(proof))),
+                });
+                proofs_sent += 1;
+            }
+        }
+
+        debug!(
+            %peer_id,
+            num_roots = req.block_roots.len(),
+            returned = proofs_sent,
+            "ExecutionProofsByRoot Response processed"
         );
 
         Ok(())

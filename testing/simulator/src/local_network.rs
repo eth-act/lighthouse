@@ -1,4 +1,5 @@
 use crate::checks::epoch_delay;
+use beacon_chain::custody_context::NodeCustodyType;
 use kzg::trusted_setup::get_trusted_setup;
 use lighthouse_network::types::Enr;
 use node_test_rig::{
@@ -119,6 +120,7 @@ fn default_client_config(network_params: LocalNetworkParams, genesis_time: u64) 
     beacon_config.chain.enable_light_client_server = true;
     beacon_config.chain.optimistic_finalized_sync = false;
     beacon_config.trusted_setup = get_trusted_setup();
+    beacon_config.chain.node_custody_type = NodeCustodyType::Supernode;
 
     let el_config = execution_layer::Config {
         execution_endpoint: Some(
@@ -290,6 +292,15 @@ impl<E: EthSpec> LocalNetwork<E> {
         beacon_config.network.enr_tcp4_port = Some(BOOTNODE_PORT.try_into().expect("non zero"));
         beacon_config.network.discv5_config.table_filter = |_| true;
 
+        // The boot node is a full data-availability node and should custody all columns from
+        // genesis. Setting Supernode ensures cgc = number_of_custody_groups from startup so
+        // no validator-registration-triggered cgc jump occurs. Without this, the first proposer
+        // preparation call from the validator client causes cgc to increase from
+        // spec.custody_requirement → number_of_custody_groups, which stamps
+        // earliest_available_slot = current_slot and prevents late-joining nodes from syncing
+        // from epoch 0.
+        beacon_config.chain.node_custody_type = NodeCustodyType::Supernode;
+
         let execution_node = LocalExecutionNode::new(self.context.clone(), mock_execution_config);
 
         beacon_config.execution_layer = Some(execution_layer::Config {
@@ -374,6 +385,7 @@ impl<E: EthSpec> LocalNetwork<E> {
         };
 
         if node_type.is_proof_verifier() {
+            beacon_config.chain.optimistic_finalized_sync = true;
             beacon_config.network.boot_nodes_enr.push(self.proof_generator_enr().ok_or_else(|| {
                 "Proof verifier node requires a proof generator node to connect to, but no proof generator node found in the network".to_string()
             })?);

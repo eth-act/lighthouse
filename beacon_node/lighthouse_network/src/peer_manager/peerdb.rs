@@ -695,6 +695,15 @@ impl<E: EthSpec> PeerDB<E> {
         }
     }
 
+    /// Stores the ENR for a peer if they don't already have one recorded.
+    pub(super) fn update_peer_enr_if_missing(&mut self, peer_id: &PeerId, enr: Enr) {
+        if let Some(info) = self.peer_info_mut(peer_id)
+            && info.enr().is_none()
+        {
+            info.set_enr(enr);
+        }
+    }
+
     /// Update min ttl of a peer.
     // VISIBILITY: Only the peer manager can update the min_ttl
     pub(super) fn update_min_ttl(&mut self, peer_id: &PeerId, min_ttl: Instant) {

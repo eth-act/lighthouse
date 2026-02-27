@@ -7024,6 +7024,7 @@ name = "proof_engine_test"
 version = "8.0.1"
 dependencies = [
  "anyhow",
+ "network",
  "simulator",
  "tokio",
  "tracing",
@@ -8284,6 +8285,7 @@ name = "simulator"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "beacon_chain",
  "clap",
  "environment",
  "eth2",

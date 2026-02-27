@@ -273,6 +273,24 @@ impl<T: BeaconChainTypes> Router<T> {
                             request,
                         ),
                 ),
+            RequestType::ExecutionProofsByRange(request) => self
+                .handle_beacon_processor_send_result(
+                    self.network_beacon_processor
+                        .send_execution_proofs_by_range_request(
+                            peer_id,
+                            inbound_request_id,
+                            request,
+                        ),
+                ),
+            RequestType::ExecutionProofsByRoot(request) => self
+                .handle_beacon_processor_send_result(
+                    self.network_beacon_processor
+                        .send_execution_proofs_by_root_request(
+                            peer_id,
+                            inbound_request_id,
+                            request,
+                        ),
+                ),
             _ => {}
         }
     }
