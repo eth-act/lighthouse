@@ -57,11 +57,13 @@ use beacon_chain::{
 use futures::StreamExt;
 use lighthouse_network::SyncInfo;
 use lighthouse_network::rpc::RPCError;
+use lighthouse_network::rpc::methods::ExecutionProofStatus;
 use lighthouse_network::service::api_types::{
     BlobsByRangeRequestId, BlocksByRangeRequestId, ComponentsByRangeRequestId,
     CustodyBackFillBatchRequestId, CustodyBackfillBatchId, CustodyRequester,
     DataColumnsByRangeRequestId, DataColumnsByRangeRequester, DataColumnsByRootRequestId,
-    DataColumnsByRootRequester, Id, SingleLookupReqId, SyncRequestId,
+    DataColumnsByRootRequester, ExecutionProofStatusRequestId, Id, SingleLookupReqId,
+    SyncRequestId,
 };
 use lighthouse_network::types::{NetworkGlobals, SyncState};
 use lighthouse_network::{PeerAction, PeerId};
@@ -139,6 +141,15 @@ pub enum SyncMessage<E: EthSpec> {
         sync_request_id: SyncRequestId,
         peer_id: PeerId,
         execution_proof: Option<Arc<SignedExecutionProof>>,
+    },
+
+    /// An ExecutionProofStatus response has been received from the RPC (outbound),
+    /// or a peer has sent us their status in an inbound request body.
+    /// `request_id` is `None` for the inbound (peer-initiated) case.
+    RpcExecutionProofStatus {
+        peer_id: PeerId,
+        request_id: Option<ExecutionProofStatusRequestId>,
+        status: ExecutionProofStatus,
     },
 
     /// A block with an unknown parent has been received.
@@ -409,7 +420,7 @@ impl<T: BeaconChainTypes> SyncManager<T> {
 
     #[cfg(test)]
     pub(crate) fn start_proof_sync(&mut self) {
-        self.proof_sync.start();
+        self.proof_sync.start(&mut self.network);
     }
 
     #[cfg(test)]
@@ -420,6 +431,16 @@ impl<T: BeaconChainTypes> SyncManager<T> {
     #[cfg(test)]
     pub(crate) fn force_proof_sync_fill_mode(&mut self) {
         self.proof_sync.enter_fill_mode_for_testing();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn peer_status_cached(&self, peer_id: &PeerId) -> bool {
+        self.proof_sync.peer_status_cached(peer_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn peer_status_verified_flag(&self, peer_id: &PeerId) -> Option<bool> {
+        self.proof_sync.peer_status_verified_flag(peer_id)
     }
 
     fn network_globals(&self) -> &NetworkGlobals<T::EthSpec> {
@@ -475,6 +496,11 @@ impl<T: BeaconChainTypes> SyncManager<T> {
                     }
                 }
             }
+        }
+
+        if self.network.is_proof_capable_peer(&peer_id) {
+            self.proof_sync
+                .on_proof_capable_peer_connected(peer_id, &mut self.network);
         }
 
         self.update_sync_state();
@@ -563,6 +589,13 @@ impl<T: BeaconChainTypes> SyncManager<T> {
             SyncRequestId::ExecutionProofsByRoot(req_id) => {
                 debug!(%peer_id, ?req_id, "Execution proofs by root request failed");
             }
+            SyncRequestId::ExecutionProofStatus(id) => {
+                self.proof_sync.on_peer_execution_proof_status_error(
+                    peer_id,
+                    id,
+                    &mut self.network,
+                );
+            }
         }
     }
 
@@ -582,6 +615,7 @@ impl<T: BeaconChainTypes> SyncManager<T> {
         self.range_sync.peer_disconnect(&mut self.network, peer_id);
         let _ = self.backfill_sync.peer_disconnected(peer_id);
         self.block_lookups.peer_disconnected(peer_id);
+        self.proof_sync.on_proof_capable_peer_disconnected(peer_id);
 
         // Regardless of the outcome, we update the sync status.
         self.update_sync_state();
@@ -791,7 +825,7 @@ impl<T: BeaconChainTypes> SyncManager<T> {
             if new_state.is_synced() && !old_state.is_synced() {
                 self.network.subscribe_core_topics();
                 if self.network_globals().config.enable_execution_proof {
-                    self.proof_sync.start();
+                    self.proof_sync.start(&mut self.network);
                 }
             }
         }
@@ -906,6 +940,18 @@ impl<T: BeaconChainTypes> SyncManager<T> {
                 execution_proof,
             } => {
                 self.rpc_execution_proof_received(sync_request_id, peer_id, execution_proof);
+            }
+            SyncMessage::RpcExecutionProofStatus {
+                peer_id,
+                request_id,
+                status,
+            } => {
+                self.proof_sync.on_peer_execution_proof_status(
+                    peer_id,
+                    request_id,
+                    status,
+                    &mut self.network,
+                );
             }
             SyncMessage::UnknownParentBlock(peer_id, block, block_root) => {
                 let block_slot = block.slot();

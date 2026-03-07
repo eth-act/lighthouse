@@ -82,6 +82,7 @@ impl<E: EthSpec> SSZSnappyInboundCodec<E> {
                 RpcSuccessResponse::DataColumnsByRange(res) => res.as_ssz_bytes(),
                 RpcSuccessResponse::ExecutionProofsByRange(res) => res.as_ssz_bytes(),
                 RpcSuccessResponse::ExecutionProofsByRoot(res) => res.as_ssz_bytes(),
+                RpcSuccessResponse::ExecutionProofStatus(s) => s.as_ssz_bytes(),
                 RpcSuccessResponse::LightClientBootstrap(res) => res.as_ssz_bytes(),
                 RpcSuccessResponse::LightClientOptimisticUpdate(res) => res.as_ssz_bytes(),
                 RpcSuccessResponse::LightClientFinalityUpdate(res) => res.as_ssz_bytes(),
@@ -165,6 +166,7 @@ impl<E: EthSpec> Decoder for SSZSnappyInboundCodec<E> {
         if self.protocol.versioned_protocol == SupportedProtocol::MetaDataV3 {
             return Ok(Some(RequestType::MetaData(MetadataRequest::new_v3())));
         }
+        // ExecutionProofStatus now carries a 40-byte body; handled in the normal decode path below.
         let Some(length) = handle_length(&mut self.inner, &mut self.len, src)? else {
             return Ok(None);
         };
@@ -367,7 +369,8 @@ impl<E: EthSpec> Encoder<RequestType<E>> for SSZSnappyOutboundCodec<E> {
             RequestType::LightClientUpdatesByRange(req) => req.as_ssz_bytes(),
             RequestType::ExecutionProofsByRange(req) => req.as_ssz_bytes(),
             RequestType::ExecutionProofsByRoot(req) => req.block_roots.as_ssz_bytes(),
-            // no metadata to encode
+            RequestType::ExecutionProofStatus(s) => s.as_ssz_bytes(),
+            // no body to encode for these request types
             RequestType::MetaData(_)
             | RequestType::LightClientOptimisticUpdate
             | RequestType::LightClientFinalityUpdate => return Ok(()),
@@ -631,6 +634,9 @@ fn handle_rpc_request<E: EthSpec>(
                 Ok(Some(RequestType::MetaData(MetadataRequest::new_v1())))
             }
         }
+        SupportedProtocol::ExecutionProofStatusV1 => Ok(Some(RequestType::ExecutionProofStatus(
+            ExecutionProofStatus::from_ssz_bytes(decoded_buffer)?,
+        ))),
     }
 }
 
@@ -867,6 +873,11 @@ fn handle_rpc_response<E: EthSpec>(
             Ok(Some(RpcSuccessResponse::ExecutionProofsByRoot(Arc::new(
                 SignedExecutionProof::from_ssz_bytes(decoded_buffer)?,
             ))))
+        }
+        SupportedProtocol::ExecutionProofStatusV1 => {
+            Ok(Some(RpcSuccessResponse::ExecutionProofStatus(
+                ExecutionProofStatus::from_ssz_bytes(decoded_buffer)?,
+            )))
         }
         SupportedProtocol::BlocksByRootV2 => match fork_name {
             Some(ForkName::Altair) => Ok(Some(RpcSuccessResponse::BlocksByRoot(Arc::new(
@@ -1316,6 +1327,9 @@ mod tests {
             }
             RequestType::ExecutionProofsByRoot(ep_root) => {
                 assert_eq!(decoded, RequestType::ExecutionProofsByRoot(ep_root))
+            }
+            RequestType::ExecutionProofStatus(s) => {
+                assert_eq!(decoded, RequestType::ExecutionProofStatus(s))
             }
         }
     }

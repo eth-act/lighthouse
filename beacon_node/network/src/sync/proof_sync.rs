@@ -5,17 +5,20 @@
 //! `FillingByRoot` mode where it issues targeted `ExecutionProofsByRoot` requests for any
 //! individual blocks that are still missing proofs.
 
-use super::network_context::{RpcRequestSendError, SyncNetworkContext};
-use beacon_chain::{BeaconChain, BeaconChainTypes};
+use super::network_context::{CachedExecutionProofStatus, RpcRequestSendError, SyncNetworkContext};
+use beacon_chain::{BeaconChain, BeaconChainTypes, WhenSlotSkipped};
 use execution_layer::MissingProofInfo;
 use fnv::FnvHashMap;
+use lighthouse_network::PeerId;
+use lighthouse_network::rpc::methods::ExecutionProofStatus;
 use lighthouse_network::service::api_types::{
-    ExecutionProofsByRangeRequestId, ExecutionProofsByRootRequestId,
+    ExecutionProofStatusRequestId, ExecutionProofsByRangeRequestId, ExecutionProofsByRootRequestId,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Instant;
 use tracing::debug;
-use types::{EthSpec, Hash256};
+use types::{EthSpec, Hash256, Slot};
 
 /// Maximum number of concurrent `ExecutionProofsByRoot` requests.
 const DEFAULT_MAX_CONCURRENT: usize = 4;
@@ -58,6 +61,10 @@ pub struct ProofSync<T: BeaconChainTypes> {
     in_flight: FnvHashMap<ExecutionProofsByRootRequestId, MissingProofInfo>,
     /// Maximum number of concurrent by-root requests in `FillingByRoot` state.
     max_concurrent: usize,
+    /// Cached `ExecutionProofStatus` responses from proof-capable peers (peer → cached status).
+    peer_execution_proof_statuses: HashMap<PeerId, CachedExecutionProofStatus>,
+    /// In-flight `ExecutionProofStatus` request IDs (peer → request ID).
+    in_flight_execution_proof_status: HashMap<PeerId, ExecutionProofStatusRequestId>,
     /// Injected missing-proof list for unit testing fill-mode behaviour.
     #[cfg(test)]
     pub test_missing_proofs: Option<Vec<MissingProofInfo>>,
@@ -71,6 +78,8 @@ impl<T: BeaconChainTypes> ProofSync<T> {
             chain,
             in_flight: FnvHashMap::default(),
             max_concurrent: DEFAULT_MAX_CONCURRENT,
+            peer_execution_proof_statuses: HashMap::default(),
+            in_flight_execution_proof_status: HashMap::default(),
             #[cfg(test)]
             test_missing_proofs: None,
         }
@@ -94,12 +103,43 @@ impl<T: BeaconChainTypes> ProofSync<T> {
         self.state = ProofSyncState::FillingByRoot;
     }
 
+    /// Returns `true` if a cached status entry exists for `peer_id`.
+    #[cfg(test)]
+    pub fn peer_status_cached(&self, peer_id: &PeerId) -> bool {
+        self.peer_execution_proof_statuses.contains_key(peer_id)
+    }
+
+    /// Returns the `verified` flag of the cached entry for `peer_id`, if present.
+    #[cfg(test)]
+    pub fn peer_status_verified_flag(&self, peer_id: &PeerId) -> Option<bool> {
+        self.peer_execution_proof_statuses
+            .get(peer_id)
+            .map(|c| c.verified)
+    }
+
     /// Called by `SyncManager::update_sync_state()` when range sync completes.
     ///
-    /// Transitions from `Idle` to `PendingRangeRequest`. The next `poll()` will send
-    /// the bootstrap `ExecutionProofsByRange` request.
-    pub fn start(&mut self) {
-        debug!("ProofSync: range sync complete, scheduling proof range request");
+    /// Refreshes `ExecutionProofStatus` for all connected proof-capable peers whose cached entry
+    /// is stale (TTL-expired) or unverified, then transitions to `PendingRangeRequest`.
+    pub fn start(&mut self, cx: &mut SyncNetworkContext<T>) {
+        debug!("ProofSync: range sync complete, refreshing peer statuses");
+        for peer_id in cx.connected_proof_capable_peers() {
+            let needs_refresh = self
+                .peer_execution_proof_statuses
+                .get(&peer_id)
+                .map(|c| c.needs_refresh())
+                .unwrap_or(true);
+            if needs_refresh && !self.in_flight_execution_proof_status.contains_key(&peer_id) {
+                match cx.request_execution_proof_status(peer_id) {
+                    Ok(id) => {
+                        self.in_flight_execution_proof_status.insert(peer_id, id);
+                    }
+                    Err(e) => {
+                        debug!(error = ?e, %peer_id, "ProofSync: failed to refresh status at start");
+                    }
+                }
+            }
+        }
         self.state = ProofSyncState::PendingRangeRequest;
     }
 
@@ -139,12 +179,13 @@ impl<T: BeaconChainTypes> ProofSync<T> {
                     self.in_flight.values().map(|i| i.root).collect();
                 let available = self.max_concurrent.saturating_sub(self.in_flight.len());
 
+                let peer_id = cx.find_best_proof_capable_peer(&self.peer_execution_proof_statuses);
                 for info in missing
                     .into_iter()
                     .filter(|info| !in_flight_roots.contains(&info.root))
                     .take(available)
                 {
-                    match cx.request_execution_proofs_by_root(info.root) {
+                    match cx.request_execution_proofs_by_root(peer_id, info.root) {
                         Ok(id) => {
                             debug!(
                                 block_root = %info.root,
@@ -184,6 +225,104 @@ impl<T: BeaconChainTypes> ProofSync<T> {
         self.in_flight.remove(id);
     }
 
+    /// Called when a proof-capable peer connects.
+    ///
+    /// Sends an `ExecutionProofStatus` request unless one is already in-flight for this peer.
+    pub fn on_proof_capable_peer_connected(
+        &mut self,
+        peer_id: PeerId,
+        cx: &mut SyncNetworkContext<T>,
+    ) {
+        if self.in_flight_execution_proof_status.contains_key(&peer_id) {
+            return;
+        }
+        match cx.request_execution_proof_status(peer_id) {
+            Ok(id) => {
+                debug!(%peer_id, %id, "ProofSync: queried peer execution proof status");
+                self.in_flight_execution_proof_status.insert(peer_id, id);
+            }
+            Err(e) => {
+                debug!(error = ?e, %peer_id, "ProofSync: failed to query peer status on connect");
+            }
+        }
+    }
+
+    /// Called when a proof-capable peer disconnects.
+    pub fn on_proof_capable_peer_disconnected(&mut self, peer_id: &PeerId) {
+        self.peer_execution_proof_statuses.remove(peer_id);
+        self.in_flight_execution_proof_status.remove(peer_id);
+    }
+
+    /// Called when an `ExecutionProofStatus` arrives from a peer.
+    ///
+    /// `request_id` is `Some` for outbound (we initiated) responses and `None` for inbound
+    /// (peer-initiated) requests.  In the inbound case the peer's status is still cached.
+    pub fn on_peer_execution_proof_status(
+        &mut self,
+        peer_id: PeerId,
+        request_id: Option<ExecutionProofStatusRequestId>,
+        status: ExecutionProofStatus,
+        cx: &mut SyncNetworkContext<T>,
+    ) {
+        if let Some(id) = request_id {
+            self.in_flight_execution_proof_status.remove(&peer_id);
+            cx.on_execution_proof_status_terminated(&id);
+        }
+
+        debug!(
+            %peer_id,
+            slot = status.latest_verified_slot,
+            block_root = %status.latest_verified_block_root,
+            "ProofSync: received ExecutionProofStatus"
+        );
+
+        // Verify the peer's claimed block root against our local chain.
+        let best_slot = self.chain.best_slot();
+        let verified = if status.latest_verified_slot <= best_slot.as_u64() {
+            // We have (or should have) this slot — verify the block root.
+            match self.chain.block_root_at_slot(
+                Slot::new(status.latest_verified_slot),
+                WhenSlotSkipped::None,
+            ) {
+                Ok(Some(root)) if root == status.latest_verified_block_root => true,
+                _ => {
+                    debug!(
+                        %peer_id,
+                        slot = status.latest_verified_slot,
+                        "ProofSync: peer block root mismatch, ignoring status"
+                    );
+                    return;
+                }
+            }
+        } else {
+            // Peer is ahead of our head — cache optimistically as unverified.
+            false
+        };
+
+        self.peer_execution_proof_statuses.insert(
+            peer_id,
+            CachedExecutionProofStatus {
+                status,
+                timestamp: Instant::now(),
+                verified,
+            },
+        );
+    }
+
+    /// Called when an `ExecutionProofStatus` request errors.
+    ///
+    /// Removes the in-flight entry. Does not penalize the peer.
+    pub fn on_peer_execution_proof_status_error(
+        &mut self,
+        peer_id: PeerId,
+        request_id: ExecutionProofStatusRequestId,
+        cx: &mut SyncNetworkContext<T>,
+    ) {
+        self.in_flight_execution_proof_status.remove(&peer_id);
+        cx.on_execution_proof_status_terminated(&request_id);
+        debug!(%peer_id, %request_id, "ProofSync: ExecutionProofStatus request failed (soft)");
+    }
+
     /// Issue an `ExecutionProofsByRange` bootstrap request covering finalized+1 through head.
     ///
     /// Transitions to `RangeRequestInFlight` on success, stays `PendingRangeRequest` if no
@@ -197,8 +336,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
             .epoch
             .start_slot(T::EthSpec::slots_per_epoch());
         let start_slot = finalized_slot + 1;
-        // Use the current slot clock rather than the head block slot so that the range
-        // covers any slots after the head block that the EL may have processed.
+        // Use the slot clock so the range covers any EL-processed slots beyond the head block.
         let current_slot = self.chain.slot().unwrap_or_else(|_| self.chain.best_slot());
         if current_slot < start_slot {
             debug!("ProofSync: current slot is behind start_slot, switching directly to fill mode");
@@ -207,7 +345,8 @@ impl<T: BeaconChainTypes> ProofSync<T> {
         }
         let count = current_slot.as_u64() - start_slot.as_u64() + 1;
 
-        match cx.request_execution_proofs_by_range(start_slot, count) {
+        let peer_id = cx.find_best_proof_capable_peer(&self.peer_execution_proof_statuses);
+        match cx.request_execution_proofs_by_range(peer_id, start_slot, count) {
             Ok(id) => {
                 debug!(
                     %start_slot,

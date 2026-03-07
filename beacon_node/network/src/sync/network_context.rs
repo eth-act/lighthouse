@@ -23,8 +23,8 @@ use custody::CustodyRequestResult;
 use fnv::FnvHashMap;
 use lighthouse_network::Eth2Enr;
 use lighthouse_network::rpc::methods::{
-    BlobsByRangeRequest, DataColumnsByRangeRequest, ExecutionProofsByRangeRequest,
-    ExecutionProofsByRootRequest,
+    BlobsByRangeRequest, DataColumnsByRangeRequest, ExecutionProofStatus,
+    ExecutionProofsByRangeRequest, ExecutionProofsByRootRequest,
 };
 use lighthouse_network::rpc::{BlocksByRangeRequest, GoodbyeReason, RPCError, RequestType};
 pub use lighthouse_network::service::api_types::RangeRequestId;
@@ -32,8 +32,8 @@ use lighthouse_network::service::api_types::{
     AppRequestId, BlobsByRangeRequestId, BlocksByRangeRequestId, ComponentsByRangeRequestId,
     CustodyBackFillBatchRequestId, CustodyBackfillBatchId, CustodyId, CustodyRequester,
     DataColumnsByRangeRequestId, DataColumnsByRangeRequester, DataColumnsByRootRequestId,
-    DataColumnsByRootRequester, ExecutionProofsByRangeRequestId, ExecutionProofsByRootRequestId,
-    Id, SingleLookupReqId, SyncRequestId,
+    DataColumnsByRootRequester, ExecutionProofStatusRequestId, ExecutionProofsByRangeRequestId,
+    ExecutionProofsByRootRequestId, Id, SingleLookupReqId, SyncRequestId,
 };
 use lighthouse_network::{Client, NetworkGlobals, PeerAction, PeerId, ReportSource};
 use lighthouse_tracing::{SPAN_OUTGOING_BLOCK_BY_ROOT_REQUEST, SPAN_OUTGOING_RANGE_REQUEST};
@@ -124,6 +124,26 @@ pub enum NoPeerError {
     CustodyPeer(ColumnIndex),
     /// No connected peer with `execution_proof_enabled()` in their ENR.
     ProofPeer,
+}
+
+/// Age threshold for considering a cached `ExecutionProofStatus` stale enough to re-query.
+pub const EXECUTION_PROOF_STATUS_REFRESH_THRESHOLD: std::time::Duration =
+    std::time::Duration::from_secs(300);
+
+/// A peer's `ExecutionProofStatus` plus the time it was received and whether it was verified.
+pub struct CachedExecutionProofStatus {
+    pub status: ExecutionProofStatus,
+    pub timestamp: std::time::Instant,
+    /// `true` if `status.latest_verified_block_root` was confirmed against our local chain.
+    /// `false` if the peer's claimed slot was ahead of our head at cache time (optimistic).
+    pub verified: bool,
+}
+
+impl CachedExecutionProofStatus {
+    /// Returns `true` if this entry should be refreshed: either it is unverified or has expired.
+    pub fn needs_refresh(&self) -> bool {
+        !self.verified || self.timestamp.elapsed() > EXECUTION_PROOF_STATUS_REFRESH_THRESHOLD
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -235,6 +255,8 @@ pub struct SyncNetworkContext<T: BeaconChainTypes> {
     execution_proofs_by_range_requests: FnvHashMap<ExecutionProofsByRangeRequestId, PeerId>,
     /// Tracking map for active ExecutionProofsByRoot requests (request ID → serving peer).
     execution_proofs_by_root_requests: FnvHashMap<ExecutionProofsByRootRequestId, PeerId>,
+    /// Tracking map for active ExecutionProofStatus requests (request ID → queried peer).
+    execution_proof_status_requests: FnvHashMap<ExecutionProofStatusRequestId, PeerId>,
 
     /// Whether the ee is online. If it's not, we don't allow access to the
     /// `beacon_processor_send`.
@@ -315,6 +337,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             custody_backfill_data_column_batch_requests: FnvHashMap::default(),
             execution_proofs_by_range_requests: FnvHashMap::default(),
             execution_proofs_by_root_requests: FnvHashMap::default(),
+            execution_proof_status_requests: FnvHashMap::default(),
             network_beacon_processor,
             chain,
             fork_context,
@@ -347,6 +370,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             custody_backfill_data_column_batch_requests: _,
             execution_proofs_by_range_requests,
             execution_proofs_by_root_requests,
+            execution_proof_status_requests,
             execution_engine_state: _,
             network_beacon_processor: _,
             chain: _,
@@ -389,6 +413,11 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             .filter(|(_, p)| *p == peer_id)
             .map(|(id, _)| SyncRequestId::ExecutionProofsByRoot(*id))
             .collect::<Vec<_>>();
+        let ep_status_ids = execution_proof_status_requests
+            .iter()
+            .filter(|(_, p)| *p == peer_id)
+            .map(|(id, _)| SyncRequestId::ExecutionProofStatus(*id))
+            .collect::<Vec<_>>();
         blocks_by_root_ids
             .chain(blobs_by_root_ids)
             .chain(data_column_by_root_ids)
@@ -397,6 +426,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             .chain(data_column_by_range_ids)
             .chain(ep_by_range_ids)
             .chain(ep_by_root_ids)
+            .chain(ep_status_ids)
             .collect()
     }
 
@@ -405,31 +435,17 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             .custody_peers_for_column(column_index)
     }
 
-    /// Returns the first connected peer whose ENR advertises execution proof support (`ep = true`).
-    fn find_any_proof_capable_peer(&self) -> Option<PeerId> {
-        let db = self.network_globals().peers.read();
-        db.connected_peer_ids()
-            .find(|peer_id| {
-                db.peer_info(peer_id)
-                    .and_then(|info| info.enr())
-                    .map(|enr| enr.execution_proof_enabled())
-                    .unwrap_or(false)
-            })
-            .copied()
-    }
-
-    /// Send a `ExecutionProofsByRange` request to any connected proof-capable peer.
+    /// Send a `ExecutionProofsByRange` request to the given proof-capable peer.
     ///
-    /// Returns `Err(NoPeer)` if no connected peer has `ep = true` in their ENR. Callers
-    /// treat this as a soft failure — gossip serves as the fallback.
+    /// Callers should use `find_best_proof_capable_peer` to select the peer first.
+    /// Returns `Err(NoPeer)` if `peer_id` is `None`. Callers treat this as a soft failure.
     pub fn request_execution_proofs_by_range(
         &mut self,
+        peer_id: Option<PeerId>,
         start_slot: Slot,
         count: u64,
     ) -> Result<ExecutionProofsByRangeRequestId, RpcRequestSendError> {
-        let peer_id = self
-            .find_any_proof_capable_peer()
-            .ok_or(RpcRequestSendError::NoPeer(NoPeerError::ProofPeer))?;
+        let peer_id = peer_id.ok_or(RpcRequestSendError::NoPeer(NoPeerError::ProofPeer))?;
         let id = ExecutionProofsByRangeRequestId { id: self.next_id() };
         let request = ExecutionProofsByRangeRequest {
             start_slot: start_slot.as_u64(),
@@ -454,16 +470,16 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
         Ok(id)
     }
 
-    /// Send a `ExecutionProofsByRoot` request for `block_root` to any connected proof-capable peer.
+    /// Send a `ExecutionProofsByRoot` request for `block_root` to the given proof-capable peer.
     ///
-    /// Returns `Err(NoPeer)` if no connected peer has `ep = true` in their ENR.
+    /// Callers should use `find_best_proof_capable_peer` to select the peer first.
+    /// Returns `Err(NoPeer)` if `peer_id` is `None`. Callers treat this as a soft failure.
     pub fn request_execution_proofs_by_root(
         &mut self,
+        peer_id: Option<PeerId>,
         block_root: Hash256,
     ) -> Result<ExecutionProofsByRootRequestId, RpcRequestSendError> {
-        let peer_id = self
-            .find_any_proof_capable_peer()
-            .ok_or(RpcRequestSendError::NoPeer(NoPeerError::ProofPeer))?;
+        let peer_id = peer_id.ok_or(RpcRequestSendError::NoPeer(NoPeerError::ProofPeer))?;
         let max_request_blocks = self
             .chain
             .spec
@@ -502,8 +518,139 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
         self.execution_proofs_by_root_requests.remove(id);
     }
 
+    /// Send an `ExecutionProofStatus` request to `peer_id`.
+    ///
+    /// The request body carries our local execution proof status so the peer can cache it.
+    /// Returns the newly-allocated request ID on success.
+    pub fn request_execution_proof_status(
+        &mut self,
+        peer_id: PeerId,
+    ) -> Result<ExecutionProofStatusRequestId, RpcRequestSendError> {
+        let id = ExecutionProofStatusRequestId { id: self.next_id() };
+        let local_status = *self.network_globals().local_execution_proof_status.read();
+        self.network_send
+            .send(NetworkMessage::SendRequest {
+                peer_id,
+                request: RequestType::ExecutionProofStatus(local_status),
+                app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofStatus(id)),
+            })
+            .map_err(|_| RpcRequestSendError::InternalError("network send error".to_owned()))?;
+        debug!(
+            method = "ExecutionProofStatus",
+            peer = %peer_id,
+            %id,
+            "Sync RPC request sent"
+        );
+        self.execution_proof_status_requests.insert(id, peer_id);
+        Ok(id)
+    }
+
+    /// Remove a completed (or errored) `ExecutionProofStatus` request from the tracking map.
+    pub fn on_execution_proof_status_terminated(&mut self, id: &ExecutionProofStatusRequestId) {
+        self.execution_proof_status_requests.remove(id);
+    }
+
+    /// Returns the best proof-capable peer for servicing a request.
+    ///
+    /// Selection order:
+    /// 1. **Primary**: verified peer with highest `latest_verified_slot` in [1, finalized_slot].
+    /// 2. **Secondary**: any peer (verified or not) with highest slot in [1, finalized_slot].
+    /// 3. **Tertiary**: any connected proof-capable peer (fallback for by-root / empty cache).
+    ///
+    /// Returns `None` if no connected peer has `ep = true` in their ENR.
+    pub fn find_best_proof_capable_peer(
+        &self,
+        peer_statuses: &HashMap<PeerId, CachedExecutionProofStatus>,
+    ) -> Option<PeerId> {
+        let finalized_slot = self
+            .chain
+            .canonical_head
+            .cached_head()
+            .finalized_checkpoint()
+            .epoch
+            .start_slot(T::EthSpec::slots_per_epoch())
+            .as_u64();
+
+        let db = self.network_globals().peers.read();
+        let candidates: Vec<PeerId> = db
+            .connected_peer_ids()
+            .filter(|peer_id| {
+                db.peer_info(peer_id)
+                    .and_then(|info| info.enr())
+                    .map(|enr| enr.execution_proof_enabled())
+                    .unwrap_or(false)
+            })
+            .copied()
+            .collect();
+        drop(db);
+
+        if candidates.is_empty() {
+            return None;
+        }
+
+        // Collect peers with a cached slot in [1, finalized_slot].
+        let with_slot: Vec<(PeerId, u64, bool)> = candidates
+            .iter()
+            .filter_map(|peer_id| {
+                let cached = peer_statuses.get(peer_id)?;
+                let slot = cached.status.latest_verified_slot;
+                if slot >= 1 && slot <= finalized_slot {
+                    Some((*peer_id, slot, cached.verified))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Primary: verified peer with highest slot.
+        let primary = with_slot
+            .iter()
+            .filter(|(_, _, verified)| *verified)
+            .max_by_key(|(_, slot, _)| *slot)
+            .map(|(peer_id, _, _)| *peer_id);
+
+        if primary.is_some() {
+            return primary;
+        }
+
+        // Secondary: any peer (verified or not) with highest slot.
+        let secondary = with_slot
+            .into_iter()
+            .max_by_key(|(_, slot, _)| *slot)
+            .map(|(peer_id, _, _)| peer_id);
+
+        // Tertiary: any proof-capable peer (fallback).
+        secondary.or_else(|| candidates.into_iter().next())
+    }
+
+    /// Returns the peer IDs of all currently connected proof-capable peers
+    /// (those with `ep = true` in their ENR).
+    pub fn connected_proof_capable_peers(&self) -> Vec<PeerId> {
+        let db = self.network_globals().peers.read();
+        db.connected_peer_ids()
+            .filter(|peer_id| {
+                db.peer_info(peer_id)
+                    .and_then(|info| info.enr())
+                    .map(|enr| enr.execution_proof_enabled())
+                    .unwrap_or(false)
+            })
+            .copied()
+            .collect()
+    }
+
     pub fn network_globals(&self) -> &NetworkGlobals<T::EthSpec> {
         &self.network_beacon_processor.network_globals
+    }
+
+    /// Returns true if the peer has `ep = true` in their ENR (proof-capable peer).
+    pub fn is_proof_capable_peer(&self, peer_id: &PeerId) -> bool {
+        self.network_globals()
+            .peers
+            .read()
+            .peer_info(peer_id)
+            .and_then(|info| info.enr())
+            .map(|enr| enr.execution_proof_enabled())
+            .unwrap_or(false)
     }
 
     /// Returns the Client type of the peer if known
@@ -558,6 +705,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             // execution proof requests are soft, fire-and-forget; not counted for load balancing
             execution_proofs_by_range_requests: _,
             execution_proofs_by_root_requests: _,
+            execution_proof_status_requests: _,
             execution_engine_state: _,
             network_beacon_processor: _,
             chain: _,

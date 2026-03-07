@@ -286,6 +286,9 @@ pub enum Protocol {
     /// The `ExecutionProofsByRoot` protocol name.
     #[strum(serialize = "execution_proofs_by_root")]
     ExecutionProofsByRoot,
+    /// The `ExecutionProofStatus` protocol name.
+    #[strum(serialize = "execution_proof_status")]
+    ExecutionProofStatus,
 }
 
 impl Protocol {
@@ -307,6 +310,7 @@ impl Protocol {
             Protocol::LightClientUpdatesByRange => None,
             Protocol::ExecutionProofsByRange => Some(ResponseTermination::ExecutionProofsByRange),
             Protocol::ExecutionProofsByRoot => Some(ResponseTermination::ExecutionProofsByRoot),
+            Protocol::ExecutionProofStatus => None,
         }
     }
 }
@@ -341,6 +345,7 @@ pub enum SupportedProtocol {
     LightClientUpdatesByRangeV1,
     ExecutionProofsByRangeV1,
     ExecutionProofsByRootV1,
+    ExecutionProofStatusV1,
 }
 
 impl SupportedProtocol {
@@ -367,6 +372,7 @@ impl SupportedProtocol {
             SupportedProtocol::LightClientUpdatesByRangeV1 => "1",
             SupportedProtocol::ExecutionProofsByRangeV1 => "1",
             SupportedProtocol::ExecutionProofsByRootV1 => "1",
+            SupportedProtocol::ExecutionProofStatusV1 => "1",
         }
     }
 
@@ -395,6 +401,7 @@ impl SupportedProtocol {
             SupportedProtocol::LightClientUpdatesByRangeV1 => Protocol::LightClientUpdatesByRange,
             SupportedProtocol::ExecutionProofsByRangeV1 => Protocol::ExecutionProofsByRange,
             SupportedProtocol::ExecutionProofsByRootV1 => Protocol::ExecutionProofsByRoot,
+            SupportedProtocol::ExecutionProofStatusV1 => Protocol::ExecutionProofStatus,
         }
     }
 
@@ -485,6 +492,10 @@ impl<E: EthSpec> UpgradeInfo for RPCProtocol<E> {
             ));
             supported_protocols.push(ProtocolId::new(
                 SupportedProtocol::ExecutionProofsByRootV1,
+                Encoding::SSZSnappy,
+            ));
+            supported_protocols.push(ProtocolId::new(
+                SupportedProtocol::ExecutionProofStatusV1,
                 Encoding::SSZSnappy,
             ));
         }
@@ -578,9 +589,9 @@ impl ProtocolId {
                 ExecutionProofsByRangeRequest::ssz_max_len(),
             ),
             // ExecutionProofsByRoot request is a list of block roots — same size limit as BlocksByRoot.
-            Protocol::ExecutionProofsByRoot => {
-                RpcLimits::new(0, spec.max_blocks_by_root_request)
-            }
+            Protocol::ExecutionProofsByRoot => RpcLimits::new(0, spec.max_blocks_by_root_request),
+            // ExecutionProofStatus request carries the local node's 40-byte status.
+            Protocol::ExecutionProofStatus => RpcLimits::new(40, 40),
         }
     }
 
@@ -626,6 +637,8 @@ impl ProtocolId {
                 SIGNED_EXECUTION_PROOF_MIN_SIZE,
                 SIGNED_EXECUTION_PROOF_MAX_SIZE,
             ),
+            // ExecutionProofStatus response is always 40 bytes fixed SSZ (u64 + Hash256).
+            Protocol::ExecutionProofStatus => RpcLimits::new(40, 40),
         }
     }
 
@@ -654,7 +667,8 @@ impl ProtocolId {
             | SupportedProtocol::GoodbyeV1
             // Execution proof types are not fork-dependent, no context bytes needed.
             | SupportedProtocol::ExecutionProofsByRangeV1
-            | SupportedProtocol::ExecutionProofsByRootV1 => false,
+            | SupportedProtocol::ExecutionProofsByRootV1
+            | SupportedProtocol::ExecutionProofStatusV1 => false,
         }
     }
 }
@@ -749,6 +763,7 @@ where
                 SupportedProtocol::LightClientFinalityUpdateV1 => {
                     Ok((RequestType::LightClientFinalityUpdate, socket))
                 }
+                // ExecutionProofStatus now carries a 40-byte body; fall through to normal decoder.
                 _ => {
                     match tokio::time::timeout(
                         Duration::from_secs(REQUEST_TIMEOUT),
@@ -784,6 +799,7 @@ pub enum RequestType<E: EthSpec> {
     LightClientUpdatesByRange(LightClientUpdatesByRangeRequest),
     ExecutionProofsByRange(ExecutionProofsByRangeRequest),
     ExecutionProofsByRoot(ExecutionProofsByRootRequest),
+    ExecutionProofStatus(ExecutionProofStatus),
     Ping(Ping),
     MetaData(MetadataRequest<E>),
 }
@@ -816,6 +832,7 @@ impl<E: EthSpec> RequestType<E> {
                 (req.block_roots.len() as u64)
                     .saturating_mul(MaxExecutionProofsPerPayload::to_u64())
             }
+            RequestType::ExecutionProofStatus(_) => 1,
         }
     }
 
@@ -857,6 +874,7 @@ impl<E: EthSpec> RequestType<E> {
             }
             RequestType::ExecutionProofsByRange(_) => SupportedProtocol::ExecutionProofsByRangeV1,
             RequestType::ExecutionProofsByRoot(_) => SupportedProtocol::ExecutionProofsByRootV1,
+            RequestType::ExecutionProofStatus(_) => SupportedProtocol::ExecutionProofStatusV1,
         }
     }
 
@@ -882,6 +900,7 @@ impl<E: EthSpec> RequestType<E> {
             RequestType::LightClientFinalityUpdate => unreachable!(),
             RequestType::LightClientOptimisticUpdate => unreachable!(),
             RequestType::LightClientUpdatesByRange(_) => unreachable!(),
+            RequestType::ExecutionProofStatus(_) => unreachable!(),
         }
     }
 
@@ -953,6 +972,10 @@ impl<E: EthSpec> RequestType<E> {
                 SupportedProtocol::ExecutionProofsByRootV1,
                 Encoding::SSZSnappy,
             )],
+            RequestType::ExecutionProofStatus(_) => vec![ProtocolId::new(
+                SupportedProtocol::ExecutionProofStatusV1,
+                Encoding::SSZSnappy,
+            )],
         }
     }
 
@@ -974,6 +997,7 @@ impl<E: EthSpec> RequestType<E> {
             RequestType::LightClientUpdatesByRange(_) => true,
             RequestType::ExecutionProofsByRange(_) => false,
             RequestType::ExecutionProofsByRoot(_) => false,
+            RequestType::ExecutionProofStatus(_) => true,
         }
     }
 }
@@ -1097,6 +1121,9 @@ impl<E: EthSpec> std::fmt::Display for RequestType<E> {
             }
             RequestType::ExecutionProofsByRange(req) => write!(f, "{}", req),
             RequestType::ExecutionProofsByRoot(req) => write!(f, "{}", req),
+            RequestType::ExecutionProofStatus(s) => {
+                write!(f, "ExecutionProofStatus(slot={})", s.latest_verified_slot)
+            }
         }
     }
 }

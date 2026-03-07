@@ -48,11 +48,12 @@ pub fn get_execution_proofs<T: BeaconChainTypes>(
         .as_ref()
         .ok_or_else(|| custom_server_error("Execution layer not available".to_string()))?;
 
-    let proof_engine = execution_layer
-        .proof_engine()
-        .ok_or_else(|| custom_bad_request(
-            "Proof engine not configured. Start with --proof-engine-endpoint to enable EIP-8025.".to_string(),
-        ))?;
+    let proof_engine = execution_layer.proof_engine().ok_or_else(|| {
+        custom_bad_request(
+            "Proof engine not configured. Start with --proof-engine-endpoint to enable EIP-8025."
+                .to_string(),
+        )
+    })?;
 
     // Get the block to retrieve its execution payload root
     let (block_root, execution_optimistic, finalized) = block_id.root(&chain)?;

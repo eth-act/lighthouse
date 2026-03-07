@@ -574,6 +574,16 @@ impl LightClientUpdatesByRangeRequest {
     }
 }
 
+/// The peer's current execution proof verification status, returned in response to an
+/// `ExecutionProofStatus` request.
+#[derive(Encode, Decode, Default, Copy, Clone, Debug, PartialEq)]
+pub struct ExecutionProofStatus {
+    /// The slot of the latest execution proof verified by this peer.
+    pub latest_verified_slot: u64,
+    /// The block root of the latest execution proof verified by this peer.
+    pub latest_verified_block_root: Hash256,
+}
+
 /// Request execution proofs for a slot range from a peer.
 #[derive(Encode, Decode, Clone, Debug, PartialEq)]
 pub struct ExecutionProofsByRangeRequest {
@@ -585,8 +595,8 @@ pub struct ExecutionProofsByRangeRequest {
 
 impl ExecutionProofsByRangeRequest {
     pub fn max_requested(&self) -> u64 {
-        use types::execution::eip8025::MaxExecutionProofsPerPayload;
         use typenum::Unsigned;
+        use types::execution::eip8025::MaxExecutionProofsPerPayload;
         self.count
             .saturating_mul(MaxExecutionProofsPerPayload::to_u64())
     }
@@ -690,6 +700,9 @@ pub enum RpcSuccessResponse<E: EthSpec> {
 
     /// A response to a META_DATA request.
     MetaData(Arc<MetaData<E>>),
+
+    /// A response to an EXECUTION_PROOF_STATUS request.
+    ExecutionProofStatus(ExecutionProofStatus),
 }
 
 /// Indicates which response is being terminated by a stream termination response.
@@ -839,6 +852,7 @@ impl<E: EthSpec> RpcSuccessResponse<E> {
             RpcSuccessResponse::LightClientUpdatesByRange(_) => Protocol::LightClientUpdatesByRange,
             RpcSuccessResponse::ExecutionProofsByRange(_) => Protocol::ExecutionProofsByRange,
             RpcSuccessResponse::ExecutionProofsByRoot(_) => Protocol::ExecutionProofsByRoot,
+            RpcSuccessResponse::ExecutionProofStatus(_) => Protocol::ExecutionProofStatus,
         }
     }
 
@@ -859,7 +873,8 @@ impl<E: EthSpec> RpcSuccessResponse<E> {
             | Self::Status(_)
             | Self::Pong(_)
             | Self::ExecutionProofsByRange(_)
-            | Self::ExecutionProofsByRoot(_) => None,
+            | Self::ExecutionProofsByRoot(_)
+            | Self::ExecutionProofStatus(_) => None,
         }
     }
 }
@@ -960,6 +975,9 @@ impl<E: EthSpec> std::fmt::Display for RpcSuccessResponse<E> {
                     "ExecutionProofsByRoot: validator_index: {}",
                     proof.validator_index
                 )
+            }
+            RpcSuccessResponse::ExecutionProofStatus(s) => {
+                write!(f, "ExecutionProofStatus: slot={}", s.latest_verified_slot)
             }
         }
     }

@@ -14,12 +14,13 @@ use bls::SignatureBytes;
 use execution_layer::MissingProofInfo;
 use lighthouse_network::rpc::RequestType;
 use lighthouse_network::rpc::methods::{
-    BlobsByRangeRequest, DataColumnsByRangeRequest, OldBlocksByRangeRequest,
+    BlobsByRangeRequest, DataColumnsByRangeRequest, ExecutionProofStatus, OldBlocksByRangeRequest,
     OldBlocksByRangeRequestV2, StatusMessageV2,
 };
 use lighthouse_network::service::api_types::{
     AppRequestId, BlobsByRangeRequestId, BlocksByRangeRequestId, DataColumnsByRangeRequestId,
-    ExecutionProofsByRangeRequestId, ExecutionProofsByRootRequestId, SyncRequestId,
+    ExecutionProofStatusRequestId, ExecutionProofsByRangeRequestId, ExecutionProofsByRootRequestId,
+    SyncRequestId,
 };
 use lighthouse_network::{PeerId, SyncInfo};
 use std::sync::Arc;
@@ -403,6 +404,36 @@ impl TestRig {
         });
     }
 
+    /// Find an outbound `ExecutionProofStatus` RPC request; returns `(request_id, peer_id)`.
+    fn find_execution_proof_status_request(&mut self) -> (ExecutionProofStatusRequestId, PeerId) {
+        self.pop_received_network_event(|ev| match ev {
+            NetworkMessage::SendRequest {
+                peer_id,
+                request: RequestType::ExecutionProofStatus(_),
+                app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofStatus(id)),
+            } => Some((*id, *peer_id)),
+            _ => None,
+        })
+        .unwrap_or_else(|e| panic!("Expected ExecutionProofStatus request: {e:?}"))
+    }
+
+    /// Drain all pending `ExecutionProofStatus` outbound requests from the network queue.
+    ///
+    /// Called after `start_proof_sync()` (or `bootstrap_proof_sync_to_fill_mode()`) to
+    /// prevent those requests from leaking into assertions in the caller.
+    fn drain_execution_proof_status_requests(&mut self) {
+        self.drain_network_rx();
+        self.network_rx_queue.retain(|ev| {
+            !matches!(
+                ev,
+                NetworkMessage::SendRequest {
+                    request: RequestType::ExecutionProofStatus(_),
+                    ..
+                }
+            )
+        });
+    }
+
     fn find_and_complete_processing_chain_segment(&mut self, id: ChainSegmentProcessId) {
         self.pop_received_processor_event(|ev| {
             (ev.work_type() == WorkType::ChainSegment).then_some(())
@@ -702,6 +733,8 @@ fn bootstrap_proof_sync_to_fill_mode(
     rig.sync_manager.start_proof_sync();
     rig.sync_manager.poll_proof_sync();
     let (req_id, peer_id) = rig.find_execution_proofs_by_range_request();
+    // Discard any ExecutionProofStatus requests that start() sent to proof-capable peers.
+    rig.drain_execution_proof_status_requests();
     rig.terminate_execution_proofs_by_range(req_id, peer_id);
     assert_eq!(
         rig.sync_manager.proof_sync_state(),
@@ -798,6 +831,8 @@ fn test_proof_sync_in_flight_poll_is_noop() {
     rig.sync_manager.start_proof_sync();
     rig.sync_manager.poll_proof_sync();
     let _ = rig.find_execution_proofs_by_range_request();
+    // Discard the ExecutionProofStatus request emitted by start().
+    rig.drain_execution_proof_status_requests();
     assert_eq!(
         rig.sync_manager.proof_sync_state(),
         ProofSyncState::RangeRequestInFlight
@@ -1155,4 +1190,128 @@ fn test_proof_sync_root_response_forwarded_to_processor() {
         (ev.work_type() == WorkType::GossipExecutionProof).then_some(())
     })
     .unwrap_or_else(|e| panic!("Expected GossipExecutionProof work event: {e:?}"));
+}
+
+/// Test 18: A peer that claims an implausible block root (slot we have, wrong root)
+/// must be ignored — the cache must remain empty.
+#[test]
+fn test_implausible_block_root_ignored() {
+    let mut rig = TestRig::test_setup();
+    let proof_peer = rig.new_connected_proof_capable_peer();
+
+    // start() sends a status request to the proof-capable peer; capture it.
+    rig.sync_manager.start_proof_sync();
+    let (id, _) = rig.find_execution_proof_status_request();
+
+    // Respond: slot=0 (genesis — we definitely have it), but a wrong block root.
+    rig.send_sync_message(SyncMessage::RpcExecutionProofStatus {
+        peer_id: proof_peer,
+        request_id: Some(id),
+        status: ExecutionProofStatus {
+            latest_verified_slot: 0,
+            latest_verified_block_root: Hash256::random(),
+        },
+    });
+
+    assert!(
+        !rig.sync_manager.peer_status_cached(&proof_peer),
+        "Peer with implausible block root must not be cached"
+    );
+}
+
+/// Test 19: A peer that claims a slot ahead of our head is cached optimistically
+/// with `verified = false`.
+#[test]
+fn test_optimistic_caching_for_ahead_peer() {
+    let mut rig = TestRig::test_setup();
+    let proof_peer = rig.new_connected_proof_capable_peer();
+
+    // best_slot() == 0 at genesis; slot 999 is well ahead of our head.
+    rig.send_sync_message(SyncMessage::RpcExecutionProofStatus {
+        peer_id: proof_peer,
+        request_id: None, // inbound (peer-initiated)
+        status: ExecutionProofStatus {
+            latest_verified_slot: 999,
+            latest_verified_block_root: Hash256::random(),
+        },
+    });
+
+    assert!(
+        rig.sync_manager.peer_status_cached(&proof_peer),
+        "Ahead-of-head peer should be cached optimistically"
+    );
+    assert_eq!(
+        rig.sync_manager.peer_status_verified_flag(&proof_peer),
+        Some(false),
+        "Ahead-of-head peer must be cached as unverified"
+    );
+}
+
+/// Test 20: `start()` re-requests status for a peer whose cached entry is unverified.
+///
+/// `needs_refresh()` returns `true` for unverified entries, so a subsequent `start()`
+/// should issue a fresh `ExecutionProofStatus` request for that peer.
+#[test]
+fn test_start_refreshes_unverified_entries() {
+    let mut rig = TestRig::test_setup();
+    let proof_peer = rig.new_connected_proof_capable_peer();
+
+    // First start(): sends a status request.
+    rig.sync_manager.start_proof_sync();
+    let (id1, _) = rig.find_execution_proof_status_request();
+
+    // Respond with an optimistic (unverified) status: slot ahead of our head.
+    rig.send_sync_message(SyncMessage::RpcExecutionProofStatus {
+        peer_id: proof_peer,
+        request_id: Some(id1),
+        status: ExecutionProofStatus {
+            latest_verified_slot: 999,
+            latest_verified_block_root: Hash256::random(),
+        },
+    });
+    assert_eq!(
+        rig.sync_manager.peer_status_verified_flag(&proof_peer),
+        Some(false),
+        "Entry should be unverified after optimistic caching"
+    );
+
+    // Pause and restart — start() must re-request because the entry is unverified.
+    rig.sync_manager.pause_proof_sync();
+    rig.sync_manager.start_proof_sync();
+
+    // If this succeeds, start() issued a fresh status request for the unverified peer.
+    let (_id2, peer2) = rig.find_execution_proof_status_request();
+    assert_eq!(
+        peer2, proof_peer,
+        "New status request should target the same proof peer"
+    );
+}
+
+/// Test 21: An inbound `ExecutionProofStatus` (peer-initiated, `request_id = None`)
+/// populates the proof-sync peer cache exactly as an outbound response does.
+#[test]
+fn test_inbound_status_populates_cache() {
+    let mut rig = TestRig::test_setup();
+    let proof_peer = rig.new_connected_proof_capable_peer();
+
+    // Simulate a peer-initiated status exchange: the peer sends us their status.
+    rig.send_sync_message(SyncMessage::RpcExecutionProofStatus {
+        peer_id: proof_peer,
+        request_id: None,
+        status: ExecutionProofStatus {
+            latest_verified_slot: 42,
+            latest_verified_block_root: Hash256::random(),
+        },
+    });
+
+    assert!(
+        rig.sync_manager.peer_status_cached(&proof_peer),
+        "Inbound status must populate the cache"
+    );
+    // Slot 42 > best_slot(0) → optimistically cached as unverified.
+    assert_eq!(
+        rig.sync_manager.peer_status_verified_flag(&proof_peer),
+        Some(false),
+        "Slot ahead of head must be cached as unverified"
+    );
 }

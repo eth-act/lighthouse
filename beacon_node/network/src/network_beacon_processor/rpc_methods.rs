@@ -1354,8 +1354,11 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
             "Received ExecutionProofsByRange Request"
         );
 
-        let block_roots =
-            self.get_block_roots_for_slot_range(req.start_slot, req.count, "ExecutionProofsByRange")?;
+        let block_roots = self.get_block_roots_for_slot_range(
+            req.start_slot,
+            req.count,
+            "ExecutionProofsByRange",
+        )?;
 
         let mut proofs_sent = 0usize;
         for block_root in block_roots {

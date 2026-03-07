@@ -99,6 +99,7 @@ pub struct RateLimiterConfig {
     pub(super) light_client_updates_by_range_quota: Quota,
     pub(super) execution_proofs_by_range_quota: Quota,
     pub(super) execution_proofs_by_root_quota: Quota,
+    pub(super) execution_proof_status_quota: Quota,
 }
 
 impl RateLimiterConfig {
@@ -133,6 +134,8 @@ impl RateLimiterConfig {
         Quota::n_every(NonZeroU64::new(128).unwrap(), 10);
     pub const DEFAULT_EXECUTION_PROOFS_BY_ROOT_QUOTA: Quota =
         Quota::n_every(NonZeroU64::new(128).unwrap(), 10);
+    pub const DEFAULT_EXECUTION_PROOF_STATUS_QUOTA: Quota =
+        Quota::n_every(NonZeroU64::new(5).unwrap(), 15);
 }
 
 impl Default for RateLimiterConfig {
@@ -155,6 +158,7 @@ impl Default for RateLimiterConfig {
             light_client_updates_by_range_quota: Self::DEFAULT_LIGHT_CLIENT_UPDATES_BY_RANGE_QUOTA,
             execution_proofs_by_range_quota: Self::DEFAULT_EXECUTION_PROOFS_BY_RANGE_QUOTA,
             execution_proofs_by_root_quota: Self::DEFAULT_EXECUTION_PROOFS_BY_ROOT_QUOTA,
+            execution_proof_status_quota: Self::DEFAULT_EXECUTION_PROOF_STATUS_QUOTA,
         }
     }
 }
@@ -216,6 +220,7 @@ impl FromStr for RateLimiterConfig {
         let mut light_client_updates_by_range_quota = None;
         let mut execution_proofs_by_range_quota = None;
         let mut execution_proofs_by_root_quota = None;
+        let mut execution_proof_status_quota = None;
 
         for proto_def in s.split(';') {
             let ProtocolQuota { protocol, quota } = proto_def.parse()?;
@@ -256,6 +261,9 @@ impl FromStr for RateLimiterConfig {
                 Protocol::ExecutionProofsByRoot => {
                     execution_proofs_by_root_quota = execution_proofs_by_root_quota.or(quota)
                 }
+                Protocol::ExecutionProofStatus => {
+                    execution_proof_status_quota = execution_proof_status_quota.or(quota)
+                }
             }
         }
         Ok(RateLimiterConfig {
@@ -286,6 +294,8 @@ impl FromStr for RateLimiterConfig {
                 .unwrap_or(Self::DEFAULT_EXECUTION_PROOFS_BY_RANGE_QUOTA),
             execution_proofs_by_root_quota: execution_proofs_by_root_quota
                 .unwrap_or(Self::DEFAULT_EXECUTION_PROOFS_BY_ROOT_QUOTA),
+            execution_proof_status_quota: execution_proof_status_quota
+                .unwrap_or(Self::DEFAULT_EXECUTION_PROOF_STATUS_QUOTA),
         })
     }
 }
