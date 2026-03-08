@@ -1208,8 +1208,8 @@ fn test_implausible_block_root_ignored() {
         peer_id: proof_peer,
         request_id: Some(id),
         status: ExecutionProofStatus {
-            latest_verified_slot: 0,
-            latest_verified_block_root: Hash256::random(),
+            slot: 0,
+            block_root: Hash256::random(),
         },
     });
 
@@ -1231,8 +1231,8 @@ fn test_optimistic_caching_for_ahead_peer() {
         peer_id: proof_peer,
         request_id: None, // inbound (peer-initiated)
         status: ExecutionProofStatus {
-            latest_verified_slot: 999,
-            latest_verified_block_root: Hash256::random(),
+            slot: 999,
+            block_root: Hash256::random(),
         },
     });
 
@@ -1265,8 +1265,8 @@ fn test_start_refreshes_unverified_entries() {
         peer_id: proof_peer,
         request_id: Some(id1),
         status: ExecutionProofStatus {
-            latest_verified_slot: 999,
-            latest_verified_block_root: Hash256::random(),
+            slot: 999,
+            block_root: Hash256::random(),
         },
     });
     assert_eq!(
@@ -1299,8 +1299,8 @@ fn test_inbound_status_populates_cache() {
         peer_id: proof_peer,
         request_id: None,
         status: ExecutionProofStatus {
-            latest_verified_slot: 42,
-            latest_verified_block_root: Hash256::random(),
+            slot: 42,
+            block_root: Hash256::random(),
         },
     });
 

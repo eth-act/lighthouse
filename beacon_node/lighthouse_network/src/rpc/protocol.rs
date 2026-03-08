@@ -590,8 +590,11 @@ impl ProtocolId {
             ),
             // ExecutionProofsByRoot request is a list of block roots — same size limit as BlocksByRoot.
             Protocol::ExecutionProofsByRoot => RpcLimits::new(0, spec.max_blocks_by_root_request),
-            // ExecutionProofStatus request carries the local node's 40-byte status.
-            Protocol::ExecutionProofStatus => RpcLimits::new(40, 40),
+            // ExecutionProofStatus request carries the local node's status.
+            Protocol::ExecutionProofStatus => RpcLimits::new(
+                ExecutionProofStatus::ssz_fixed_len(),
+                ExecutionProofStatus::ssz_fixed_len(),
+            ),
         }
     }
 
@@ -637,8 +640,11 @@ impl ProtocolId {
                 SIGNED_EXECUTION_PROOF_MIN_SIZE,
                 SIGNED_EXECUTION_PROOF_MAX_SIZE,
             ),
-            // ExecutionProofStatus response is always 40 bytes fixed SSZ (u64 + Hash256).
-            Protocol::ExecutionProofStatus => RpcLimits::new(40, 40),
+            // ExecutionProofStatus response is fixed-size SSZ.
+            Protocol::ExecutionProofStatus => RpcLimits::new(
+                ExecutionProofStatus::ssz_fixed_len(),
+                ExecutionProofStatus::ssz_fixed_len(),
+            ),
         }
     }
 
@@ -1122,7 +1128,7 @@ impl<E: EthSpec> std::fmt::Display for RequestType<E> {
             RequestType::ExecutionProofsByRange(req) => write!(f, "{}", req),
             RequestType::ExecutionProofsByRoot(req) => write!(f, "{}", req),
             RequestType::ExecutionProofStatus(s) => {
-                write!(f, "ExecutionProofStatus(slot={})", s.latest_verified_slot)
+                write!(f, "ExecutionProofStatus(slot={})", s.slot)
             }
         }
     }

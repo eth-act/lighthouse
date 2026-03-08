@@ -134,7 +134,7 @@ pub const EXECUTION_PROOF_STATUS_REFRESH_THRESHOLD: std::time::Duration =
 pub struct CachedExecutionProofStatus {
     pub status: ExecutionProofStatus,
     pub timestamp: std::time::Instant,
-    /// `true` if `status.latest_verified_block_root` was confirmed against our local chain.
+    /// `true` if `status.block_root` was confirmed against our local chain.
     /// `false` if the peer's claimed slot was ahead of our head at cache time (optimistic).
     pub verified: bool,
 }
@@ -438,14 +438,12 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
     /// Send a `ExecutionProofsByRange` request to the given proof-capable peer.
     ///
     /// Callers should use `find_best_proof_capable_peer` to select the peer first.
-    /// Returns `Err(NoPeer)` if `peer_id` is `None`. Callers treat this as a soft failure.
     pub fn request_execution_proofs_by_range(
         &mut self,
-        peer_id: Option<PeerId>,
+        peer_id: PeerId,
         start_slot: Slot,
         count: u64,
     ) -> Result<ExecutionProofsByRangeRequestId, RpcRequestSendError> {
-        let peer_id = peer_id.ok_or(RpcRequestSendError::NoPeer(NoPeerError::ProofPeer))?;
         let id = ExecutionProofsByRangeRequestId { id: self.next_id() };
         let request = ExecutionProofsByRangeRequest {
             start_slot: start_slot.as_u64(),
@@ -473,13 +471,11 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
     /// Send a `ExecutionProofsByRoot` request for `block_root` to the given proof-capable peer.
     ///
     /// Callers should use `find_best_proof_capable_peer` to select the peer first.
-    /// Returns `Err(NoPeer)` if `peer_id` is `None`. Callers treat this as a soft failure.
     pub fn request_execution_proofs_by_root(
         &mut self,
-        peer_id: Option<PeerId>,
+        peer_id: PeerId,
         block_root: Hash256,
     ) -> Result<ExecutionProofsByRootRequestId, RpcRequestSendError> {
-        let peer_id = peer_id.ok_or(RpcRequestSendError::NoPeer(NoPeerError::ProofPeer))?;
         let max_request_blocks = self
             .chain
             .spec
@@ -553,7 +549,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
     /// Returns the best proof-capable peer for servicing a request.
     ///
     /// Selection order:
-    /// 1. **Primary**: verified peer with highest `latest_verified_slot` in [1, finalized_slot].
+    /// 1. **Primary**: verified peer with highest `slot` in [1, finalized_slot].
     /// 2. **Secondary**: any peer (verified or not) with highest slot in [1, finalized_slot].
     /// 3. **Tertiary**: any connected proof-capable peer (fallback for by-root / empty cache).
     ///
@@ -593,7 +589,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             .iter()
             .filter_map(|peer_id| {
                 let cached = peer_statuses.get(peer_id)?;
-                let slot = cached.status.latest_verified_slot;
+                let slot = cached.status.slot;
                 if slot >= 1 && slot <= finalized_slot {
                     Some((*peer_id, slot, cached.verified))
                 } else {

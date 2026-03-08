@@ -179,7 +179,10 @@ impl<T: BeaconChainTypes> ProofSync<T> {
                     self.in_flight.values().map(|i| i.root).collect();
                 let available = self.max_concurrent.saturating_sub(self.in_flight.len());
 
-                let peer_id = cx.find_best_proof_capable_peer(&self.peer_execution_proof_statuses);
+                let Some(peer_id) = cx.find_best_proof_capable_peer(&self.peer_execution_proof_statuses) else {
+                    debug!("ProofSync: no proof-capable peer, will retry next poll");
+                    return;
+                };
                 for info in missing
                     .into_iter()
                     .filter(|info| !in_flight_roots.contains(&info.root))
@@ -193,10 +196,6 @@ impl<T: BeaconChainTypes> ProofSync<T> {
                                 "ProofSync: requesting missing proof"
                             );
                             self.in_flight.insert(id, info);
-                        }
-                        Err(RpcRequestSendError::NoPeer(_)) => {
-                            debug!("ProofSync: no proof-capable peer, will retry next poll");
-                            break;
                         }
                         Err(e) => {
                             debug!(error = ?e, "ProofSync: failed to send proof request");
@@ -271,24 +270,24 @@ impl<T: BeaconChainTypes> ProofSync<T> {
 
         debug!(
             %peer_id,
-            slot = status.latest_verified_slot,
-            block_root = %status.latest_verified_block_root,
+            slot = status.slot,
+            block_root = %status.block_root,
             "ProofSync: received ExecutionProofStatus"
         );
 
         // Verify the peer's claimed block root against our local chain.
         let best_slot = self.chain.best_slot();
-        let verified = if status.latest_verified_slot <= best_slot.as_u64() {
+        let verified = if status.slot <= best_slot.as_u64() {
             // We have (or should have) this slot — verify the block root.
             match self.chain.block_root_at_slot(
-                Slot::new(status.latest_verified_slot),
+                Slot::new(status.slot),
                 WhenSlotSkipped::None,
             ) {
-                Ok(Some(root)) if root == status.latest_verified_block_root => true,
+                Ok(Some(root)) if root == status.block_root => true,
                 _ => {
                     debug!(
                         %peer_id,
-                        slot = status.latest_verified_slot,
+                        slot = status.slot,
                         "ProofSync: peer block root mismatch, ignoring status"
                     );
                     return;
@@ -345,7 +344,11 @@ impl<T: BeaconChainTypes> ProofSync<T> {
         }
         let count = current_slot.as_u64() - start_slot.as_u64() + 1;
 
-        let peer_id = cx.find_best_proof_capable_peer(&self.peer_execution_proof_statuses);
+        let Some(peer_id) = cx.find_best_proof_capable_peer(&self.peer_execution_proof_statuses) else {
+            debug!("ProofSync: no proof-capable peer for range request, will retry next poll");
+            // State stays PendingRangeRequest.
+            return;
+        };
         match cx.request_execution_proofs_by_range(peer_id, start_slot, count) {
             Ok(id) => {
                 debug!(
@@ -356,10 +359,6 @@ impl<T: BeaconChainTypes> ProofSync<T> {
                 );
                 self.range_request_id = Some(id);
                 self.state = ProofSyncState::RangeRequestInFlight;
-            }
-            Err(RpcRequestSendError::NoPeer(_)) => {
-                debug!("ProofSync: no proof-capable peer for range request, will retry next poll");
-                // State stays PendingRangeRequest.
             }
             Err(e) => {
                 debug!(error = ?e, "ProofSync: range request error");

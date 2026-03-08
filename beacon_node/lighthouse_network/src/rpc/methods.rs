@@ -578,10 +578,10 @@ impl LightClientUpdatesByRangeRequest {
 /// `ExecutionProofStatus` request.
 #[derive(Encode, Decode, Default, Copy, Clone, Debug, PartialEq)]
 pub struct ExecutionProofStatus {
-    /// The slot of the latest execution proof verified by this peer.
-    pub latest_verified_slot: u64,
-    /// The block root of the latest execution proof verified by this peer.
-    pub latest_verified_block_root: Hash256,
+    /// The block root of the latest block verified by this peer.
+    pub block_root: Hash256,
+    /// The slot of the latest block verified by this peer.
+    pub slot: u64,
 }
 
 /// Request execution proofs for a slot range from a peer.
@@ -977,7 +977,7 @@ impl<E: EthSpec> std::fmt::Display for RpcSuccessResponse<E> {
                 )
             }
             RpcSuccessResponse::ExecutionProofStatus(s) => {
-                write!(f, "ExecutionProofStatus: slot={}", s.latest_verified_slot)
+                write!(f, "ExecutionProofStatus: slot={}", s.slot)
             }
         }
     }

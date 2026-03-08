@@ -133,11 +133,6 @@ pub fn verify_signed_execution_proof_signature<E: EthSpec>(
     genesis_validators_root: Hash256,
     spec: &ChainSpec,
 ) -> Result<(), BeaconChainError> {
-    // Check that the fork supports EIP-8025 (Fulu and later)
-    if fork_name < ForkName::Fulu {
-        Err(ExecutionProofError::UnsupportedFork)?;
-    }
-
     // Check proof data is not empty
     if signed_proof.message.proof_data.is_empty() {
         Err(ExecutionProofError::EmptyProofData)?;
@@ -304,39 +299,6 @@ mod tests {
             result,
             Err(BeaconChainError::ExecutionProofError(
                 ExecutionProofError::EmptyProofData
-            ))
-        ));
-    }
-
-    #[test]
-    fn test_verify_unsupported_fork() {
-        let keypair = Keypair::random();
-        let spec = MainnetEthSpec::default_spec();
-        let genesis_validators_root = Hash256::repeat_byte(0xcd);
-        let proof = create_test_proof(vec![1, 2, 3, 4]);
-
-        // Use Electra spec (pre-Fulu, EIP-8025 not enabled)
-        let electra_spec = ForkName::Electra.make_genesis_spec(spec.clone());
-        let signed = sign_proof(
-            &proof,
-            &keypair,
-            ForkName::Electra,
-            genesis_validators_root,
-            &electra_spec,
-        );
-
-        let result = verify_signed_execution_proof_signature::<MainnetEthSpec>(
-            &signed,
-            &keypair.pk.compress(),
-            ForkName::Electra, // Pre-Fulu fork
-            genesis_validators_root,
-            &electra_spec,
-        );
-
-        assert!(matches!(
-            result,
-            Err(BeaconChainError::ExecutionProofError(
-                ExecutionProofError::UnsupportedFork
             ))
         ));
     }
