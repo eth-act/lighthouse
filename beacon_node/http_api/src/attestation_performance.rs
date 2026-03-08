@@ -32,6 +32,7 @@ impl From<BeaconStateError> for AttestationPerformanceError {
     }
 }
 
+#[allow(clippy::result_large_err)]
 pub fn get_attestation_performance<T: BeaconChainTypes>(
     target: String,
     query: AttestationPerformanceQuery,

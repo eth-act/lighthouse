@@ -115,6 +115,14 @@ Options:
       --network <network>
           Name of the Eth2 chain Lighthouse will sync and follow. [possible
           values: mainnet, gnosis, chiado, sepolia, holesky, hoodi]
+      --proof-engine-endpoint <HTTP-JSON-RPC-URL>
+          URL of the proof engine HTTP JSON-RPC endpoint for EIP-8025 execution
+          proofs. When set, the validator client will proactively monitor for
+          new blocks and request execution proofs from this endpoint.
+      --proof-types <TYPES>
+          Comma-separated list of proof type identifiers to request from the
+          proof engine (e.g., 0,1,2). If not specified, defaults to all
+          available types.
       --proposer-nodes <NETWORK_ADDRESSES>
           Comma-separated addresses to one or more beacon node HTTP APIs. These
           specify nodes that are used to send beacon block proposals. A failure

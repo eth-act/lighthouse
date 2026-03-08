@@ -1164,6 +1164,7 @@ async fn payload_preparation_before_transition_block() {
 }
 
 #[tokio::test]
+#[allow(clippy::result_large_err)]
 async fn attesting_to_optimistic_head() {
     let mut rig = InvalidPayloadRig::new();
     rig.move_to_terminal_block();
