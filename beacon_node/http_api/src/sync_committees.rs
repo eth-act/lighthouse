@@ -147,6 +147,7 @@ fn verify_unknown_validators<T: BeaconChainTypes>(
     duties
         .into_iter()
         .map(|res| {
+            #[allow(clippy::result_large_err)]
             res.or_else(|err| {
                 // Make sure the validator is really unknown w.r.t. the request_epoch
                 if let BeaconStateError::UnknownValidator(idx) = err {

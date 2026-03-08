@@ -151,6 +151,7 @@ fn compute_historic_attester_duties<T: BeaconChainTypes>(
     let duties = request_indices
         .iter()
         .map(|&validator_index| {
+            #[allow(clippy::result_large_err)]
             state
                 .get_attestation_duties(validator_index as usize, relative_epoch)
                 .map_err(BeaconChainError::from)

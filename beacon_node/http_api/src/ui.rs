@@ -36,27 +36,30 @@ pub fn get_validator_count<T: BeaconChainTypes>(
 
     chain
         .with_head(|head| {
-            let state = &head.beacon_state;
-            let epoch = state.current_epoch();
-            for validator in state.validators() {
-                let status =
-                    ValidatorStatus::from_validator(validator, epoch, spec.far_future_epoch);
+            #[allow(clippy::result_large_err)]
+            {
+                let state = &head.beacon_state;
+                let epoch = state.current_epoch();
+                for validator in state.validators() {
+                    let status =
+                        ValidatorStatus::from_validator(validator, epoch, spec.far_future_epoch);
 
-                match status {
-                    ValidatorStatus::ActiveOngoing => active_ongoing += 1,
-                    ValidatorStatus::ActiveExiting => active_exiting += 1,
-                    ValidatorStatus::ActiveSlashed => active_slashed += 1,
-                    ValidatorStatus::PendingInitialized => pending_initialized += 1,
-                    ValidatorStatus::PendingQueued => pending_queued += 1,
-                    ValidatorStatus::WithdrawalPossible => withdrawal_possible += 1,
-                    ValidatorStatus::WithdrawalDone => withdrawal_done += 1,
-                    ValidatorStatus::ExitedUnslashed => exited_unslashed += 1,
-                    ValidatorStatus::ExitedSlashed => exited_slashed += 1,
-                    // Since we are not invoking `superset`, all other variants will be 0.
-                    _ => (),
+                    match status {
+                        ValidatorStatus::ActiveOngoing => active_ongoing += 1,
+                        ValidatorStatus::ActiveExiting => active_exiting += 1,
+                        ValidatorStatus::ActiveSlashed => active_slashed += 1,
+                        ValidatorStatus::PendingInitialized => pending_initialized += 1,
+                        ValidatorStatus::PendingQueued => pending_queued += 1,
+                        ValidatorStatus::WithdrawalPossible => withdrawal_possible += 1,
+                        ValidatorStatus::WithdrawalDone => withdrawal_done += 1,
+                        ValidatorStatus::ExitedUnslashed => exited_unslashed += 1,
+                        ValidatorStatus::ExitedSlashed => exited_slashed += 1,
+                        // Since we are not invoking `superset`, all other variants will be 0.
+                        _ => (),
+                    }
                 }
+                Ok::<(), BeaconChainError>(())
             }
-            Ok::<(), BeaconChainError>(())
         })
         .map_err(unhandled_error)?;
 

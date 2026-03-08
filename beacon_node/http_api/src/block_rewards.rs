@@ -46,7 +46,10 @@ pub fn get_block_rewards<T: BeaconChainTypes>(
     // to cache states so that future calls are faster.
     let mut state = chain
         .get_state(&state_root, Some(prior_slot), true)
-        .and_then(|maybe_state| maybe_state.ok_or(BeaconChainError::MissingBeaconState(state_root)))
+        .and_then(|maybe_state| {
+            #[allow(clippy::result_large_err)]
+            maybe_state.ok_or(BeaconChainError::MissingBeaconState(state_root))
+        })
         .map_err(unhandled_error)?;
 
     state
@@ -58,6 +61,7 @@ pub fn get_block_rewards<T: BeaconChainTypes>(
 
     let block_replayer = BlockReplayer::new(state, &chain.spec)
         .pre_block_hook(Box::new(|state, block| {
+            #[allow(clippy::result_large_err)]
             state.build_all_committee_caches(&chain.spec)?;
 
             // Compute block reward.
