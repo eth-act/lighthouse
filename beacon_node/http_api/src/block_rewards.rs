@@ -12,6 +12,7 @@ use warp_utils::reject::{beacon_state_error, custom_bad_request, unhandled_error
 const STATE_CACHE_SIZE: NonZeroUsize = new_non_zero_usize(2);
 
 /// Fetch block rewards for blocks from the canonical chain.
+#[allow(clippy::result_large_err)]
 pub fn get_block_rewards<T: BeaconChainTypes>(
     query: BlockRewardsQuery,
     chain: Arc<BeaconChain<T>>,

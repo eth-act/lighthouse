@@ -101,6 +101,7 @@ pub type CustodyByRootResult<T> =
     Result<(DataColumnSidecarList<T>, PeerGroup, Duration), RpcResponseError>;
 
 #[derive(Debug)]
+#[allow(clippy::enum_variant_names)]
 pub enum RpcResponseError {
     RpcError(#[allow(dead_code)] RPCError),
     VerifyError(LookupVerifyError),
@@ -119,6 +120,7 @@ pub enum RpcRequestSendError {
 
 /// Type of peer missing that caused a `RpcRequestSendError::NoPeers`
 #[derive(Debug, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)]
 pub enum NoPeerError {
     BlockPeer,
     CustodyPeer(ColumnIndex),

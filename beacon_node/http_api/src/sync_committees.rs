@@ -136,6 +136,7 @@ fn duties_from_state_load<T: BeaconChainTypes>(
     }
 }
 
+#[allow(clippy::result_large_err)]
 fn verify_unknown_validators<T: BeaconChainTypes>(
     duties: Vec<Result<Option<SyncDuty>, BeaconStateError>>,
     request_epoch: Epoch,

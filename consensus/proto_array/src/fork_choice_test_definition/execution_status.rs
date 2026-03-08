@@ -1,5 +1,6 @@
 use super::*;
 
+#[allow(clippy::vec_init_then_push)]
 pub fn get_execution_status_test_definition_01() -> ForkChoiceTestDefinition {
     let balances = vec![1; 2];
     let mut ops = vec![];
@@ -402,6 +403,7 @@ pub fn get_execution_status_test_definition_01() -> ForkChoiceTestDefinition {
     }
 }
 
+#[allow(clippy::vec_init_then_push)]
 pub fn get_execution_status_test_definition_02() -> ForkChoiceTestDefinition {
     let balances = vec![1; 2];
     let mut ops = vec![];
@@ -766,6 +768,7 @@ pub fn get_execution_status_test_definition_02() -> ForkChoiceTestDefinition {
     }
 }
 
+#[allow(clippy::vec_init_then_push)]
 pub fn get_execution_status_test_definition_03() -> ForkChoiceTestDefinition {
     let balances = vec![1_000; 2_000];
     let mut ops = vec![];

@@ -236,6 +236,7 @@ impl<E: EthSpec> PackingEfficiencyHandler<E> {
     }
 }
 
+#[allow(clippy::result_large_err)]
 pub fn get_block_packing_efficiency<T: BeaconChainTypes>(
     query: BlockPackingEfficiencyQuery,
     chain: Arc<BeaconChain<T>>,

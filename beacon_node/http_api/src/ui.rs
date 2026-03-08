@@ -20,6 +20,7 @@ pub struct ValidatorCountResponse {
     pub exited_slashed: u64,
 }
 
+#[allow(clippy::result_large_err)]
 pub fn get_validator_count<T: BeaconChainTypes>(
     chain: Arc<BeaconChain<T>>,
 ) -> Result<ValidatorCountResponse, warp::Rejection> {
