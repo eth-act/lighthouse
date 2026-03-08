@@ -178,7 +178,6 @@ impl<T: BeaconChainTypes> ProofSync<T> {
                 let in_flight_roots: HashSet<Hash256> =
                     self.in_flight.values().map(|i| i.root).collect();
                 let available = self.max_concurrent.saturating_sub(self.in_flight.len());
-
                 let Some(peer_id) = cx.find_best_proof_capable_peer(&self.peer_execution_proof_statuses) else {
                     debug!("ProofSync: no proof-capable peer, will retry next poll");
                     return;
