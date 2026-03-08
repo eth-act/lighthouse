@@ -156,6 +156,7 @@ pub struct BackFillSync<T: BeaconChainTypes> {
     network_globals: Arc<NetworkGlobals<T::EthSpec>>,
 }
 
+#[allow(dead_code)]
 impl<T: BeaconChainTypes> BackFillSync<T> {
     pub fn new(
         beacon_chain: Arc<BeaconChain<T>>,
@@ -1192,6 +1193,7 @@ impl<T: BeaconChainTypes> BackFillSync<T> {
 }
 
 /// Error kind for attempting to restart the sync from beacon chain parameters.
+#[allow(dead_code)]
 enum ResetEpochError {
     /// The chain has already completed.
     SyncCompleted,

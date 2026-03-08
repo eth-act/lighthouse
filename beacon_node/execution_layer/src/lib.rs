@@ -2320,6 +2320,7 @@ pub fn expected_gas_limit(
 }
 
 /// Perform some cursory, non-exhaustive validation of the bid returned from the builder.
+#[allow(clippy::result_large_err)]
 fn verify_builder_bid<E: EthSpec>(
     bid: &ForkVersionedResponse<SignedBuilderBid<E>>,
     payload_parameters: PayloadParameters<'_>,

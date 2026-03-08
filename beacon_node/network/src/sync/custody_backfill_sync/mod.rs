@@ -125,6 +125,7 @@ pub struct CustodyBackFillSync<T: BeaconChainTypes> {
     network_globals: Arc<NetworkGlobals<T::EthSpec>>,
 }
 
+#[allow(dead_code)]
 impl<T: BeaconChainTypes> CustodyBackFillSync<T> {
     pub fn new(
         beacon_chain: Arc<BeaconChain<T>>,
