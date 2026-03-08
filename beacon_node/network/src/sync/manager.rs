@@ -33,7 +33,9 @@
 //! needs to be searched for (i.e if an attestation references an unknown block) this manager can
 //! search for the block and subsequently search for parents if needed.
 
-use super::backfill_sync::{BackFillSync, ProcessResult, SyncStart};
+#[cfg(not(feature = "disable-backfill"))]
+use super::backfill_sync::SyncStart;
+use super::backfill_sync::{BackFillSync, ProcessResult};
 use super::block_lookups::BlockLookups;
 use super::network_context::{
     CustodyByRootResult, RangeBlockComponent, RangeRequestId, RpcEvent, SyncNetworkContext,
@@ -705,6 +707,7 @@ impl<T: BeaconChainTypes> SyncManager<T> {
                     // If we synced a peer between status messages, most likely the peer has
                     // advanced and will produce a head chain on re-status. Otherwise it will shift
                     // to being synced
+                    #[cfg_attr(feature = "disable-backfill", allow(unused_mut))]
                     let mut sync_state = {
                         let head = self.chain.best_slot();
                         let current_slot = self.chain.slot().unwrap_or_else(|_| Slot::new(0));

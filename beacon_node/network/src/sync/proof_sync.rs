@@ -178,7 +178,9 @@ impl<T: BeaconChainTypes> ProofSync<T> {
                 let in_flight_roots: HashSet<Hash256> =
                     self.in_flight.values().map(|i| i.root).collect();
                 let available = self.max_concurrent.saturating_sub(self.in_flight.len());
-                let Some(peer_id) = cx.find_best_proof_capable_peer(&self.peer_execution_proof_statuses) else {
+                let Some(peer_id) =
+                    cx.find_best_proof_capable_peer(&self.peer_execution_proof_statuses)
+                else {
                     debug!("ProofSync: no proof-capable peer, will retry next poll");
                     return;
                 };
@@ -278,10 +280,10 @@ impl<T: BeaconChainTypes> ProofSync<T> {
         let best_slot = self.chain.best_slot();
         let verified = if status.slot <= best_slot.as_u64() {
             // We have (or should have) this slot — verify the block root.
-            match self.chain.block_root_at_slot(
-                Slot::new(status.slot),
-                WhenSlotSkipped::None,
-            ) {
+            match self
+                .chain
+                .block_root_at_slot(Slot::new(status.slot), WhenSlotSkipped::None)
+            {
                 Ok(Some(root)) if root == status.block_root => true,
                 _ => {
                     debug!(
@@ -343,7 +345,8 @@ impl<T: BeaconChainTypes> ProofSync<T> {
         }
         let count = current_slot.as_u64() - start_slot.as_u64() + 1;
 
-        let Some(peer_id) = cx.find_best_proof_capable_peer(&self.peer_execution_proof_statuses) else {
+        let Some(peer_id) = cx.find_best_proof_capable_peer(&self.peer_execution_proof_statuses)
+        else {
             debug!("ProofSync: no proof-capable peer for range request, will retry next poll");
             // State stays PendingRangeRequest.
             return;

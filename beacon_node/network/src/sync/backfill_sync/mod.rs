@@ -82,8 +82,10 @@ pub enum SyncStart {
     /// The chain started syncing or is already syncing.
     Syncing {
         /// The number of slots that have been processed so far.
+        #[allow(dead_code)]
         completed: usize,
         /// The number of slots still to be processed.
+        #[allow(dead_code)]
         remaining: usize,
     },
     /// The chain didn't start syncing.
