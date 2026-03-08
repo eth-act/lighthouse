@@ -5,7 +5,7 @@
 //! `FillingByRoot` mode where it issues targeted `ExecutionProofsByRoot` requests for any
 //! individual blocks that are still missing proofs.
 
-use super::network_context::{CachedExecutionProofStatus, RpcRequestSendError, SyncNetworkContext};
+use super::network_context::{CachedExecutionProofStatus, SyncNetworkContext};
 use beacon_chain::{BeaconChain, BeaconChainTypes, WhenSlotSkipped};
 use execution_layer::MissingProofInfo;
 use fnv::FnvHashMap;
