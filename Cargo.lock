@@ -9790,7 +9790,6 @@ dependencies = [
  "execution_layer",
  "futures",
  "graffiti_file",
- "lighthouse_validator_store",
  "logging",
  "parking_lot",
  "safe_arith",
@@ -9803,7 +9802,6 @@ dependencies = [
  "types",
  "validator_metrics",
  "validator_store",
- "warp_utils",
 ]
 
 [[package]]
