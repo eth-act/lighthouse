@@ -353,18 +353,34 @@ impl<E: EthSpec> LocalNetwork<E> {
         Ok((beacon_node, execution_node, proof_node))
     }
 
-    pub fn boot_node_enr(&self) -> Option<Enr> {
-        self.beacon_nodes
-            .read()
-            .first()
-            .and_then(|bn| bn.client.enr())
-    }
-
     pub fn proof_generator_enr(&self) -> Option<Enr> {
         self.beacon_nodes
             .read()
             .last()
             .and_then(|bn| bn.client.enr())
+    }
+
+    /// Returns the boot node's ENR once it has a valid (non-zero) TCP port, or an error if
+    /// the port isn't populated within 10 seconds.
+    async fn boot_node_enr(&self) -> Result<Option<Enr>, String> {
+        // If there are no beacon nodes yet, the network hasn't started — return None immediately.
+        if self.beacon_nodes.read().is_empty() {
+            return Ok(None);
+        }
+
+        for _ in 0..100 {
+            if let Some(enr) = self
+                .beacon_nodes
+                .read()
+                .first()
+                .and_then(|bn| bn.client.enr())
+                .filter(|e| e.tcp4().is_some_and(|p| p != 0))
+            {
+                return Ok(Some(enr));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Err("Boot node ENR did not get a valid TCP port within 10 seconds".to_string())
     }
 
     /// Adds a beacon node to the network, connecting to the 0'th beacon node via ENR.
@@ -375,8 +391,9 @@ impl<E: EthSpec> LocalNetwork<E> {
         node_type: NodeType,
     ) -> Result<(), String> {
         let (beacon_node, execution_node, proof_node) =
-            if let Some(boot_node) = self.boot_node_enr() {
-                // Network already exists. We construct a new node.
+            if let Some(boot_node) = self.boot_node_enr().await? {
+                // Network already exists. The boot node ENR has a valid TCP port; use it to
+                // bootstrap the new node.
                 beacon_config.network.boot_nodes_enr.push(boot_node);
                 self.construct_beacon_node(beacon_config, mock_execution_config, node_type)
                     .await?
