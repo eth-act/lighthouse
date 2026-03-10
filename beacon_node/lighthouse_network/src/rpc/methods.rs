@@ -576,16 +576,11 @@ impl LightClientUpdatesByRangeRequest {
 
 /// The peer's current execution proof verification status, exchanged via the
 /// `ExecutionProofStatus` RPC protocol.
-///
-/// Both the requester and responder include their local status so that either side
-/// can cache the remote peer's progress.
 #[derive(Encode, Decode, Default, Copy, Clone, Debug, PartialEq)]
 pub struct ExecutionProofStatus {
-    /// The canonical block root at `slot` as verified by this peer's execution proof engine.
-    /// `Hash256::zero()` indicates no proofs have been verified yet.
+    /// The block root of the latest block verified by this peer.
     pub block_root: Hash256,
-    /// The slot number corresponding to `block_root`; the highest slot for which this peer
-    /// has successfully verified an execution proof.
+    /// The slot of the latest block verified by this peer.
     pub slot: u64,
 }
 

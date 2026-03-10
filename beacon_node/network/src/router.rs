@@ -828,6 +828,9 @@ impl<T: BeaconChainTypes> Router<T> {
         app_request_id: AppRequestId,
         status: ExecutionProofStatus,
     ) {
+        // `request_id` is `Some` here because this is an outbound response (the peer responded
+        // to our request). The `None` case is for inbound requests (the peer sent us their status
+        // unsolicited) and is handled via `RouterMessage::PeerExecutionProofStatus`.
         if let AppRequestId::Sync(SyncRequestId::ExecutionProofStatus(request_id)) = app_request_id
         {
             self.send_to_sync(SyncMessage::RpcExecutionProofStatus {

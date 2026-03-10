@@ -55,6 +55,9 @@ pub struct ProofSync<T: BeaconChainTypes> {
     /// Tracks the in-flight range request ID while in `RangeRequestInFlight` state.
     /// `None` in all other states.
     range_request_id: Option<ExecutionProofsByRangeRequestId>,
+    /// Tracks the peer serving the in-flight range request.
+    /// `None` when no range request is in-flight.
+    range_request_peer: Option<PeerId>,
     /// In-flight by-root request IDs → `MissingProofInfo` (fill mode).
     /// Keeping the full info preserves `existing_proof_types` for awareness of what
     /// proof types the remote peer should supply.
@@ -75,6 +78,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
         Self {
             state: ProofSyncState::Idle,
             range_request_id: None,
+            range_request_peer: None,
             chain,
             in_flight: FnvHashMap::default(),
             max_concurrent: DEFAULT_MAX_CONCURRENT,
@@ -117,6 +121,31 @@ impl<T: BeaconChainTypes> ProofSync<T> {
             .map(|c| c.verified)
     }
 
+    /// Returns the peer with the highest verified `ExecutionProofStatus` slot from the cache.
+    /// Only considers peers whose status has been verified against our local chain.
+    fn best_peer(&self) -> Option<PeerId> {
+        self.peer_execution_proof_statuses
+            .iter()
+            .filter(|(_, cached)| cached.verified)
+            .max_by_key(|(_, cached)| cached.status.slot)
+            .map(|(peer_id, _)| *peer_id)
+    }
+
+    /// Sends an `ExecutionProofStatus` refresh request for `peer_id` if one is not already in-flight.
+    fn refresh_peer_status(&mut self, peer_id: PeerId, cx: &mut SyncNetworkContext<T>) {
+        if self.in_flight_execution_proof_status.contains_key(&peer_id) {
+            return;
+        }
+        match cx.request_execution_proof_status(peer_id) {
+            Ok(id) => {
+                self.in_flight_execution_proof_status.insert(peer_id, id);
+            }
+            Err(e) => {
+                debug!(error = ?e, %peer_id, "ProofSync: failed to refresh status at start");
+            }
+        }
+    }
+
     /// Called by `SyncManager::update_sync_state()` when range sync completes.
     ///
     /// Refreshes `ExecutionProofStatus` for all peers in the cache whose entry is stale
@@ -133,15 +162,8 @@ impl<T: BeaconChainTypes> ProofSync<T> {
                 .get(&peer_id)
                 .map(|c| c.needs_refresh())
                 .unwrap_or(true);
-            if needs_refresh && !self.in_flight_execution_proof_status.contains_key(&peer_id) {
-                match cx.request_execution_proof_status(peer_id) {
-                    Ok(id) => {
-                        self.in_flight_execution_proof_status.insert(peer_id, id);
-                    }
-                    Err(e) => {
-                        debug!(error = ?e, %peer_id, "ProofSync: failed to refresh status at start");
-                    }
-                }
+            if needs_refresh {
+                self.refresh_peer_status(peer_id, cx);
             }
         }
         self.state = ProofSyncState::PendingRangeRequest;
@@ -155,6 +177,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
         debug!("ProofSync: pausing and resetting to Idle");
         self.state = ProofSyncState::Idle;
         self.range_request_id = None;
+        self.range_request_peer = None;
         self.in_flight.clear();
     }
 
@@ -191,9 +214,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
                 let in_flight_roots: HashSet<Hash256> =
                     self.in_flight.values().map(|i| i.root).collect();
                 let available = self.max_concurrent.saturating_sub(self.in_flight.len());
-                let Some(peer_id) =
-                    cx.find_best_proof_capable_peer(&self.peer_execution_proof_statuses)
-                else {
+                let Some(peer_id) = self.best_peer() else {
                     debug!("ProofSync: no proof-capable peer, will retry next poll");
                     return;
                 };
@@ -229,8 +250,30 @@ impl<T: BeaconChainTypes> ProofSync<T> {
         {
             debug!("ProofSync: bootstrap range stream complete, switching to fill mode");
             self.range_request_id = None;
+            self.range_request_peer = None;
             self.state = ProofSyncState::FillingByRoot;
         }
+    }
+
+    /// Called when an `ExecutionProofsByRange` RPC request errors.
+    ///
+    /// Resets from `RangeRequestInFlight` to `PendingRangeRequest` to retry with another peer.
+    pub fn on_range_request_error(&mut self, id: &ExecutionProofsByRangeRequestId) {
+        if matches!(&self.state, ProofSyncState::RangeRequestInFlight)
+            && self.range_request_id.as_ref() == Some(id)
+        {
+            debug!("ProofSync: range request failed, will retry with another peer");
+            self.range_request_id = None;
+            self.range_request_peer = None;
+            self.state = ProofSyncState::PendingRangeRequest;
+        }
+    }
+
+    /// Called when an `ExecutionProofsByRoot` RPC request errors.
+    ///
+    /// Removes the in-flight entry so the next poll can retry.
+    pub fn on_root_request_error(&mut self, id: &ExecutionProofsByRootRequestId) {
+        self.in_flight.remove(id);
     }
 
     /// Called when an `ExecutionProofsByRoot` RPC stream terminates (response `None`).
@@ -260,6 +303,14 @@ impl<T: BeaconChainTypes> ProofSync<T> {
     pub fn on_proof_capable_peer_disconnected(&mut self, peer_id: &PeerId) {
         self.peer_execution_proof_statuses.remove(peer_id);
         self.in_flight_execution_proof_status.remove(peer_id);
+        // If this peer was serving our range request, reset to retry with another peer.
+        if self.range_request_peer.as_ref() == Some(peer_id) {
+            self.range_request_id = None;
+            self.range_request_peer = None;
+            if matches!(self.state, ProofSyncState::RangeRequestInFlight) {
+                self.state = ProofSyncState::PendingRangeRequest;
+            }
+        }
     }
 
     /// Called when an `ExecutionProofStatus` arrives from a peer.
@@ -271,11 +322,9 @@ impl<T: BeaconChainTypes> ProofSync<T> {
         peer_id: PeerId,
         request_id: Option<ExecutionProofStatusRequestId>,
         status: ExecutionProofStatus,
-        cx: &mut SyncNetworkContext<T>,
     ) {
-        if let Some(id) = request_id {
+        if request_id.is_some() {
             self.in_flight_execution_proof_status.remove(&peer_id);
-            cx.on_execution_proof_status_terminated(&id);
         }
 
         debug!(
@@ -325,10 +374,8 @@ impl<T: BeaconChainTypes> ProofSync<T> {
         &mut self,
         peer_id: PeerId,
         request_id: ExecutionProofStatusRequestId,
-        cx: &mut SyncNetworkContext<T>,
     ) {
         self.in_flight_execution_proof_status.remove(&peer_id);
-        cx.on_execution_proof_status_terminated(&request_id);
         debug!(%peer_id, %request_id, "ProofSync: ExecutionProofStatus request failed (soft)");
     }
 
@@ -347,15 +394,9 @@ impl<T: BeaconChainTypes> ProofSync<T> {
         let start_slot = finalized_slot + 1;
         // Use the slot clock so the range covers any EL-processed slots beyond the head block.
         let current_slot = self.chain.slot().unwrap_or_else(|_| self.chain.best_slot());
-        if current_slot < start_slot {
-            debug!("ProofSync: current slot is behind start_slot, switching directly to fill mode");
-            self.state = ProofSyncState::FillingByRoot;
-            return;
-        }
         let count = current_slot.as_u64() - start_slot.as_u64() + 1;
 
-        let Some(peer_id) = cx.find_best_proof_capable_peer(&self.peer_execution_proof_statuses)
-        else {
+        let Some(peer_id) = self.best_peer() else {
             debug!("ProofSync: no proof-capable peer for range request, will retry next poll");
             // State stays PendingRangeRequest.
             return;
@@ -369,6 +410,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
                     "ProofSync: bootstrap range request sent"
                 );
                 self.range_request_id = Some(id);
+                self.range_request_peer = Some(peer_id);
                 self.state = ProofSyncState::RangeRequestInFlight;
             }
             Err(e) => {

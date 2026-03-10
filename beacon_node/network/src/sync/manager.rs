@@ -501,9 +501,7 @@ impl<T: BeaconChainTypes> SyncManager<T> {
             }
         }
 
-        if self.network.is_proof_capable_peer(&peer_id) {
-            self.proof_sync.add_peer(peer_id, &mut self.network);
-        }
+        self.proof_sync.add_peer(peer_id, &mut self.network);
 
         self.update_sync_state();
 
@@ -587,16 +585,15 @@ impl<T: BeaconChainTypes> SyncManager<T> {
             }
             SyncRequestId::ExecutionProofsByRange(req_id) => {
                 debug!(%peer_id, ?req_id, "Execution proofs by range request failed");
+                self.proof_sync.on_range_request_error(&req_id);
             }
             SyncRequestId::ExecutionProofsByRoot(req_id) => {
                 debug!(%peer_id, ?req_id, "Execution proofs by root request failed");
+                self.proof_sync.on_root_request_error(&req_id);
             }
             SyncRequestId::ExecutionProofStatus(id) => {
-                self.proof_sync.on_peer_execution_proof_status_error(
-                    peer_id,
-                    id,
-                    &mut self.network,
-                );
+                self.proof_sync
+                    .on_peer_execution_proof_status_error(peer_id, id);
             }
         }
     }
@@ -949,12 +946,8 @@ impl<T: BeaconChainTypes> SyncManager<T> {
                 request_id,
                 status,
             } => {
-                self.proof_sync.on_peer_execution_proof_status(
-                    peer_id,
-                    request_id,
-                    status,
-                    &mut self.network,
-                );
+                self.proof_sync
+                    .on_peer_execution_proof_status(peer_id, request_id, status);
             }
             SyncMessage::UnknownParentBlock(peer_id, block, block_root) => {
                 let block_slot = block.slot();
@@ -1319,11 +1312,9 @@ impl<T: BeaconChainTypes> SyncManager<T> {
             // Stream termination: clean up tracking map entry.
             match &sync_request_id {
                 SyncRequestId::ExecutionProofsByRange(id) => {
-                    self.network.on_execution_proofs_by_range_terminated(id);
                     self.proof_sync.on_range_request_terminated(id);
                 }
                 SyncRequestId::ExecutionProofsByRoot(id) => {
-                    self.network.on_execution_proofs_by_root_terminated(id);
                     self.proof_sync.on_request_terminated(id);
                 }
                 other => {

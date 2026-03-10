@@ -2,6 +2,7 @@ use beacon_chain::{BeaconChain, BeaconChainTypes};
 use fixed_bytes::FixedBytesExtended;
 use types::{EthSpec, Hash256};
 
+use lighthouse_network::rpc::methods::ExecutionProofStatus;
 use lighthouse_network::rpc::{StatusMessage, methods::StatusMessageV2};
 /// Trait to produce a `StatusMessage` representing the state of the given `beacon_chain`.
 ///
@@ -15,6 +16,12 @@ impl<T: BeaconChainTypes> ToStatusMessage for BeaconChain<T> {
     fn status_message(&self) -> StatusMessage {
         status_message(self)
     }
+}
+
+/// Trait to obtain an `ExecutionProofStatus` representing the current local proof verification
+/// progress without coupling the caller to `NetworkGlobals`.
+pub trait ToExecutionProofStatus {
+    fn execution_proof_status(&self) -> ExecutionProofStatus;
 }
 
 /// Build a `StatusMessage` representing the state of the given `beacon_chain`.
