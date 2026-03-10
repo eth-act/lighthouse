@@ -502,8 +502,7 @@ impl<T: BeaconChainTypes> SyncManager<T> {
         }
 
         if self.network.is_proof_capable_peer(&peer_id) {
-            self.proof_sync
-                .on_proof_capable_peer_connected(peer_id, &mut self.network);
+            self.proof_sync.add_peer(peer_id, &mut self.network);
         }
 
         self.update_sync_state();

@@ -119,11 +119,15 @@ impl<T: BeaconChainTypes> ProofSync<T> {
 
     /// Called by `SyncManager::update_sync_state()` when range sync completes.
     ///
-    /// Refreshes `ExecutionProofStatus` for all connected proof-capable peers whose cached entry
-    /// is stale (TTL-expired) or unverified, then transitions to `PendingRangeRequest`.
+    /// Refreshes `ExecutionProofStatus` for all peers in the cache whose entry is stale
+    /// (TTL-expired) or unverified, then transitions to `PendingRangeRequest`.
+    ///
+    /// Uses the cache as the source of truth for proof-capable peers — peers that have sent us
+    /// their status are added to the cache on connect and removed on disconnect.
     pub fn start(&mut self, cx: &mut SyncNetworkContext<T>) {
         debug!("ProofSync: range sync complete, refreshing peer statuses");
-        for peer_id in cx.connected_proof_capable_peers() {
+        let peers: Vec<PeerId> = self.peer_execution_proof_statuses.keys().copied().collect();
+        for peer_id in peers {
             let needs_refresh = self
                 .peer_execution_proof_statuses
                 .get(&peer_id)
@@ -162,7 +166,16 @@ impl<T: BeaconChainTypes> ProofSync<T> {
         match &self.state {
             ProofSyncState::Idle | ProofSyncState::RangeRequestInFlight => {}
             ProofSyncState::PendingRangeRequest => {
-                self.request_proof_range(cx);
+                // Only issue the range request once all outstanding status polls have resolved,
+                // so that we can select the best peer with accurate status information.
+                if self.in_flight_execution_proof_status.is_empty() {
+                    self.request_proof_range(cx);
+                } else {
+                    debug!(
+                        in_flight = self.in_flight_execution_proof_status.len(),
+                        "ProofSync: waiting for in-flight status polls before range request"
+                    );
+                }
             }
             ProofSyncState::FillingByRoot => {
                 // Terminal active state: remain here until range sync restarts.
@@ -228,11 +241,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
     /// Called when a proof-capable peer connects.
     ///
     /// Sends an `ExecutionProofStatus` request unless one is already in-flight for this peer.
-    pub fn on_proof_capable_peer_connected(
-        &mut self,
-        peer_id: PeerId,
-        cx: &mut SyncNetworkContext<T>,
-    ) {
+    pub fn add_peer(&mut self, peer_id: PeerId, cx: &mut SyncNetworkContext<T>) {
         if self.in_flight_execution_proof_status.contains_key(&peer_id) {
             return;
         }

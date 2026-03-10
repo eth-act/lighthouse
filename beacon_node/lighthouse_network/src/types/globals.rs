@@ -24,7 +24,12 @@ pub struct NetworkGlobals<E: EthSpec> {
     pub peers: RwLock<PeerDB<E>>,
     // The local meta data of our node.
     pub local_metadata: RwLock<MetaData<E>>,
-    /// The local execution proof status of our node, updated as proofs are verified.
+    /// The local execution proof status of our node.
+    ///
+    /// Updated via `set_local_execution_proof_status` whenever the beacon chain
+    /// successfully verifies an execution proof (see `verify_execution_proof` in
+    /// `beacon_chain.rs`). Sent to peers during `ExecutionProofStatus` RPC exchanges
+    /// so they can use our status for peer selection.
     pub local_execution_proof_status: RwLock<ExecutionProofStatus>,
     /// The current gossipsub topic subscriptions.
     pub gossipsub_subscriptions: RwLock<HashSet<GossipTopic>>,

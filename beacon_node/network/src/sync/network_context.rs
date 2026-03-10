@@ -550,90 +550,21 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
 
     /// Returns the best proof-capable peer for servicing a request.
     ///
-    /// Selection order:
-    /// 1. **Primary**: verified peer with highest `slot` in [1, finalized_slot].
-    /// 2. **Secondary**: any peer (verified or not) with highest slot in [1, finalized_slot].
-    /// 3. **Tertiary**: any connected proof-capable peer (fallback for by-root / empty cache).
+    /// Selects the verified peer with the highest cached `ExecutionProofStatus` slot from the
+    /// provided cache. Peers are added to the cache when they connect (via `add_peer`) and
+    /// removed when they disconnect, so the cache is always a consistent view of connected
+    /// proof-capable peers.
     ///
-    /// Returns `None` if no connected peer has `ep = true` in their ENR.
+    /// Returns `None` if the cache contains no verified peers.
     pub fn find_best_proof_capable_peer(
         &self,
         peer_statuses: &HashMap<PeerId, CachedExecutionProofStatus>,
     ) -> Option<PeerId> {
-        let finalized_slot = self
-            .chain
-            .canonical_head
-            .cached_head()
-            .finalized_checkpoint()
-            .epoch
-            .start_slot(T::EthSpec::slots_per_epoch())
-            .as_u64();
-
-        let db = self.network_globals().peers.read();
-        let candidates: Vec<PeerId> = db
-            .connected_peer_ids()
-            .filter(|peer_id| {
-                db.peer_info(peer_id)
-                    .and_then(|info| info.enr())
-                    .map(|enr| enr.execution_proof_enabled())
-                    .unwrap_or(false)
-            })
-            .copied()
-            .collect();
-        drop(db);
-
-        if candidates.is_empty() {
-            return None;
-        }
-
-        // Collect peers with a cached slot in [1, finalized_slot].
-        let with_slot: Vec<(PeerId, u64, bool)> = candidates
+        peer_statuses
             .iter()
-            .filter_map(|peer_id| {
-                let cached = peer_statuses.get(peer_id)?;
-                let slot = cached.status.slot;
-                if slot >= 1 && slot <= finalized_slot {
-                    Some((*peer_id, slot, cached.verified))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Primary: verified peer with highest slot.
-        let primary = with_slot
-            .iter()
-            .filter(|(_, _, verified)| *verified)
-            .max_by_key(|(_, slot, _)| *slot)
-            .map(|(peer_id, _, _)| *peer_id);
-
-        if primary.is_some() {
-            return primary;
-        }
-
-        // Secondary: any peer (verified or not) with highest slot.
-        let secondary = with_slot
-            .into_iter()
-            .max_by_key(|(_, slot, _)| *slot)
-            .map(|(peer_id, _, _)| peer_id);
-
-        // Tertiary: any proof-capable peer (fallback).
-        secondary.or_else(|| candidates.into_iter().next())
-    }
-
-    /// Returns the peer IDs of all currently connected proof-capable peers
-    /// (those with `ep = true` in their ENR).
-    pub fn connected_proof_capable_peers(&self) -> Vec<PeerId> {
-        let db = self.network_globals().peers.read();
-        db.connected_peer_ids()
-            .filter(|peer_id| {
-                db.peer_info(peer_id)
-                    .and_then(|info| info.enr())
-                    .map(|enr| enr.execution_proof_enabled())
-                    .unwrap_or(false)
-            })
-            .copied()
-            .collect()
+            .filter(|(_, cached)| cached.verified)
+            .max_by_key(|(_, cached)| cached.status.slot)
+            .map(|(peer_id, _)| *peer_id)
     }
 
     pub fn network_globals(&self) -> &NetworkGlobals<T::EthSpec> {

@@ -25,8 +25,6 @@ pub enum ExecutionProofError {
     InvalidValidatorPubkey,
     /// Failed to decompress the signature.
     InvalidSignatureFormat,
-    /// The fork does not support EIP-8025.
-    UnsupportedFork,
     /// Failed to retrieve beacon state.
     StateError(String),
     /// No execution layer configured.
@@ -54,9 +52,6 @@ impl fmt::Display for ExecutionProofError {
             }
             ExecutionProofError::InvalidSignatureFormat => {
                 write!(f, "Invalid signature format")
-            }
-            ExecutionProofError::UnsupportedFork => {
-                write!(f, "Fork does not support EIP-8025")
             }
             ExecutionProofError::StateError(msg) => {
                 write!(f, "Beacon state error: {}", msg)
