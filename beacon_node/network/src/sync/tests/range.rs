@@ -1391,9 +1391,7 @@ fn test_local_execution_proof_status_read_write() {
     let rig = TestRig::test_setup();
 
     // Default should be zero slot.
-    let initial = rig
-        .network_globals
-        .local_execution_proof_status();
+    let initial = rig.network_globals.local_execution_proof_status();
     assert_eq!(initial.slot, 0);
 
     // Set a new status and read it back.
@@ -1432,8 +1430,7 @@ fn test_proof_sync_start_slot_respects_local_proof_status() {
     rig.sync_manager.start_proof_sync();
     rig.sync_manager.poll_proof_sync();
 
-    let ((_req_id, _peer_id), start_slot) =
-        rig.find_execution_proofs_by_range_request_with_slot();
+    let ((_req_id, _peer_id), start_slot) = rig.find_execution_proofs_by_range_request_with_slot();
 
     // start_slot must be at least local_proof_slot + 1 = 8.
     assert!(
