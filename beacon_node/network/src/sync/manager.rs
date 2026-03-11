@@ -404,46 +404,18 @@ impl<T: BeaconChainTypes> SyncManager<T> {
     }
 
     #[cfg(test)]
-    pub(crate) fn proof_sync_state(&self) -> super::proof_sync::ProofSyncState {
-        self.proof_sync.state()
+    pub(crate) fn proof_sync(&self) -> &super::proof_sync::ProofSync<T> {
+        &self.proof_sync
     }
 
     #[cfg(test)]
-    pub(crate) fn proof_sync_in_flight_count(&self) -> usize {
-        self.proof_sync.in_flight_count()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_proof_sync_missing(
-        &mut self,
-        missing: Vec<execution_layer::MissingProofInfo>,
-    ) {
-        self.proof_sync.test_missing_proofs = Some(missing);
+    pub(crate) fn proof_sync_mut(&mut self) -> &mut super::proof_sync::ProofSync<T> {
+        &mut self.proof_sync
     }
 
     #[cfg(test)]
     pub(crate) fn start_proof_sync(&mut self) {
         self.proof_sync.start(&mut self.network);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn pause_proof_sync(&mut self) {
-        self.proof_sync.pause();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn force_proof_sync_fill_mode(&mut self) {
-        self.proof_sync.enter_fill_mode_for_testing();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn peer_status_cached(&self, peer_id: &PeerId) -> bool {
-        self.proof_sync.peer_status_cached(peer_id)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn peer_status_verified_flag(&self, peer_id: &PeerId) -> Option<bool> {
-        self.proof_sync.peer_status_verified_flag(peer_id)
     }
 
     fn network_globals(&self) -> &NetworkGlobals<T::EthSpec> {

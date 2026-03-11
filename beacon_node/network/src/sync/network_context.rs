@@ -11,7 +11,7 @@ use crate::network_beacon_processor::NetworkBeaconProcessor;
 #[cfg(test)]
 use crate::network_beacon_processor::TestBeaconChainType;
 use crate::service::NetworkMessage;
-use crate::status::{ToExecutionProofStatus, ToStatusMessage};
+use crate::status::ToStatusMessage;
 use crate::sync::batch::ByRangeRequestType;
 use crate::sync::block_lookups::SingleLookupId;
 use crate::sync::block_sidecar_coupling::CouplingError;
@@ -264,12 +264,6 @@ pub struct SyncNetworkContext<T: BeaconChainTypes> {
     fork_context: Arc<ForkContext>,
 }
 
-impl<T: BeaconChainTypes> ToExecutionProofStatus for SyncNetworkContext<T> {
-    fn execution_proof_status(&self) -> ExecutionProofStatus {
-        *self.network_globals().local_execution_proof_status.read()
-    }
-}
-
 /// Small enumeration to make dealing with block and blob requests easier.
 pub enum RangeBlockComponent<E: EthSpec> {
     Block(
@@ -482,7 +476,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
         peer_id: PeerId,
     ) -> Result<ExecutionProofStatusRequestId, RpcRequestSendError> {
         let id = ExecutionProofStatusRequestId { id: self.next_id() };
-        let local_status = self.execution_proof_status();
+        let local_status = self.local_execution_proof_status();
         self.network_send
             .send(NetworkMessage::SendRequest {
                 peer_id,
@@ -501,6 +495,10 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
 
     pub fn network_globals(&self) -> &NetworkGlobals<T::EthSpec> {
         &self.network_beacon_processor.network_globals
+    }
+
+    pub fn local_execution_proof_status(&self) -> ExecutionProofStatus {
+        self.network_globals().local_execution_proof_status()
     }
 
     /// Returns the Client type of the peer if known

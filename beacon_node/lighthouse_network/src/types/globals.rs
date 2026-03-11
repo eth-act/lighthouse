@@ -194,6 +194,11 @@ impl<E: EthSpec> NetworkGlobals<E> {
         self.peers.read().trusted_peers()
     }
 
+    /// Returns the local execution proof status.
+    pub fn local_execution_proof_status(&self) -> ExecutionProofStatus {
+        *self.local_execution_proof_status.read()
+    }
+
     /// Updates the local execution proof status.
     pub fn set_local_execution_proof_status(&self, status: ExecutionProofStatus) {
         *self.local_execution_proof_status.write() = status;
