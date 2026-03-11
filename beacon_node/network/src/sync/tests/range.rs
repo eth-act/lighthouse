@@ -419,8 +419,8 @@ impl TestRig {
 
     /// Drain all pending `ExecutionProofStatus` outbound requests from the network queue.
     ///
-    /// Called after `start_proof_sync()` (or `bootstrap_proof_sync_to_fill_mode()`) to
-    /// prevent those requests from leaking into assertions in the caller.
+    /// Called after `start_proof_sync()` to prevent status requests from leaking into
+    /// assertions in the caller.
     fn drain_execution_proof_status_requests(&mut self) {
         self.drain_network_rx();
         self.network_rx_queue.retain(|ev| {
@@ -754,24 +754,6 @@ fn finalized_sync_not_enough_custody_peers_on_start() {
 /// Drive ProofSync through a range request cycle and terminate it, leaving the state in
 /// `Syncing` with no active range request (ready for by-root fill on the next poll).
 ///
-/// Advances the harness slot clock by 1 to produce a non-zero slot gap, which triggers
-/// a range request (range_request_threshold = 0 in tests).
-fn bootstrap_proof_sync_to_fill_mode(
-    rig: &mut TestRig,
-) -> (ExecutionProofsByRangeRequestId, PeerId) {
-    rig.harness.advance_slot();
-    rig.sync_manager.start_proof_sync();
-    rig.sync_manager.poll_proof_sync();
-    let (req_id, peer_id) = rig.find_execution_proofs_by_range_request();
-    rig.drain_execution_proof_status_requests();
-    rig.terminate_execution_proofs_by_range(req_id, peer_id);
-    assert_eq!(
-        rig.sync_manager.proof_sync().state(),
-        ProofSyncState::Syncing
-    );
-    assert!(!rig.sync_manager.proof_sync().range_request().is_some());
-    (req_id, peer_id)
-}
 
 /// Build a `MissingProofInfo` with a fresh random root for test seeding.
 fn missing_proof(root: Hash256) -> MissingProofInfo {
