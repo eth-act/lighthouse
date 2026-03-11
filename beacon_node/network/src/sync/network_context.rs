@@ -34,6 +34,7 @@ use lighthouse_network::service::api_types::{
     DataColumnsByRootRequester, ExecutionProofStatusRequestId, ExecutionProofsByRangeRequestId,
     ExecutionProofsByRootRequestId, Id, SingleLookupReqId, SyncRequestId,
 };
+use lighthouse_network::types::Subnet;
 use lighthouse_network::{Client, NetworkGlobals, PeerAction, PeerId, ReportSource};
 use lighthouse_tracing::{SPAN_OUTGOING_BLOCK_BY_ROOT_REQUEST, SPAN_OUTGOING_RANGE_REQUEST};
 use parking_lot::RwLock;
@@ -499,6 +500,15 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
 
     pub fn local_execution_proof_status(&self) -> ExecutionProofStatus {
         self.network_globals().local_execution_proof_status()
+    }
+
+    /// Returns `true` if the peer has `execution_proof_enabled()` in their ENR.
+    pub fn is_proof_capable_peer(&self, peer_id: &PeerId) -> bool {
+        self.network_globals()
+            .peers
+            .read()
+            .peer_info(peer_id)
+            .is_some_and(|info| info.on_subnet_metadata(&Subnet::ExecutionProof))
     }
 
     /// Returns the Client type of the peer if known

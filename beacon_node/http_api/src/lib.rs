@@ -1832,14 +1832,17 @@ pub fn serve<T: BeaconChainTypes>(
         .clone()
         .and(warp::path::end())
         .and(warp_utils::json::json())
+        .and(network_globals.clone())
         .and(network_tx_filter.clone())
         .then(
             |task_spawner: TaskSpawner<T::EthSpec>,
              chain: Arc<BeaconChain<T>>,
              proofs: eip8025::SubmitExecutionProofsRequest,
+             network_globals: Arc<NetworkGlobals<T::EthSpec>>,
              network_send: UnboundedSender<NetworkMessage<T::EthSpec>>| {
                 task_spawner.spawn_async_with_rejection(Priority::P1, async move {
-                    eip8025::submit_execution_proofs(proofs, chain, network_send).await
+                    eip8025::submit_execution_proofs(proofs, chain, network_globals, network_send)
+                        .await
                 })
             },
         );

@@ -473,7 +473,9 @@ impl<T: BeaconChainTypes> SyncManager<T> {
             }
         }
 
-        self.proof_sync.add_peer(peer_id, &mut self.network);
+        if self.network.is_proof_capable_peer(&peer_id) {
+            self.proof_sync.add_peer(peer_id, &mut self.network);
+        }
 
         self.update_sync_state();
 

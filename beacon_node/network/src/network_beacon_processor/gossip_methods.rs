@@ -20,6 +20,7 @@ use beacon_chain::{
     validator_monitor::{get_block_delay_ms, get_slot_delay_ms},
 };
 use beacon_processor::{Work, WorkEvent};
+use lighthouse_network::rpc::methods::ExecutionProofStatus;
 use lighthouse_network::{Client, MessageAcceptance, MessageId, PeerAction, PeerId, ReportSource};
 use lighthouse_tracing::{
     SPAN_PROCESS_GOSSIP_BLOB, SPAN_PROCESS_GOSSIP_BLOCK, SPAN_PROCESS_GOSSIP_DATA_COLUMN,
@@ -1896,14 +1897,21 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     "invalid_execution_proof",
                 );
             }
-            Ok(ProofStatus::Valid) => {
+            Ok((ProofStatus::Valid, verified_block)) => {
                 debug!(
                     ?request_root,
                     validator_index, proof_type, "Execution proof is valid"
                 );
+                if let Some((block_root, slot)) = verified_block {
+                    self.network_globals
+                        .set_local_execution_proof_status(ExecutionProofStatus {
+                            slot: slot.as_u64(),
+                            block_root,
+                        });
+                }
                 self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Accept);
             }
-            Ok(ProofStatus::Invalid) => {
+            Ok((ProofStatus::Invalid, _)) => {
                 debug!(
                     ?request_root,
                     %peer_id,
@@ -1912,7 +1920,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                 self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Reject);
                 self.gossip_penalize_peer(peer_id, PeerAction::Fatal, "invalid_execution_proof");
             }
-            Ok(ProofStatus::Accepted) => {
+            Ok((ProofStatus::Accepted, _)) => {
                 debug!(
                     ?request_root,
                     validator_index,
@@ -1921,7 +1929,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                 );
                 self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Accept);
             }
-            Ok(ProofStatus::Syncing) => {
+            Ok((ProofStatus::Syncing, _)) => {
                 debug!(
                     ?request_root,
                     validator_index,
@@ -1931,7 +1939,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                 self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Ignore);
             }
             // TODO: Should we do this check earlier. This is a quick and cheap check, so it may be better to do it before the more expensive verification steps.
-            Ok(ProofStatus::NotSupported) => {
+            Ok((ProofStatus::NotSupported, _)) => {
                 debug!(
                     ?request_root,
                     validator_index, proof_type, "Execution proof type not supported"
@@ -1956,10 +1964,17 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
             Err(e) => {
                 debug!(%peer_id, error = ?e, "Error verifying RPC execution proof");
             }
-            Ok(ProofStatus::Valid) => {
+            Ok((ProofStatus::Valid, verified_block)) => {
                 debug!(%peer_id, "RPC execution proof valid");
+                if let Some((block_root, slot)) = verified_block {
+                    self.network_globals
+                        .set_local_execution_proof_status(ExecutionProofStatus {
+                            slot: slot.as_u64(),
+                            block_root,
+                        });
+                }
             }
-            Ok(ProofStatus::Invalid) => {
+            Ok((ProofStatus::Invalid, _)) => {
                 debug!(%peer_id, "RPC execution proof invalid, penalizing peer");
                 self.send_network_message(NetworkMessage::ReportPeer {
                     peer_id,
@@ -1968,13 +1983,13 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     msg: "invalid_rpc_execution_proof",
                 });
             }
-            Ok(ProofStatus::Accepted) => {
+            Ok((ProofStatus::Accepted, _)) => {
                 debug!(%peer_id, "RPC execution proof accepted");
             }
-            Ok(ProofStatus::NotSupported) => {
+            Ok((ProofStatus::NotSupported, _)) => {
                 debug!(%peer_id, "RPC execution proof type not supported by local engine");
             }
-            Ok(ProofStatus::Syncing) => {
+            Ok((ProofStatus::Syncing, _)) => {
                 debug!(%peer_id, "RPC execution proof received while block still syncing");
             }
         }

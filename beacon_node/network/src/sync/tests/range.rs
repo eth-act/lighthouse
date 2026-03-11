@@ -329,16 +329,23 @@ impl TestRig {
     }
 
     /// Assert an `ExecutionProofsByRange` RPC was sent to the network.
-    /// Returns `(request_id, peer_id)`.
+    /// Returns `(request_id, peer_id, start_slot)`.
     fn find_execution_proofs_by_range_request(
         &mut self,
     ) -> (ExecutionProofsByRangeRequestId, PeerId) {
+        self.find_execution_proofs_by_range_request_with_slot().0
+    }
+
+    /// Assert an `ExecutionProofsByRange` RPC was sent; returns `((id, peer_id), start_slot)`.
+    fn find_execution_proofs_by_range_request_with_slot(
+        &mut self,
+    ) -> ((ExecutionProofsByRangeRequestId, PeerId), Slot) {
         self.pop_received_network_event(|ev| match ev {
             NetworkMessage::SendRequest {
                 peer_id,
-                request: RequestType::ExecutionProofsByRange(_),
+                request: RequestType::ExecutionProofsByRange(req),
                 app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofsByRange(id)),
-            } => Some((*id, *peer_id)),
+            } => Some(((*id, *peer_id), Slot::new(req.start_slot))),
             _ => None,
         })
         .unwrap_or_else(|e| panic!("Expected ExecutionProofsByRange request: {e:?}"))
@@ -1373,4 +1380,88 @@ fn test_inbound_status_populates_cache() {
         Some(false),
         "Slot ahead of head must be cached as unverified"
     );
+}
+
+/// Test 22: `local_execution_proof_status` can be set and read back via `network_globals`.
+///
+/// This verifies the `NetworkGlobals` getter/setter used by the proof-verified callback path
+/// (in `gossip_methods.rs`) and consumed by `ProofSync.poll()`.
+#[test]
+fn test_local_execution_proof_status_read_write() {
+    let rig = TestRig::test_setup();
+
+    // Default should be zero slot.
+    let initial = rig
+        .network_globals
+        .local_execution_proof_status();
+    assert_eq!(initial.slot, 0);
+
+    // Set a new status and read it back.
+    let block_root = Hash256::repeat_byte(0xab);
+    rig.network_globals
+        .set_local_execution_proof_status(ExecutionProofStatus {
+            slot: 42,
+            block_root,
+        });
+
+    let updated = rig.network_globals.local_execution_proof_status();
+    assert_eq!(updated.slot, 42);
+    assert_eq!(updated.block_root, block_root);
+}
+
+/// Test 23: `ProofSync.poll()` uses `local_execution_proof_status` as the lower bound
+/// for `start_slot`, so proofs already verified locally are never re-requested.
+///
+/// Setup: peer announces slot 10, local proof status is at slot 7.
+/// Expected: range request start_slot = max(finalized_slot, local_proof_slot) + 1 = 8.
+#[test]
+fn test_proof_sync_start_slot_respects_local_proof_status() {
+    let mut rig = TestRig::test_setup();
+
+    // Peer has proofs up to slot 10.
+    let _proof_peer = rig.new_proof_peer_with_status(10);
+    rig.harness.advance_slot();
+
+    // Simulate that we have already verified proofs up to slot 7 locally.
+    rig.network_globals
+        .set_local_execution_proof_status(ExecutionProofStatus {
+            slot: 7,
+            block_root: Hash256::repeat_byte(0xcc),
+        });
+
+    rig.sync_manager.start_proof_sync();
+    rig.sync_manager.poll_proof_sync();
+
+    let ((_req_id, _peer_id), start_slot) =
+        rig.find_execution_proofs_by_range_request_with_slot();
+
+    // start_slot must be at least local_proof_slot + 1 = 8.
+    assert!(
+        start_slot.as_u64() >= 8,
+        "start_slot {start_slot} should be >= 8 (local_proof_slot + 1)"
+    );
+}
+
+/// Test 24: When `local_execution_proof_status` is updated to a slot beyond the peer's
+/// announced slot, `ProofSync.poll()` computes a zero gap and issues no range request.
+#[test]
+fn test_proof_sync_no_request_when_local_status_ahead_of_peer() {
+    let mut rig = TestRig::test_setup();
+
+    // Peer only has proofs up to slot 5.
+    let _proof_peer = rig.new_proof_peer_with_status(5);
+    rig.harness.advance_slot();
+
+    // Local proof status is already at slot 5 (equal to peer) — gap = 0.
+    rig.network_globals
+        .set_local_execution_proof_status(ExecutionProofStatus {
+            slot: 5,
+            block_root: Hash256::repeat_byte(0xdd),
+        });
+
+    rig.sync_manager.start_proof_sync();
+    rig.sync_manager.poll_proof_sync();
+
+    // No range request should be emitted since start_slot (6) > peer_slot (5).
+    rig.expect_no_execution_proof_range_request();
 }
