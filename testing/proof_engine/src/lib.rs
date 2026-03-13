@@ -41,6 +41,7 @@ mod test {
     }
 
     #[tokio::test]
+    #[cfg_attr(debug_assertions, ignore = "too slow in debug mode")]
     async fn test_proof_engine_basic() -> anyhow::Result<()> {
         let mut fixture = test_fixture_builder_base()
             .with_log_level(LevelFilter::DEBUG)
@@ -73,6 +74,7 @@ mod test {
     }
 
     #[tokio::test]
+    #[cfg_attr(debug_assertions, ignore = "too slow in debug mode")]
     async fn test_proof_engine_sync() -> anyhow::Result<()> {
         let mut fixture = test_fixture_builder_base()
             .map_spec(|spec| {
