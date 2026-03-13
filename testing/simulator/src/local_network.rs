@@ -106,8 +106,7 @@ fn default_client_config(network_params: LocalNetworkParams, genesis_time: u64) 
         + network_params.proposer_nodes
         + network_params.proof_generator_nodes
         + network_params.proof_verifier_nodes
-        + network_params.extra_nodes
-        - 1;
+        + network_params.extra_nodes;
     beacon_config.network.enr_address = (Some(Ipv4Addr::LOCALHOST), None);
     beacon_config.network.enable_light_client_server = true;
     beacon_config.network.discv5_config.enable_packet_filter = false;
