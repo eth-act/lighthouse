@@ -36,7 +36,7 @@ mod test {
                 extra_nodes: 0,
                 proof_generator_nodes: 1,
                 proof_verifier_nodes: 1,
-                genesis_delay: 60,
+                genesis_delay: 120,
             })
     }
 
