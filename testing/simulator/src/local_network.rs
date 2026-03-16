@@ -114,7 +114,6 @@ fn default_client_config(network_params: LocalNetworkParams, genesis_time: u64) 
     beacon_config.chain.enable_light_client_server = true;
     beacon_config.chain.optimistic_finalized_sync = false;
     beacon_config.trusted_setup = get_trusted_setup();
-    beacon_config.chain.node_custody_type = NodeCustodyType::Supernode;
 
     beacon_config
 }
