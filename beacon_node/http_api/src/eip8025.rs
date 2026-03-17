@@ -6,6 +6,7 @@
 
 use crate::block_id::BlockId;
 use beacon_chain::{BeaconChain, BeaconChainTypes};
+use eth2::types::{EventKind, SseExecutionProofValidated};
 use execution_layer::eip8025::ProofEngine;
 use lighthouse_network::rpc::methods::ExecutionProofStatus;
 use lighthouse_network::{NetworkGlobals, PubsubMessage};
@@ -149,6 +150,23 @@ pub async fn submit_execution_proofs<T: BeaconChainTypes>(
         // Invalid, Syncing, and NotSupported proofs must not be gossiped.
         match status {
             ProofStatus::Valid | ProofStatus::Accepted => {
+                // Emit SSE event for validator proof resigning
+                if let Some(event_handler) = chain.event_handler.as_ref() {
+                    if event_handler.has_execution_proof_validated_subscribers() {
+                        event_handler.register(EventKind::ExecutionProofValidated(
+                            SseExecutionProofValidated {
+                                execution_proof: signed_proof.message.clone(),
+                                slot: verified_block
+                                    .map(|(_, s)| s.as_u64())
+                                    .unwrap_or(0),
+                                block_root: verified_block
+                                    .map(|(r, _)| r)
+                                    .unwrap_or_default(),
+                            },
+                        ));
+                    }
+                }
+
                 if let Err(e) = network_send.send(NetworkMessage::Publish {
                     messages: vec![PubsubMessage::ExecutionProof(Box::new(signed_proof))],
                 }) {

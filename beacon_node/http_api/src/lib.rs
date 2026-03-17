@@ -3235,6 +3235,9 @@ pub fn serve<T: BeaconChainTypes>(
                                 api_types::EventTopic::BlockGossip => {
                                     event_handler.subscribe_block_gossip()
                                 }
+                                api_types::EventTopic::ExecutionProofValidated => {
+                                    event_handler.subscribe_execution_proof_validated()
+                                }
                             };
 
                             receivers.push(

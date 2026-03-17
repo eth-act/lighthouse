@@ -36,6 +36,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use store::hot_cold_store::HotColdDBError;
 use tracing::{Instrument, Span, debug, error, info, instrument, trace, warn};
+use beacon_chain::events::{EventKind, SseExecutionProofValidated};
 use types::ProofStatus;
 use types::{
     Attestation, AttestationData, AttestationRef, AttesterSlashing, BlobSidecar, DataColumnSidecar,
@@ -1877,6 +1878,9 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         let proof_type = execution_proof.proof_type();
         let validator_index = execution_proof.validator_index();
 
+        // Clone the proof message before verification moves ownership
+        let proof_message = execution_proof.message.clone();
+
         // Verify the execution proof.
         let verification_result = self.chain.verify_execution_proof(execution_proof).await;
 
@@ -1910,6 +1914,23 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                         });
                 }
                 self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Accept);
+
+                // Emit SSE event for validator proof resigning
+                if let Some(event_handler) = self.chain.event_handler.as_ref() {
+                    if event_handler.has_execution_proof_validated_subscribers() {
+                        event_handler.register(EventKind::ExecutionProofValidated(
+                            SseExecutionProofValidated {
+                                execution_proof: proof_message.clone(),
+                                slot: verified_block
+                                    .map(|(_, s)| s.as_u64())
+                                    .unwrap_or(0),
+                                block_root: verified_block
+                                    .map(|(r, _)| r)
+                                    .unwrap_or_default(),
+                            },
+                        ));
+                    }
+                }
             }
             Ok((ProofStatus::Invalid, _)) => {
                 debug!(
@@ -1920,7 +1941,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                 self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Reject);
                 self.gossip_penalize_peer(peer_id, PeerAction::Fatal, "invalid_execution_proof");
             }
-            Ok((ProofStatus::Accepted, _)) => {
+            Ok((ProofStatus::Accepted, verified_block)) => {
                 debug!(
                     ?request_root,
                     validator_index,
@@ -1928,6 +1949,23 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     "Execution proof is accepted but not fully verified"
                 );
                 self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Accept);
+
+                // Emit SSE event for validator proof resigning
+                if let Some(event_handler) = self.chain.event_handler.as_ref() {
+                    if event_handler.has_execution_proof_validated_subscribers() {
+                        event_handler.register(EventKind::ExecutionProofValidated(
+                            SseExecutionProofValidated {
+                                execution_proof: proof_message,
+                                slot: verified_block
+                                    .map(|(_, s)| s.as_u64())
+                                    .unwrap_or(0),
+                                block_root: verified_block
+                                    .map(|(r, _)| r)
+                                    .unwrap_or_default(),
+                            },
+                        ));
+                    }
+                }
             }
             Ok((ProofStatus::Syncing, _)) => {
                 debug!(

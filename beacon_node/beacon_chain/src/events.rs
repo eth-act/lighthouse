@@ -1,4 +1,6 @@
-pub use eth2::types::{EventKind, SseBlock, SseFinalizedCheckpoint, SseHead};
+pub use eth2::types::{
+    EventKind, SseBlock, SseExecutionProofValidated, SseFinalizedCheckpoint, SseHead,
+};
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::{Receiver, Sender, error::SendError};
 use tracing::trace;
@@ -27,6 +29,7 @@ pub struct ServerSentEventHandler<E: EthSpec> {
     attester_slashing_tx: Sender<EventKind<E>>,
     bls_to_execution_change_tx: Sender<EventKind<E>>,
     block_gossip_tx: Sender<EventKind<E>>,
+    execution_proof_validated_tx: Sender<EventKind<E>>,
 }
 
 impl<E: EthSpec> ServerSentEventHandler<E> {
@@ -55,6 +58,7 @@ impl<E: EthSpec> ServerSentEventHandler<E> {
         let (attester_slashing_tx, _) = broadcast::channel(capacity);
         let (bls_to_execution_change_tx, _) = broadcast::channel(capacity);
         let (block_gossip_tx, _) = broadcast::channel(capacity);
+        let (execution_proof_validated_tx, _) = broadcast::channel(capacity);
 
         Self {
             attestation_tx,
@@ -77,6 +81,7 @@ impl<E: EthSpec> ServerSentEventHandler<E> {
             attester_slashing_tx,
             bls_to_execution_change_tx,
             block_gossip_tx,
+            execution_proof_validated_tx,
         }
     }
 
@@ -169,6 +174,10 @@ impl<E: EthSpec> ServerSentEventHandler<E> {
                 .block_gossip_tx
                 .send(kind)
                 .map(|count| log_count("block gossip", count)),
+            EventKind::ExecutionProofValidated(_) => self
+                .execution_proof_validated_tx
+                .send(kind)
+                .map(|count| log_count("execution_proof_validated", count)),
         };
         if let Err(SendError(event)) = result {
             trace!(?event, "No receivers registered to listen for event");
@@ -325,5 +334,13 @@ impl<E: EthSpec> ServerSentEventHandler<E> {
 
     pub fn has_block_gossip_subscribers(&self) -> bool {
         self.block_gossip_tx.receiver_count() > 0
+    }
+
+    pub fn subscribe_execution_proof_validated(&self) -> Receiver<EventKind<E>> {
+        self.execution_proof_validated_tx.subscribe()
+    }
+
+    pub fn has_execution_proof_validated_subscribers(&self) -> bool {
+        self.execution_proof_validated_tx.receiver_count() > 0
     }
 }
