@@ -96,6 +96,7 @@ version = "8.0.1"
 
 [workspace.dependencies]
 account_utils = { path = "common/account_utils" }
+async-stream = "0.3"
 alloy-consensus = { version = "1", default-features = false }
 alloy-dyn-abi = { version = "1", default-features = false }
 alloy-json-abi = { version = "1", default-features = false }
@@ -216,6 +217,7 @@ reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
     "native-tls-vendored",
 ] }
+reqwest-eventsource = "0.6"
 ring = "0.17"
 rpds = "0.11"
 rusqlite = { version = "0.28", features = ["bundled"] }

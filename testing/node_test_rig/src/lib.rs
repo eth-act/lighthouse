@@ -299,7 +299,4 @@ impl<E: EthSpec> LocalProofEngine<E> {
         Self { server, datadir }
     }
 
-    pub fn set_validator_client(&mut self, client: ValidatorClientHttpClient) {
-        self.server.set_validator_callback(client.into());
-    }
 }

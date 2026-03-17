@@ -10,6 +10,7 @@ alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
 arc-swap = "1.6.0"
+async-stream = { workspace = true }
 async-trait = "0.1"
 bls = { workspace = true }
 builder_client = { path = "../builder_client" }
@@ -33,7 +34,9 @@ metrics = { workspace = true }
 parking_lot = { workspace = true }
 pretty_reqwest_error = { workspace = true }
 rand = { workspace = true }
+futures = { workspace = true }
 reqwest = { workspace = true }
+reqwest-eventsource = { workspace = true }
 sensitive_url = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -17,6 +17,7 @@ parking_lot = { workspace = true }
 safe_arith = { workspace = true }
 serde_json = { workspace = true }
 slot_clock = { workspace = true }
+ssz_types = { workspace = true }
 task_executor = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

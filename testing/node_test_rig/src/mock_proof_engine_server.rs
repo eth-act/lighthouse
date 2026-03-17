@@ -1,26 +1,39 @@
 //! Mock proof engine server for testing EIP-8025 execution proofs.
 //!
-//! Provides an HTTP JSON-RPC server that simulates an external proof engine backend
-//! for integration testing. Uses mockito to mock the HTTP endpoints.
+//! Provides an HTTP REST server that simulates a zkboost-compatible proof engine
+//! backend for integration testing. Uses axum with SSE support.
+//!
+//! Endpoints:
+//! - POST /v1/execution_proof_requests — Accept SSZ proof request, return root
+//! - GET  /v1/execution_proof_requests — SSE stream of proof events
+//! - GET  /v1/execution_proofs/:root/:proof_type — Download proof bytes
+//! - POST /v1/execution_proof_verifications — Verify proof (always VALID)
 
-// TODO: Move this module into the execution_layer crate
-
-use super::ValidatorClientHttpClient;
-use eth2::lighthouse_vc::types::SignExecutionProofRequest;
+use axum::{
+    Router,
+    body::Bytes,
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Json,
+    },
+    routing::{get, post},
+};
 use execution_layer::NewPayloadRequestFulu;
-use execution_layer::json_structures::JsonExecutionPayloadFulu;
-use mockito::{Matcher, Mock, Server, ServerGuard};
 use parking_lot::{Mutex, RwLock};
 use sensitive_url::SensitiveUrl;
-use serde_json::json;
+use serde::{Deserialize, Serialize};
 use ssz_types::VariableList;
+use std::collections::HashMap;
+use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
-use task_executor::TaskExecutor;
+use tokio::sync::broadcast;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamExt;
 use tree_hash::TreeHash;
-use types::execution::eip8025::{
-    ExecutionProof, ProofAttributes, ProofGenId, ProofType, PublicInput,
-};
+use types::execution::eip8025::ProofType;
 use types::{EthSpec, ExecutionPayloadFulu, ExecutionRequests, Hash256, VersionedHash};
 
 /// Configuration for a mock proof engine.
@@ -28,7 +41,6 @@ use types::{EthSpec, ExecutionPayloadFulu, ExecutionRequests, Hash256, Versioned
 pub struct MockProofEngineConfig {
     pub server_config: ProofEngineServerConfig,
     pub callback_delay_ms: u64,
-    pub callback_url: Arc<RwLock<Option<Arc<ValidatorClientHttpClient>>>>,
 }
 
 impl Default for MockProofEngineConfig {
@@ -36,7 +48,6 @@ impl Default for MockProofEngineConfig {
         Self {
             server_config: ProofEngineServerConfig::default(),
             callback_delay_ms: 200,
-            callback_url: Arc::new(RwLock::new(None)),
         }
     }
 }
@@ -60,361 +71,320 @@ impl Default for ProofEngineServerConfig {
 /// Record of a proof request received by the mock server.
 #[derive(Clone, Debug)]
 pub struct ProofRequestRecord {
-    pub proof_gen_id: ProofGenId,
     pub new_payload_request_root: Hash256,
     pub proof_types: Vec<ProofType>,
     pub timestamp: std::time::Instant,
 }
 
-/// Mock proof engine HTTP server.
+// ─── SSE Event Payload ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+struct ProofCompleteEvent {
+    new_payload_request_root: Hash256,
+    proof_type: ProofType,
+}
+
+// ─── Query Parameters ────────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct ProofRequestQuery {
+    proof_types: String,
+}
+
+#[derive(Deserialize)]
+struct ProofEventQuery {
+    new_payload_request_root: Option<Hash256>,
+}
+
+#[derive(Deserialize)]
+struct ProofVerificationQuery {
+    #[allow(dead_code)]
+    new_payload_request_root: Hash256,
+    #[allow(dead_code)]
+    proof_type: ProofType,
+}
+
+// ─── Shared State ────────────────────────────────────────────────────────────
+
+struct AppState {
+    proof_requests: Mutex<Vec<ProofRequestRecord>>,
+    /// Generated proof data: (root, proof_type) -> proof bytes
+    proof_store: RwLock<HashMap<(Hash256, ProofType), Vec<u8>>>,
+    /// Broadcast channel for SSE events
+    event_tx: broadcast::Sender<(String, String)>,
+    callback_delay_ms: u64,
+}
+
+// ─── Response Types ──────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct ProofRequestResponse {
+    new_payload_request_root: Hash256,
+}
+
+#[derive(Serialize)]
+struct ProofVerificationResponse {
+    status: &'static str,
+}
+
+// ─── Mock Proof Engine Server ────────────────────────────────────────────────
+
+/// Mock proof engine HTTP server using axum.
 ///
-/// Implements the JSON-RPC endpoints for:
-/// - engine_requestProofsV1: Accept proof requests and return ProofGenId
-/// - engine_verifyExecutionProofV1: Verify proof validity
+/// Implements the zkboost-compatible REST API endpoints for:
+/// - Proof request submission (POST, SSZ body)
+/// - Proof event streaming (GET, SSE)
+/// - Proof download (GET, binary)
+/// - Proof verification (POST, always VALID)
 pub struct MockProofEngineServer<E: EthSpec> {
-    server: ServerGuard,
-    config: MockProofEngineConfig,
-    proof_requests: Arc<Mutex<Vec<ProofRequestRecord>>>,
-    executor: TaskExecutor,
-    _mocks: Vec<Mock>, // Keep mocks alive
+    url: SensitiveUrl,
+    state: Arc<AppState>,
     _phantom: std::marker::PhantomData<E>,
 }
 
 impl<E: EthSpec> MockProofEngineServer<E> {
     /// Create a new mock proof engine server.
-    pub async fn new(config: MockProofEngineConfig, executor: TaskExecutor) -> Self {
-        // Use Server::new_async() to avoid starting a runtime within a runtime
-        let server = Server::new_async().await;
-        let proof_requests = Arc::new(Mutex::new(Vec::new()));
+    pub async fn new(config: MockProofEngineConfig, executor: task_executor::TaskExecutor) -> Self {
+        let (event_tx, _) = broadcast::channel(256);
 
-        let mut mock_server = Self {
-            server,
-            config,
-            proof_requests,
-            executor,
-            _mocks: Vec::new(),
+        let state = Arc::new(AppState {
+            proof_requests: Mutex::new(Vec::new()),
+            proof_store: RwLock::new(HashMap::new()),
+            event_tx,
+            callback_delay_ms: config.callback_delay_ms,
+        });
+
+        let app = Router::new()
+            .route(
+                "/v1/execution_proof_requests",
+                post(handle_request_proofs::<E>).get(handle_sse_events),
+            )
+            .route(
+                "/v1/execution_proofs/{root}/{proof_type}",
+                get(handle_get_proof),
+            )
+            .route(
+                "/v1/execution_proof_verifications",
+                post(handle_verify_proof),
+            )
+            .with_state(state.clone());
+
+        let listener = tokio::net::TcpListener::bind(std::net::SocketAddr::from((
+            config.server_config.listen_addr,
+            config.server_config.listen_port,
+        )))
+        .await
+        .expect("should bind mock proof engine listener");
+
+        let local_addr = listener.local_addr().expect("should get local addr");
+        let url = SensitiveUrl::parse(&format!("http://{}", local_addr)).unwrap();
+
+        executor.spawn(
+            async move {
+                axum::serve(listener, app)
+                    .await
+                    .expect("mock proof engine server failed");
+            },
+            "mock_proof_engine_server",
+        );
+
+        Self {
+            url,
+            state,
             _phantom: std::marker::PhantomData,
-        };
-
-        mock_server.setup_endpoints();
-        mock_server
-    }
-
-    pub fn set_validator_callback(&mut self, client: Arc<ValidatorClientHttpClient>) {
-        *self.config.callback_url.write() = Some(client);
-    }
-
-    /// Setup all HTTP endpoints.
-    fn setup_endpoints(&mut self) {
-        self.setup_request_proofs_endpoint();
-        self.setup_verify_proof_endpoint();
-    }
-
-    /// Setup the engine_requestProofsV1 endpoint.
-    fn setup_request_proofs_endpoint(&mut self) {
-        let proof_requests = self.proof_requests.clone();
-        let callback_delay = self.config.callback_delay_ms;
-        let validator_client_ref = self.config.callback_url.clone();
-        let task_executor = self.executor.clone();
-
-        let mock = self
-            .server
-            .mock("POST", "/")
-            .match_body(Matcher::Regex(
-                r#".*"method"\s*:\s*"engine_requestProofsV1".*"#.to_string(),
-            ))
-            .with_status(200)
-            .with_body_from_request(move |request| {
-                // Helper function to return JSON-RPC error response
-                let error_response = |error_msg: &str| -> Vec<u8> {
-                    serde_json::to_vec(&json!({
-                        "jsonrpc": "2.0",
-                        "error": {
-                            "code": -32602,
-                            "message": format!("Invalid params: {}", error_msg)
-                        },
-                        "id": 1
-                    }))
-                    .unwrap_or_else(|_| b"{\"error\":\"internal error\"}".to_vec())
-                };
-
-                // Parse JSON-RPC request with error handling
-                let body_bytes = match request.body() {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        return error_response(&format!("failed to read request body: {}", e));
-                    }
-                };
-
-                let body: serde_json::Value = match serde_json::from_slice(body_bytes) {
-                    Ok(v) => v,
-                    Err(e) => return error_response(&format!("invalid JSON: {}", e)),
-                };
-
-                // Parse params array
-                let Some(params) = body["params"].as_array() else {
-                    return error_response("params is not an array");
-                };
-
-                if params.len() < 5 {
-                    return error_response(&format!("expected 5 params, got {}", params.len()));
-                }
-
-                // Parse execution payload
-                let execution_payload_json: JsonExecutionPayloadFulu<E> =
-                    match serde_json::from_value(params[0].clone()) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            return error_response(&format!("invalid execution payload: {}", e));
-                        }
-                    };
-
-                let execution_payload: ExecutionPayloadFulu<E> = match execution_payload_json
-                    .try_into()
-                {
-                    Ok(v) => v,
-                    Err(e) => return error_response(&format!("failed to convert payload: {}", e)),
-                };
-
-                // Parse versioned hashes
-                let versioned_hashes: VariableList<VersionedHash, E::MaxBlobCommitmentsPerBlock> =
-                    match serde_json::from_value(params[1].clone()) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            return error_response(&format!("invalid versioned hashes: {}", e));
-                        }
-                    };
-
-                // Parse parent beacon block root
-                let parent_beacon_block_root: Hash256 =
-                    match serde_json::from_value(params[2].clone()) {
-                        Ok(v) => v,
-                        Err(e) => return error_response(&format!("invalid parent root: {}", e)),
-                    };
-
-                // Deserialize execution requests from JSON with fork context
-                let execution_requests_bytes = match serde_json::from_value(params[3].clone()) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        return error_response(&format!("invalid execution requests: {}", e));
-                    }
-                };
-                let execution_requests = match ExecutionRequests::<E>::from_execution_requests_list(
-                    execution_requests_bytes,
-                ) {
-                    Ok(r) => r,
-                    Err(e) => return error_response(&e),
-                };
-
-                // Parse proof attributes
-                let proof_attributes: ProofAttributes =
-                    match serde_json::from_value(params[4].clone()) {
-                        Ok(v) => v,
-                        Err(e) => {
-                            return error_response(&format!("invalid proof attributes: {}", e));
-                        }
-                    };
-
-                // Compute request root with properly decoded execution_requests
-                let new_payload_request = NewPayloadRequestFulu {
-                    execution_payload: &execution_payload,
-                    versioned_hashes,
-                    parent_beacon_block_root,
-                    execution_requests: &execution_requests,
-                };
-                let request_root = new_payload_request.tree_hash_root();
-
-                // Trigger callback if validator client is configured
-                if let Some(validator) = validator_client_ref.read().as_ref() {
-                    tracing::info!(
-                        target: "simulator",
-                        ?request_root,
-                        proof_types = ?proof_attributes.proof_types,
-                        "Triggering proof callback"
-                    );
-                    let _ = Self::proof_callback(
-                        validator.clone(),
-                        callback_delay,
-                        task_executor.clone(),
-                        request_root,
-                        proof_attributes.proof_types.clone(),
-                    );
-                }
-
-                // Generate deterministic ProofGenId from request root
-                let mut proof_gen_id = [0u8; 8];
-                proof_gen_id.copy_from_slice(&request_root.0[0..8]);
-
-                // Store request
-                proof_requests.lock().push(ProofRequestRecord {
-                    proof_gen_id,
-                    new_payload_request_root: request_root,
-                    proof_types: proof_attributes.proof_types.clone(),
-                    timestamp: std::time::Instant::now(),
-                });
-
-                tracing::info!(
-                    target: "simulator",
-                    proof_gen_id = hex::encode(proof_gen_id),
-                    ?request_root,
-                    num_proof_types = proof_attributes.proof_types.len(),
-                    "Proof request recorded"
-                );
-
-                // Return success response
-                serde_json::to_vec(&json!({
-                    "jsonrpc": "2.0",
-                    "result": format!("0x{}", hex::encode(proof_gen_id)),
-                    "id": 1
-                }))
-                .unwrap_or_else(|_| b"{\"error\":\"internal error\"}".to_vec())
-            })
-            .create();
-
-        self._mocks.push(mock);
-    }
-
-    /// Setup the engine_verifyExecutionProofV1 endpoint.
-    fn setup_verify_proof_endpoint(&mut self) {
-        let mock = self.server
-            .mock("POST", "/")
-            .match_body(Matcher::Regex(
-                r#".*"method"\s*:\s*"engine_verifyExecutionProofV1".*"#.to_string(),
-            ))
-            .with_status(200)
-            .with_body_from_request(move |request| {
-                // Validate the request has a body
-                let _body_bytes = match request.body() {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        return serde_json::to_vec(&json!({
-                            "jsonrpc": "2.0",
-                            "error": {"code": -32602, "message": format!("failed to read request body: {}", e)},
-                            "id": 1
-                        }))
-                        .unwrap_or_else(|_| b"{\"error\":\"internal error\"}".to_vec());
-                    }
-                };
-
-                // For the verify endpoint, we just return VALID for all properly formatted requests
-                serde_json::to_vec(&json!({
-                    "jsonrpc": "2.0",
-                    "result": {"status": "VALID"},
-                    "id": 1
-                }))
-                .unwrap_or_else(|_| b"{\"error\":\"internal error\"}".to_vec())
-            })
-            .create();
-
-        self._mocks.push(mock);
+        }
     }
 
     /// Get the URL of the mock server.
     pub fn url(&self) -> SensitiveUrl {
-        SensitiveUrl::parse(&self.server.url()).unwrap()
+        self.url.clone()
     }
 
     /// Get all proof requests received by the server.
     pub fn get_proof_requests(&self) -> Vec<ProofRequestRecord> {
-        self.proof_requests.lock().clone()
+        self.state.proof_requests.lock().clone()
     }
+}
 
-    /// Manually trigger a callback to the validator client with a generated proof.
-    ///
-    /// This simulates the proof engine calling back to the validator client
-    /// after generating a proof asynchronously.
-    pub fn proof_callback(
-        client: Arc<ValidatorClientHttpClient>,
-        callback_delay: u64,
-        task_executor: TaskExecutor,
-        new_payload_request_root: Hash256,
-        proof_types: Vec<ProofType>,
-    ) -> Result<(), String> {
-        task_executor.spawn(
-            async move {
-                tracing::info!(
-                    target: "simulator",
-                    delay_ms = callback_delay,
-                    "Proof callback task started, sleeping"
-                );
+// ─── Handler: POST /v1/execution_proof_requests ──────────────────────────────
 
-                tokio::time::sleep(Duration::from_millis(callback_delay)).await;
+async fn handle_request_proofs<E: EthSpec>(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ProofRequestQuery>,
+    body: Bytes,
+) -> impl IntoResponse {
+    // Parse proof types from query
+    let proof_types: Vec<ProofType> = query
+        .proof_types
+        .split(',')
+        .filter_map(|s| s.trim().parse().ok())
+        .collect();
 
-                tracing::info!(target: "simulator", "Fetching validators for callback");
+    // Decode SSZ body and compute tree hash root
+    let request_root = match decode_and_hash_request::<E>(&body) {
+        Ok(root) => root,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": e})),
+            )
+                .into_response();
+        }
+    };
 
-                let validators = match client.get_lighthouse_validators().await {
-                    Ok(v) => v,
-                    Err(e) => {
-                        tracing::error!(target: "simulator", error = ?e, "Failed to get validators");
-                        return;
-                    }
-                };
+    // Store the request
+    state.proof_requests.lock().push(ProofRequestRecord {
+        new_payload_request_root: request_root,
+        proof_types: proof_types.clone(),
+        timestamp: std::time::Instant::now(),
+    });
 
-                let pubkey = match validators.data.first() {
-                    Some(v) => v.voting_pubkey,
-                    None => {
-                        tracing::error!(target: "simulator", "No validators found");
-                        return;
-                    }
-                };
+    tracing::info!(
+        target: "simulator",
+        ?request_root,
+        num_proof_types = proof_types.len(),
+        "Proof request recorded"
+    );
 
-                tracing::info!(
-                    target: "simulator",
-                    ?pubkey,
-                    num_proof_types = proof_types.len(),
-                    "Generating and sending proofs"
-                );
+    // Generate dummy proofs and schedule SSE events after delay
+    let delay = state.callback_delay_ms;
+    let state_for_task = state.clone();
 
-                let execution_proofs =
-                    Self::generate_dummy_proofs(new_payload_request_root, proof_types);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(delay)).await;
 
-                for execution_proof in execution_proofs {
-                    tracing::info!(
-                        target: "simulator",
-                        proof_type = ?execution_proof.proof_type,
-                        "Sending proof to validator client"
-                    );
+        for proof_type in &proof_types {
+            // Generate dummy proof data
+            let mut proof_bytes = vec![0xDE, 0xAD, 0xBE, 0xEF];
+            proof_bytes.extend_from_slice(&request_root.0[0..16]);
 
-                    let request_body = SignExecutionProofRequest {
-                        execution_proof,
-                        epoch: None,
-                    };
+            // Store the proof for later download
+            state_for_task
+                .proof_store
+                .write()
+                .insert((request_root, *proof_type), proof_bytes);
 
-                    match client.post_execution_proof(&pubkey, request_body).await {
-                        Ok(_) => {
-                            tracing::info!(target: "simulator", "Proof sent successfully");
-                        }
-                        Err(e) => {
-                            tracing::error!(target: "simulator", error = ?e, "Failed to send proof");
+            // Broadcast SSE event
+            let event_data = serde_json::to_string(&ProofCompleteEvent {
+                new_payload_request_root: request_root,
+                proof_type: *proof_type,
+            })
+            .unwrap();
+
+            let _ = state_for_task
+                .event_tx
+                .send(("proof_complete".to_string(), event_data));
+
+            tracing::info!(
+                target: "simulator",
+                ?request_root,
+                proof_type,
+                "Proof complete event sent via SSE"
+            );
+        }
+    });
+
+    Json(ProofRequestResponse {
+        new_payload_request_root: request_root,
+    })
+    .into_response()
+}
+
+// ─── Handler: GET /v1/execution_proof_requests (SSE) ─────────────────────────
+
+async fn handle_sse_events(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ProofEventQuery>,
+) -> Sse<impl futures::Stream<Item = Result<Event, Infallible>>> {
+    let rx = state.event_tx.subscribe();
+    let filter_root = query.new_payload_request_root;
+
+    let stream = BroadcastStream::new(rx).filter_map(move |result| {
+        match result {
+            Ok((event_name, event_data)) => {
+                // Apply root filter if specified
+                if let Some(filter) = filter_root {
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&event_data) {
+                        if let Some(root_str) = parsed
+                            .get("new_payload_request_root")
+                            .and_then(|v| v.as_str())
+                        {
+                            let filter_str = format!("{filter:#}");
+                            if root_str != filter_str {
+                                return None;
+                            }
                         }
                     }
                 }
-            },
-            "proof_callback",
-        );
 
-        Ok(())
-    }
-
-    /// Generate a dummy execution proof for testing.
-    fn generate_dummy_proofs(root: Hash256, proof_types: Vec<ProofType>) -> Vec<ExecutionProof> {
-        let mut proofs = vec![];
-
-        for proof_type in proof_types {
-            let mut proof_bytes = vec![0xDE, 0xAD, 0xBE, 0xEF];
-            proof_bytes.extend_from_slice(&root.0[0..16]);
-
-            let proof = ExecutionProof {
-                proof_data: VariableList::new(proof_bytes).unwrap(),
-                proof_type,
-                public_input: PublicInput {
-                    new_payload_request_root: root,
-                },
-            };
-
-            proofs.push(proof);
+                Some(Ok(Event::default().event(event_name).data(event_data)))
+            }
+            Err(_) => None,
         }
+    });
 
-        proofs
+    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+}
+
+// ─── Handler: GET /v1/execution_proofs/:root/:proof_type ─────────────────────
+
+async fn handle_get_proof(
+    State(state): State<Arc<AppState>>,
+    Path((root_str, proof_type_str)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let root = match root_str.parse::<Hash256>() {
+        Ok(r) => r,
+        Err(_) => return (StatusCode::BAD_REQUEST, "invalid root").into_response(),
+    };
+
+    let proof_type: ProofType = match proof_type_str.parse() {
+        Ok(t) => t,
+        Err(_) => return (StatusCode::BAD_REQUEST, "invalid proof_type").into_response(),
+    };
+
+    match state.proof_store.read().get(&(root, proof_type)) {
+        Some(proof_bytes) => (StatusCode::OK, proof_bytes.clone()).into_response(),
+        None => (StatusCode::NOT_FOUND, "proof not found").into_response(),
     }
+}
+
+// ─── Handler: POST /v1/execution_proof_verifications ─────────────────────────
+
+async fn handle_verify_proof(
+    State(_state): State<Arc<AppState>>,
+    Query(_query): Query<ProofVerificationQuery>,
+    _body: Bytes,
+) -> Json<ProofVerificationResponse> {
+    // Always return VALID for testing
+    Json(ProofVerificationResponse { status: "VALID" })
+}
+
+// ─── SSZ Decoding Helper ─────────────────────────────────────────────────────
+
+/// Decode SSZ-encoded NewPayloadRequest and compute its tree hash root.
+fn decode_and_hash_request<E: EthSpec>(body: &[u8]) -> Result<Hash256, String> {
+    use ssz::Decode;
+
+    // Decode the SSZ body as a Fulu NewPayloadRequest.
+    // This struct mirrors SszNewPayloadRequestFulu from proof_engine.rs.
+    #[derive(ssz_derive::Decode)]
+    struct SszNewPayloadRequestFulu<E: EthSpec> {
+        execution_payload: ExecutionPayloadFulu<E>,
+        versioned_hashes: VariableList<VersionedHash, E::MaxBlobCommitmentsPerBlock>,
+        parent_beacon_block_root: Hash256,
+        execution_requests: ExecutionRequests<E>,
+    }
+
+    let decoded = SszNewPayloadRequestFulu::<E>::from_ssz_bytes(body)
+        .map_err(|e| format!("SSZ decode error: {e:?}"))?;
+
+    // Compute tree hash root using the same structure as the real NewPayloadRequestFulu
+    let request = NewPayloadRequestFulu {
+        execution_payload: &decoded.execution_payload,
+        versioned_hashes: decoded.versioned_hashes,
+        parent_beacon_block_root: decoded.parent_beacon_block_root,
+        execution_requests: &decoded.execution_requests,
+    };
+
+    Ok(request.tree_hash_root())
 }

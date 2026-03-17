@@ -519,17 +519,8 @@ impl<E: EthSpec> LocalNetwork<E> {
         )
         .await?;
 
-        // Set the callback url on the proof engine if this is a proof generator node.
-        if node_type.is_proof_generator() {
-            let validator_http_client = validator_client
-                .http_client()?
-                .expect("HTTP client should be available for proof generator node");
-            self.proof_engines
-                .write()
-                .first_mut()
-                .unwrap()
-                .set_validator_client(validator_http_client);
-        }
+        // In the SSE-based API, the VC subscribes to proof events from the proof engine
+        // directly — no callback registration is needed.
 
         self.validator_clients.write().push(validator_client);
         Ok(())
