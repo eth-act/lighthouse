@@ -1884,7 +1884,9 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         // Verify the execution proof.
         let verification_result = self.chain.verify_execution_proof(execution_proof).await;
 
-        if let Ok((proof_status, block)) = &verification_result
+        // If we have a execution proof subscriber we assume a validator will resign the proof and therefore we do not propagate this proof to peers.
+        // We will wait for the validator to sign and submit the proof for gossip.
+        let _gossip_behaviour = if let Ok((proof_status, block)) = &verification_result
             && (proof_status.is_valid() || proof_status.is_accepted())
             && let Some(event_handler) = self.chain.event_handler.as_ref()
             && event_handler.has_execution_proof_validated_subscribers()
@@ -1896,7 +1898,10 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     epoch: slot.epoch(T::EthSpec::slots_per_epoch()).as_u64(),
                 },
             ));
-        }
+            MessageAcceptance::Ignore
+        } else {
+            MessageAcceptance::Accept
+        };
 
         match verification_result {
             // TODO: split our error types and penalize accordingly
@@ -1927,7 +1932,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                             block_root,
                         });
                 }
-                self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Ignore);
+                self.propagate_validation_result(message_id, peer_id, _gossip_behaviour);
             }
             Ok((ProofStatus::Invalid, _)) => {
                 debug!(
@@ -1945,7 +1950,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     proof_type,
                     "Execution proof is accepted but not fully verified"
                 );
-                self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Ignore);
+                self.propagate_validation_result(message_id, peer_id, _gossip_behaviour);
             }
             Ok((ProofStatus::Syncing, _)) => {
                 debug!(
