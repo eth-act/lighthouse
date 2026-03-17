@@ -3181,9 +3181,6 @@ pub fn serve<T: BeaconChainTypes>(
                             let receiver = match topic {
                                 api_types::EventTopic::Head => event_handler.subscribe_head(),
                                 api_types::EventTopic::Block => event_handler.subscribe_block(),
-                                api_types::EventTopic::BlockFull => {
-                                    event_handler.subscribe_block_full()
-                                }
                                 api_types::EventTopic::BlobSidecar => {
                                     event_handler.subscribe_blob_sidecar()
                                 }
@@ -3234,6 +3231,9 @@ pub fn serve<T: BeaconChainTypes>(
                                 }
                                 api_types::EventTopic::BlockGossip => {
                                     event_handler.subscribe_block_gossip()
+                                }
+                                api_types::EventTopic::ExecutionProofValidated => {
+                                    event_handler.subscribe_execution_proof_validated()
                                 }
                             };
 
