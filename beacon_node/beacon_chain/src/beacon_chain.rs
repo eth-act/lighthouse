@@ -60,6 +60,7 @@ use crate::observed_slashable::ObservedSlashable;
 use crate::persisted_beacon_chain::PersistedBeaconChain;
 use crate::persisted_custody::persist_custody_context;
 use crate::persisted_fork_choice::PersistedForkChoice;
+use execution_layer::eip8025::{PersistedProofEngineState, PROOF_ENGINE_DB_KEY};
 use crate::pre_finalization_cache::PreFinalizationBlockCache;
 use crate::shuffling_cache::{BlockShufflingIds, ShufflingCache};
 use crate::sync_committee_verification::{
@@ -636,30 +637,15 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     /// Load persisted ProofEngine state from disk, returning `None` if not found or corrupt.
     pub fn load_proof_engine_state(
         store: BeaconStore<T>,
-    ) -> Option<execution_layer::eip8025::PersistedProofEngineState> {
-        use crate::persisted_proof_engine::{PROOF_ENGINE_DB_KEY, decode_proof_engine_state};
-
-        let bytes = match store
-            .hot_db
-            .get_bytes(
-                store::DBColumn::ProofEngine,
-                PROOF_ENGINE_DB_KEY.as_slice(),
-            ) {
-            Ok(Some(bytes)) => bytes,
-            Ok(None) => return None,
-            Err(e) => {
-                tracing::warn!(error = ?e, "Failed to read ProofEngine state from disk, starting fresh");
-                return None;
-            }
-        };
-
-        match decode_proof_engine_state(&bytes, store.get_config()) {
-            Ok(persisted) => {
+    ) -> Option<PersistedProofEngineState> {
+        match store.get_item::<PersistedProofEngineState>(&PROOF_ENGINE_DB_KEY) {
+            Ok(Some(persisted)) => {
                 tracing::info!("Loaded ProofEngine state from disk");
                 Some(persisted)
             }
+            Ok(None) => None,
             Err(e) => {
-                tracing::warn!(error = ?e, "Failed to decode ProofEngine state, starting fresh");
+                tracing::warn!(error = ?e, "Failed to read ProofEngine state from disk, starting fresh");
                 None
             }
         }
@@ -7652,10 +7638,10 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
 impl<T: BeaconChainTypes> Drop for BeaconChain<T> {
     fn drop(&mut self) {
         let drop = || -> Result<(), Error> {
-            // TODO: Persist the proof engine state if the BeaconChain is dropped.
             self.persist_fork_choice()?;
             self.persist_op_pool()?;
-            self.persist_custody_context()
+            self.persist_custody_context()?;
+            self.persist_proof_engine()
         };
 
         if let Err(e) = drop() {

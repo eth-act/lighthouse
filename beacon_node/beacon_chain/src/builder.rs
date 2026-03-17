@@ -1059,15 +1059,13 @@ where
         };
 
         // Restore ProofEngine state from disk if available.
-        if let Some(el) = beacon_chain.execution_layer.as_ref() {
-            if let Some(proof_engine) = el.proof_engine() {
-                if let Some(persisted) =
+        if let Some(el) = beacon_chain.execution_layer.as_ref()
+            && let Some(proof_engine) = el.proof_engine()
+                && let Some(persisted) =
                     crate::BeaconChain::<Witness<TSlotClock, _, _, _>>::load_proof_engine_state(beacon_chain.store.clone())
                 {
                     proof_engine.restore_from_persisted(persisted);
                 }
-            }
-        }
 
         let head = beacon_chain.head_snapshot();
 

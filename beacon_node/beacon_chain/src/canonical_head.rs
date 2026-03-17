@@ -42,6 +42,7 @@ use crate::{
     validator_monitor::get_slot_delay_ms,
 };
 use eth2::types::{EventKind, SseChainReorg, SseFinalizedCheckpoint, SseHead, SseLateHead};
+use execution_layer::eip8025::PROOF_ENGINE_DB_KEY;
 use fork_choice::{
     ExecutionStatus, ForkChoiceStore, ForkChoiceView, ForkchoiceUpdateParameters, ProtoBlock,
     ResetPayloadStatuses,
@@ -55,7 +56,8 @@ use state_processing::AllCaches;
 use std::sync::Arc;
 use std::time::Duration;
 use store::{
-    Error as StoreError, KeyValueStore, KeyValueStoreOp, StoreConfig, iter::StateRootsIterator,
+    Error as StoreError, KeyValueStore, KeyValueStoreOp, StoreConfig, StoreItem,
+    iter::StateRootsIterator,
 };
 use task_executor::{JoinHandle, ShutdownReason};
 use tracing::info_span;
@@ -867,6 +869,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
 
         if is_epoch_transition || reorg_distance.is_some() {
             self.persist_fork_choice()?;
+            self.persist_proof_engine()?;
             self.op_pool.prune_attestations(self.epoch()?);
         }
 
@@ -1030,13 +1033,10 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         Ok(())
     }
 
-    /// Persist fork choice and proof engine state to disk atomically.
+    /// Persist fork choice to disk, writing immediately.
     pub fn persist_fork_choice(&self) -> Result<(), Error> {
         let _fork_choice_timer = metrics::start_timer(&metrics::PERSIST_FORK_CHOICE);
-        let mut batch = vec![self.persist_fork_choice_in_batch()?];
-        if let Some(op) = self.persist_proof_engine_in_batch()? {
-            batch.push(op);
-        }
+        let batch = vec![self.persist_fork_choice_in_batch()?];
         self.store.hot_db.do_atomically(batch)?;
         Ok(())
     }
@@ -1050,21 +1050,21 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         .map_err(Into::into)
     }
 
-    /// Return a database operation for writing proof engine state to disk, if a proof engine exists.
-    pub fn persist_proof_engine_in_batch(&self) -> Result<Option<KeyValueStoreOp>, Error> {
-        let Some(el) = self.execution_layer.as_ref() else {
-            return Ok(None);
+    /// Persist the proof engine to disk, writing immediately.
+    pub fn persist_proof_engine(&self) -> Result<(), Error> {
+        let Some(proof_engine) = self
+            .execution_layer
+            .as_ref()
+            .and_then(|el| el.proof_engine())
+        else {
+            return Ok(());
         };
-        let Some(proof_engine) = el.proof_engine() else {
-            return Ok(None);
-        };
-        let persisted = proof_engine.to_persisted();
-        let op = crate::persisted_proof_engine::encode_proof_engine_state(
-            &persisted,
-            self.store.get_config(),
-        )
-        .map_err(Error::DBError)?;
-        Ok(Some(op))
+
+        let op = proof_engine
+            .to_persisted()
+            .as_kv_store_op(PROOF_ENGINE_DB_KEY);
+        self.store.hot_db.do_atomically(vec![op])?;
+        Ok(())
     }
 
     /// Return a database operation for writing fork choice to disk.

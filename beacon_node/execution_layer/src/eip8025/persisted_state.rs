@@ -2,40 +2,35 @@
 //!
 //! These structs are the SSZ-serializable forms of the in-memory `State`, `TreeState`,
 //! and `RequestBuffer`. HashMaps/HashSets are flattened to Vecs for SSZ compatibility.
-//!
-//! Note: DB operations (compression, column writes) live in beacon_chain, not here.
 
 use super::state::{PayloadRequest, RequestBuffer, RequestMetadata, State, TreeState};
 use crate::ForkchoiceState;
+use ssz::{Decode, Encode};
 use ssz_derive::{Decode, Encode};
 use std::collections::{BTreeMap, HashMap, HashSet};
+use store::{DBColumn, Error as StoreError, StoreItem};
 use types::{ExecutionBlockHash, Hash256, SignedExecutionProof};
 
 /// Version field for future format migrations within the ProofEngine state.
 pub const PROOF_ENGINE_STATE_VERSION: u64 = 1;
 
 /// Top-level persisted state for the ProofEngine.
-#[derive(Encode, Decode)]
+#[derive(Clone, Debug, PartialEq, Encode, Decode)]
 pub struct PersistedProofEngineState {
     /// Schema version for future migrations.
     pub version: u64,
-    /// The last fork choice state marked as valid (inlined — ForkchoiceState lacks SSZ derives).
-    pub last_valid_head_block_hash: ExecutionBlockHash,
-    pub last_valid_safe_block_hash: ExecutionBlockHash,
-    pub last_valid_finalized_block_hash: ExecutionBlockHash,
-    /// Whether latest_fcs is Some (Option encoded as flag + fields).
-    pub has_latest_fcs: bool,
-    pub latest_head_block_hash: ExecutionBlockHash,
-    pub latest_safe_block_hash: ExecutionBlockHash,
-    pub latest_finalized_block_hash: ExecutionBlockHash,
-    /// Persisted tree state (accepted proofs).
+    /// The last fork choice state marked as valid.
+    pub last_valid_fcs: ForkchoiceState,
+    /// The latest observed fork choice state.
+    pub latest_fcs: Option<ForkchoiceState>,
+    /// Persisted tree state.
     pub tree: PersistedTreeState,
-    /// Persisted request buffer (pending proofs).
+    /// Persisted request buffer.
     pub buffer: PersistedRequestBuffer,
 }
 
 /// Persisted form of TreeState. HashMaps flattened to Vecs for SSZ.
-#[derive(Encode, Decode)]
+#[derive(Clone, Debug, PartialEq, Encode, Decode)]
 pub struct PersistedTreeState {
     pub proofs_by_block_hash: Vec<PersistedBlockProofs>,
     pub request_root_to_block_hash: Vec<RequestRootMapping>,
@@ -45,7 +40,7 @@ pub struct PersistedTreeState {
 }
 
 /// Flattened PayloadRequest: RequestMetadata + Vec<SignedExecutionProof>.
-#[derive(Encode, Decode)]
+#[derive(Clone, Debug, PartialEq, Encode, Decode)]
 pub struct PersistedBlockProofs {
     pub block_hash: ExecutionBlockHash,
     pub request_root: Hash256,
@@ -54,78 +49,61 @@ pub struct PersistedBlockProofs {
     pub proofs: Vec<SignedExecutionProof>,
 }
 
-#[derive(Encode, Decode)]
+#[derive(Clone, Debug, PartialEq, Encode, Decode)]
 pub struct RequestRootMapping {
     pub request_root: Hash256,
     pub block_hash: ExecutionBlockHash,
 }
 
-#[derive(Encode, Decode)]
+#[derive(Clone, Debug, PartialEq, Encode, Decode)]
 pub struct PersistedParentChildren {
     pub parent: ExecutionBlockHash,
     pub children: Vec<ExecutionBlockHash>,
 }
 
-#[derive(Encode, Decode)]
+#[derive(Clone, Debug, PartialEq, Encode, Decode)]
 pub struct PersistedBlockNumberMapping {
     pub block_number: u64,
     pub block_hashes: Vec<ExecutionBlockHash>,
 }
 
-#[derive(Encode, Decode)]
+#[derive(Clone, Debug, PartialEq, Encode, Decode)]
 pub struct PersistedRequestBuffer {
     pub requests: Vec<PersistedBlockProofs>,
 }
 
-// --- Conversion: in-memory → persisted ---
+/// Fixed database key for the single `PersistedProofEngineState` record.
+pub const PROOF_ENGINE_DB_KEY: Hash256 = Hash256::ZERO;
+
+impl StoreItem for PersistedProofEngineState {
+    fn db_column() -> DBColumn {
+        DBColumn::ProofEngine
+    }
+
+    fn as_store_bytes(&self) -> Vec<u8> {
+        self.as_ssz_bytes()
+    }
+
+    fn from_store_bytes(bytes: &[u8]) -> Result<Self, StoreError> {
+        Self::from_ssz_bytes(bytes).map_err(Into::into)
+    }
+}
 
 impl PersistedProofEngineState {
     pub fn from_state(state: &State) -> Self {
-        let zero = ExecutionBlockHash::zero();
-        let (has_latest_fcs, latest_head, latest_safe, latest_finalized) =
-            if let Some(fcs) = &state.latest_fcs {
-                (
-                    true,
-                    fcs.head_block_hash,
-                    fcs.safe_block_hash,
-                    fcs.finalized_block_hash,
-                )
-            } else {
-                (false, zero, zero, zero)
-            };
-
         Self {
             version: PROOF_ENGINE_STATE_VERSION,
-            last_valid_head_block_hash: state.last_valid_fcs.head_block_hash,
-            last_valid_safe_block_hash: state.last_valid_fcs.safe_block_hash,
-            last_valid_finalized_block_hash: state.last_valid_fcs.finalized_block_hash,
-            has_latest_fcs,
-            latest_head_block_hash: latest_head,
-            latest_safe_block_hash: latest_safe,
-            latest_finalized_block_hash: latest_finalized,
+            last_valid_fcs: state.last_valid_fcs,
+            latest_fcs: state.latest_fcs,
             tree: PersistedTreeState::from_tree(&state.tree),
             buffer: PersistedRequestBuffer::from_buffer(&state.buffer),
         }
     }
 
     pub fn to_state(&self) -> State {
-        let latest_fcs = if self.has_latest_fcs {
-            Some(ForkchoiceState {
-                head_block_hash: self.latest_head_block_hash,
-                safe_block_hash: self.latest_safe_block_hash,
-                finalized_block_hash: self.latest_finalized_block_hash,
-            })
-        } else {
-            None
-        };
-
         State {
-            latest_fcs,
-            last_valid_fcs: ForkchoiceState {
-                head_block_hash: self.last_valid_head_block_hash,
-                safe_block_hash: self.last_valid_safe_block_hash,
-                finalized_block_hash: self.last_valid_finalized_block_hash,
-            },
+            latest_fcs: self.latest_fcs,
+            last_valid_fcs: self.last_valid_fcs,
             tree: self.tree.to_tree(),
             buffer: self.buffer.to_buffer(),
             min_required_proofs: types::MIN_REQUIRED_EXECUTION_PROOFS,
@@ -235,8 +213,8 @@ impl PersistedRequestBuffer {
     fn from_buffer(buffer: &RequestBuffer) -> Self {
         let requests = buffer
             .proofs
-            .iter()
-            .map(|(_, payload_req)| PersistedBlockProofs {
+            .values()
+            .map(|payload_req| PersistedBlockProofs {
                 block_hash: payload_req.metadata.block_hash,
                 request_root: payload_req.metadata.request_root,
                 parent_hash: payload_req.metadata.parent_hash,
@@ -267,5 +245,170 @@ impl PersistedRequestBuffer {
             })
             .collect();
         RequestBuffer { proofs }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::eip8025::state::test_utils::*;
+    use store::StoreItem;
+    use types::MIN_REQUIRED_EXECUTION_PROOFS;
+
+    /// Builds a fully-populated `State` with canonical chain, a fork (in buffer), and both FCS
+    /// fields set, then verifies a `from_state` → `to_state` round-trip preserves all data.
+    #[test]
+    fn test_state_serialization_round_trip() {
+        // 3-block canonical chain; fork from block 1 with 0 proofs so it stays in buffer, additional fork with 3 proofs so we have a promoted fork as well.
+        let fixture = TestStateFixtureBuilder::simple_chain()
+            .with_fork(1, 2, Some(0))
+            .with_fork(1, 3, Some(3))
+            .build();
+
+        let mut state = State::new();
+
+        // Populate canonical chain into tree and set latest_fcs via the empty-tree path.
+        fixture.bootstrap_canonical(&mut state).unwrap();
+
+        // Insert fork blocks into buffer (0 proofs → not promoted).
+        fixture.insert_fork(&mut state, 0, None).unwrap();
+
+        // Issue a valid forkchoice update so last_valid_fcs points into the tree.
+        let head = fixture.canonical_block_hash(2);
+        let safe = fixture.canonical_block_hash(1);
+        let finalized = fixture.canonical_block_hash(0);
+        state
+            .forkchoice_updated(create_forkchoice_state(head, safe, finalized))
+            .unwrap();
+
+        // Sanity: both FCS fields should be populated.
+        assert!(state.latest_fcs.is_some());
+
+        // --- Round-trip ---
+        let persisted = PersistedProofEngineState::from_state(&state);
+        let restored = persisted.to_state();
+
+        // FCS fields.
+        assert_eq!(restored.last_valid_fcs, state.last_valid_fcs);
+        assert_eq!(restored.latest_fcs, state.latest_fcs);
+
+        // min_required_proofs is not persisted — always restored to the constant.
+        assert_eq!(restored.min_required_proofs, MIN_REQUIRED_EXECUTION_PROOFS);
+
+        // Tree: proofs_by_block_hash.
+        assert_eq!(
+            restored.tree.proofs_by_block_hash.len(),
+            state.tree.proofs_by_block_hash.len()
+        );
+        for (hash, req) in &state.tree.proofs_by_block_hash {
+            let r = restored.tree.proofs_by_block_hash.get(hash).unwrap();
+            assert_eq!(r.metadata.request_root, req.metadata.request_root);
+            assert_eq!(r.metadata.block_hash, req.metadata.block_hash);
+            assert_eq!(r.metadata.parent_hash, req.metadata.parent_hash);
+            assert_eq!(r.metadata.block_number, req.metadata.block_number);
+            assert_eq!(r.proofs, req.proofs);
+        }
+
+        // Tree: request_root_to_block_hash.
+        assert_eq!(
+            restored.tree.request_root_to_block_hash,
+            state.tree.request_root_to_block_hash
+        );
+
+        // Tree: parent_to_children (HashSet equality via HashMap comparison).
+        assert_eq!(
+            restored.tree.parent_to_children,
+            state.tree.parent_to_children
+        );
+
+        // Tree: block_number_to_block_hash (BTreeMap<u64, HashSet>).
+        assert_eq!(
+            restored.tree.block_number_to_block_hash,
+            state.tree.block_number_to_block_hash
+        );
+
+        // Tree: current_canonical_head.
+        assert_eq!(
+            restored.tree.current_canonical_head,
+            state.tree.current_canonical_head
+        );
+
+        // Buffer: entries match.
+        assert_eq!(restored.buffer.proofs.len(), state.buffer.proofs.len());
+        for (root, req) in &state.buffer.proofs {
+            let r = restored.buffer.proofs.get(root).unwrap();
+            assert_eq!(r.metadata.request_root, req.metadata.request_root);
+            assert_eq!(r.metadata.block_hash, req.metadata.block_hash);
+            assert_eq!(r.metadata.parent_hash, req.metadata.parent_hash);
+            assert_eq!(r.metadata.block_number, req.metadata.block_number);
+            assert_eq!(r.proofs, req.proofs);
+        }
+    }
+
+    /// Encodes a `PersistedProofEngineState` via `StoreItem::as_store_bytes`, then decodes with
+    /// `StoreItem::from_store_bytes` and asserts all fields are equal.
+    #[test]
+    fn test_encode_decode_round_trip() {
+        let fixture = TestStateFixtureBuilder::simple_chain()
+            .with_fork(1, 2, Some(0))
+            .with_fork(1, 3, Some(3))
+            .build();
+
+        let mut state = State::new();
+        fixture.bootstrap_canonical(&mut state).unwrap();
+        fixture.insert_fork(&mut state, 0, None).unwrap();
+
+        let head = fixture.canonical_block_hash(2);
+        let safe = fixture.canonical_block_hash(1);
+        let finalized = fixture.canonical_block_hash(0);
+        state
+            .forkchoice_updated(create_forkchoice_state(head, safe, finalized))
+            .unwrap();
+
+        let persisted = PersistedProofEngineState::from_state(&state);
+
+        let bytes = persisted.as_store_bytes();
+        let decoded = PersistedProofEngineState::from_store_bytes(&bytes).unwrap();
+
+        assert_eq!(decoded.version, persisted.version);
+        assert_eq!(decoded.last_valid_fcs, persisted.last_valid_fcs);
+        assert_eq!(decoded.latest_fcs, persisted.latest_fcs);
+
+        assert_eq!(
+            decoded.tree.proofs_by_block_hash,
+            persisted.tree.proofs_by_block_hash
+        );
+        assert_eq!(
+            decoded.tree.request_root_to_block_hash,
+            persisted.tree.request_root_to_block_hash
+        );
+
+        // Sort children within each parent entry for determinism.
+        assert_eq!(
+            decoded.tree.parent_to_children.len(),
+            persisted.tree.parent_to_children.len()
+        );
+        let mut orig_ptc = persisted.tree.parent_to_children.clone();
+        let mut dec_ptc = decoded.tree.parent_to_children.clone();
+        orig_ptc.sort_by_key(|p| p.parent.into_root());
+        dec_ptc.sort_by_key(|p| p.parent.into_root());
+        for (o, d) in orig_ptc.iter().zip(dec_ptc.iter()) {
+            assert_eq!(o.parent, d.parent);
+            let mut oc = o.children.clone();
+            let mut dc = d.children.clone();
+            oc.sort_by_key(|h| h.into_root());
+            dc.sort_by_key(|h| h.into_root());
+            assert_eq!(oc, dc);
+        }
+
+        assert_eq!(
+            decoded.tree.block_number_to_block_hash,
+            persisted.tree.block_number_to_block_hash
+        );
+        assert_eq!(
+            decoded.tree.current_canonical_head,
+            persisted.tree.current_canonical_head
+        );
+        assert_eq!(decoded.buffer.requests, persisted.buffer.requests);
     }
 }

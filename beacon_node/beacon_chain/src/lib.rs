@@ -46,7 +46,6 @@ mod observed_slashable;
 pub mod persisted_beacon_chain;
 pub mod persisted_custody;
 mod persisted_fork_choice;
-pub mod persisted_proof_engine;
 mod pre_finalization_cache;
 pub mod proposer_prep_service;
 pub mod schema_change;

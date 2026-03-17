@@ -3356,6 +3356,7 @@ dependencies = [
  "slot_clock",
  "ssz_types",
  "state_processing",
+ "store",
  "strum",
  "superstruct",
  "task_executor",
