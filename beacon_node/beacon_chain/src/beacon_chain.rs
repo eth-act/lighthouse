@@ -60,7 +60,6 @@ use crate::observed_slashable::ObservedSlashable;
 use crate::persisted_beacon_chain::PersistedBeaconChain;
 use crate::persisted_custody::persist_custody_context;
 use crate::persisted_fork_choice::PersistedForkChoice;
-use execution_layer::eip8025::{PersistedProofEngineState, PROOF_ENGINE_DB_KEY};
 use crate::pre_finalization_cache::PreFinalizationBlockCache;
 use crate::shuffling_cache::{BlockShufflingIds, ShufflingCache};
 use crate::sync_committee_verification::{
@@ -81,6 +80,7 @@ use eth2::types::{
     EventKind, SseBlobSidecar, SseBlock, SseBlockFull, SseDataColumnSidecar,
     SseExtendedPayloadAttributes,
 };
+use execution_layer::eip8025::{PROOF_ENGINE_DB_KEY, PersistedProofEngineState};
 use execution_layer::{
     BlockProposalContents, BlockProposalContentsType, BuilderParams, ChainHealth, ExecutionLayer,
     FailedCondition, MissingProofInfo, PayloadAttributes, PayloadStatus, eip8025::ProofEngine,
@@ -635,9 +635,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     }
 
     /// Load persisted ProofEngine state from disk, returning `None` if not found or corrupt.
-    pub fn load_proof_engine_state(
-        store: BeaconStore<T>,
-    ) -> Option<PersistedProofEngineState> {
+    pub fn load_proof_engine_state(store: BeaconStore<T>) -> Option<PersistedProofEngineState> {
         match store.get_item::<PersistedProofEngineState>(&PROOF_ENGINE_DB_KEY) {
             Ok(Some(persisted)) => {
                 tracing::info!("Loaded ProofEngine state from disk");

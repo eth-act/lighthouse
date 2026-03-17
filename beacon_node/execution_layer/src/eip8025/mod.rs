@@ -14,7 +14,7 @@ pub mod state;
 
 pub use errors::ProofEngineError;
 pub use json_structures::*;
-pub use persisted_state::{PersistedProofEngineState, PROOF_ENGINE_DB_KEY};
+pub use persisted_state::{PROOF_ENGINE_DB_KEY, PersistedProofEngineState};
 pub use proof_engine::{
     ENGINE_REQUEST_PROOFS_V1, ENGINE_VERIFY_EXECUTION_PROOF_V1,
     ENGINE_VERIFY_NEW_PAYLOAD_REQUEST_HEADER_V1, HttpProofEngine, PROOF_ENGINE_TIMEOUT,
