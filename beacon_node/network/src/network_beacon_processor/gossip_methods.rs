@@ -1886,7 +1886,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
 
         // If we have a execution proof subscriber we assume a validator will resign the proof and therefore we do not propagate this proof to peers.
         // We will wait for the validator to sign and submit the proof for gossip.
-        let _gossip_behaviour = if let Ok((proof_status, block)) = &verification_result
+        let gossip_behaviour = if let Ok((proof_status, block)) = &verification_result
             && (proof_status.is_valid() || proof_status.is_accepted())
             && let Some(event_handler) = self.chain.event_handler.as_ref()
             && event_handler.has_execution_proof_validated_subscribers()
@@ -1932,7 +1932,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                             block_root,
                         });
                 }
-                self.propagate_validation_result(message_id, peer_id, _gossip_behaviour);
+                self.propagate_validation_result(message_id, peer_id, gossip_behaviour);
             }
             Ok((ProofStatus::Invalid, _)) => {
                 debug!(
@@ -1950,7 +1950,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     proof_type,
                     "Execution proof is accepted but not fully verified"
                 );
-                self.propagate_validation_result(message_id, peer_id, _gossip_behaviour);
+                self.propagate_validation_result(message_id, peer_id, gossip_behaviour);
             }
             Ok((ProofStatus::Syncing, _)) => {
                 debug!(
