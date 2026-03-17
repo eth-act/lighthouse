@@ -1,28 +1,21 @@
 //! EIP-8025 Execution Proof Service
 //!
-//! This service handles both proactive and reactive execution proof workflows:
-//!
-//! 1. **Proactive Mode**: Monitors beacon chain for new blocks via SSE and requests
-//!    proofs from the configured proof engine
-//! 2. **Reactive Mode**: Receives proof requests from HTTP API (proof engine callbacks)
-//!    and signs/submits them to the beacon chain
-//!
-//! The service bridges the gap between external proof engines, validator keys, and
-//! beacon nodes, providing a complete end-to-end execution proof flow.
+//! This service handles execution proof requests, signing and resigning workflows.
 
 use beacon_node_fallback::BeaconNodeFallback;
 use bls::PublicKey;
-use eth2::types::EventTopic;
+use eth2::types::{BlockId, EventKind, EventTopic, SseExecutionProofValidated};
 use execution_layer::NewPayloadRequest;
 use execution_layer::eip8025::{HttpProofEngine, ProofEngine};
 use futures::StreamExt;
 use slot_clock::SlotClock;
 use std::sync::Arc;
+use std::time::Duration;
 use task_executor::TaskExecutor;
 use tracing::{debug, error, info, warn};
 use types::execution::eip8025::ProofAttributes;
-use types::{BeaconBlock, Epoch, EthSpec, ExecutionProof};
-use validator_store::ValidatorStore;
+use types::{Epoch, EthSpec, ExecutionProof, Hash256};
+use validator_store::{DoppelgangerStatus, ValidatorStore};
 
 /// Background service for execution proof handling
 pub struct ProofService<S: ValidatorStore, T: SlotClock> {
@@ -64,19 +57,14 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> ProofService<S
         }
     }
 
-    /// Start the proof service background task (proactive monitoring)
+    /// Start the proof service background tasks
     pub fn start_service(self: Arc<Self>) -> Result<(), String> {
-        // Only start monitoring if proof engine is configured
         let inner = self.inner.clone();
-        let service_fut = async move {
-            inner.monitor_blocks_task().await;
-        };
-        self.inner
-            .executor
-            .spawn(service_fut, "proof_service_monitor");
-
-        info!("Proof service started - monitoring for new blocks");
-
+        self.inner.executor.spawn(
+            async move { inner.monitor_events_task().await },
+            "proof_service_monitor",
+        );
+        info!("Proof service started - monitoring for new blocks and validated proofs");
         Ok(())
     }
 
@@ -97,100 +85,105 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> ProofService<S
 }
 
 impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> Inner<S, T> {
-    /// Proactive: Monitor beacon node for new blocks and request proofs
-    async fn monitor_blocks_task(self: Arc<Self>) {
-        info!("Starting proof service block monitoring via SSE");
-
-        loop {
-            // Attempt to subscribe to block events from beacon node
-            match self.subscribe_to_blocks().await {
-                Ok(mut stream) => {
-                    info!("Successfully subscribed to block events");
-
-                    // Process events from the stream
-                    while let Some(event_result) = stream.next().await {
-                        match event_result {
-                            Ok(eth2::types::EventKind::BlockFull(block_event)) => {
-                                let block = block_event.data;
-                                if block.execution_optimistic {
-                                    debug!(
-                                        slot = block.slot.as_u64(),
-                                        "Received execution optimistic block event"
-                                    );
-                                }
-                                self.handle_block_event(&block.block, block.slot).await;
-                            }
-                            Ok(_) => {
-                                // Ignore other event types (shouldn't happen with our topic filter)
-                                debug!("Received non-block event in block_full stream");
-                            }
-                            Err(e) => {
-                                warn!(
-                                    error = %e,
-                                    "Error receiving block event, will reconnect"
-                                );
-                                break; // Break inner loop to reconnect
-                            }
-                        }
-                    }
-
-                    // Stream ended or errored - reconnect
-                    warn!("Block event stream ended, reconnecting...");
-                }
-                Err(e) => {
-                    error!(
-                        error = %e,
-                        "Failed to subscribe to block events, retrying..."
-                    );
-                }
-            }
-        }
-    }
-
-    /// Helper method to establish SSE subscription with beacon node fallback
-    async fn subscribe_to_blocks(
+    /// Subscribe to both `Block` and `ExecutionProofValidated` events via a single SSE stream.
+    async fn subscribe_to_events(
         &self,
     ) -> Result<
         impl futures::Stream<Item = Result<eth2::types::EventKind<S::E>, eth2::Error>>,
         String,
     > {
         self.beacon_nodes
-            .first_success(
-                |node| async move { node.get_events::<S::E>(&[EventTopic::BlockFull]).await },
-            )
+            .first_success(|node| async move {
+                node.get_events::<S::E>(&[EventTopic::Block, EventTopic::ExecutionProofValidated])
+                    .await
+            })
             .await
             .map_err(|e| format!("All beacon nodes failed to provide event stream: {}", e))
     }
 
-    /// Handle a new block event by requesting proofs from proof engine
-    async fn handle_block_event(&self, block: &BeaconBlock<S::E>, slot: types::Slot) {
-        let block_root = block.canonical_root();
+    /// Monitor block and validated-proof events over a single SSE connection.
+    async fn monitor_events_task(self: Arc<Self>) {
+        info!("Starting proof service event monitoring via SSE");
 
+        loop {
+            match self.subscribe_to_events().await {
+                Ok(mut stream) => {
+                    info!("Successfully subscribed to block and execution proof events");
+
+                    while let Some(event_result) = stream.next().await {
+                        match event_result {
+                            Ok(EventKind::Block(sse_block)) => {
+                                if sse_block.execution_optimistic {
+                                    debug!(
+                                        slot = sse_block.slot.as_u64(),
+                                        "Skipping execution optimistic block"
+                                    );
+                                    continue;
+                                }
+                                self.handle_block_event(sse_block.block, sse_block.slot)
+                                    .await;
+                            }
+                            Ok(EventKind::ExecutionProofValidated(proof_event)) => {
+                                self.handle_validated_proof(proof_event).await;
+                            }
+                            Ok(_) => {}
+                            Err(e) => {
+                                warn!(error = %e, "Error receiving event, will reconnect");
+                                break;
+                            }
+                        }
+                    }
+
+                    warn!("Event stream ended, reconnecting...");
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to subscribe to events, retrying...");
+                }
+            }
+
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+
+    /// Handle a new block event by fetching the full block via RPC then requesting proofs
+    async fn handle_block_event(&self, block_root: Hash256, slot: types::Slot) {
         info!(
             slot = slot.as_u64(),
             block = %block_root,
-            "New block detected, requesting proofs from proof engine"
+            "New block detected, fetching full block via RPC"
         );
 
-        // Construct NewPayloadRequest from beacon block
-        let new_payload_request = match NewPayloadRequest::try_from(block.to_ref()) {
-            Ok(req) => req,
+        let signed_block = match self
+            .beacon_nodes
+            .first_success(|node| async move {
+                node.get_beacon_blocks::<S::E>(BlockId::Root(block_root))
+                    .await
+            })
+            .await
+        {
+            Ok(Some(response)) => response.data().clone(),
+            Ok(None) => {
+                warn!(block = %block_root, "Block not found on beacon node");
+                return;
+            }
             Err(e) => {
-                error!(
-                    error = ?e,
-                    block = %block_root,
-                    "Failed to construct NewPayloadRequest from block"
-                );
+                error!(block = %block_root, error = %e, "Failed to fetch block via RPC");
                 return;
             }
         };
 
-        // Use configured proof types
+        let new_payload_request = match NewPayloadRequest::try_from(signed_block.message()) {
+            Ok(req) => req,
+            Err(e) => {
+                error!(block = %block_root, error = ?e, "Failed to construct NewPayloadRequest");
+                return;
+            }
+        };
+
         let proof_attributes = ProofAttributes {
             proof_types: self.proof_types.clone(),
         };
 
-        // Request proofs from proof engine - HttpProofEngine handles JSON serialization
         match self
             .proof_engine
             .request_proofs(new_payload_request, proof_attributes)
@@ -204,11 +197,50 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> Inner<S, T> {
                 );
             }
             Err(e) => {
-                error!(
-                    error = ?e,
-                    block = %block_root,
-                    "Failed to request proofs from proof engine"
-                );
+                error!(block = %block_root, error = ?e, "Failed to request proofs from proof engine");
+            }
+        }
+    }
+
+    /// Handle a validated proof event by resigning with the first local validator key
+    async fn handle_validated_proof(&self, event: SseExecutionProofValidated) {
+        let execution_proof = event.execution_proof;
+        let epoch = Epoch::new(event.epoch);
+
+        let Some(pubkey) = self
+            .validator_store
+            .voting_pubkeys::<Vec<_>, _>(DoppelgangerStatus::ignored)
+            .first()
+            .cloned()
+        else {
+            warn!("No local validators available to resign proof");
+            return;
+        };
+
+        match self
+            .validator_store
+            .sign_execution_proof(pubkey, execution_proof, epoch)
+            .await
+        {
+            Ok(signed_proof) => {
+                match self
+                    .beacon_nodes
+                    .first_success(move |node| {
+                        let proof = signed_proof.clone();
+                        async move { node.post_beacon_execution_proofs(&[proof]).await }
+                    })
+                    .await
+                {
+                    Ok(_) => {
+                        info!(?pubkey, "Resigned proof submitted");
+                    }
+                    Err(e) => {
+                        warn!(?pubkey, error = %e, "Failed to submit resigned proof");
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(?pubkey, error = ?e, "Failed to sign proof for validator");
             }
         }
     }

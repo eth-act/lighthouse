@@ -7,6 +7,7 @@ use crate::{
 use beacon_chain::blob_verification::{GossipBlobError, GossipVerifiedBlob};
 use beacon_chain::block_verification_types::AsBlock;
 use beacon_chain::data_column_verification::{GossipDataColumnError, GossipVerifiedDataColumn};
+use beacon_chain::events::{EventKind, SseExecutionProofValidated};
 use beacon_chain::store::Error;
 use beacon_chain::{
     AvailabilityProcessingStatus, BeaconChainError, BeaconChainTypes, BlockError, ForkChoiceError,
@@ -1877,8 +1878,30 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         let proof_type = execution_proof.proof_type();
         let validator_index = execution_proof.validator_index();
 
+        // Extract the inner proof before moving execution_proof into verification.
+        let execution_proof_message = execution_proof.message.clone();
+
         // Verify the execution proof.
         let verification_result = self.chain.verify_execution_proof(execution_proof).await;
+
+        // If we have a execution proof subscriber we assume a validator will resign the proof and therefore we do not propagate this proof to peers.
+        // We will wait for the validator to sign and submit the proof for gossip.
+        let gossip_behaviour = if let Ok((proof_status, block)) = &verification_result
+            && (proof_status.is_valid() || proof_status.is_accepted())
+            && let Some(event_handler) = self.chain.event_handler.as_ref()
+            && event_handler.has_execution_proof_validated_subscribers()
+            && let Some((_block_root, slot)) = block
+        {
+            event_handler.register(EventKind::ExecutionProofValidated(
+                SseExecutionProofValidated {
+                    execution_proof: execution_proof_message,
+                    epoch: slot.epoch(T::EthSpec::slots_per_epoch()).as_u64(),
+                },
+            ));
+            MessageAcceptance::Ignore
+        } else {
+            MessageAcceptance::Accept
+        };
 
         match verification_result {
             // TODO: split our error types and penalize accordingly
@@ -1909,7 +1932,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                             block_root,
                         });
                 }
-                self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Accept);
+                self.propagate_validation_result(message_id, peer_id, gossip_behaviour);
             }
             Ok((ProofStatus::Invalid, _)) => {
                 debug!(
@@ -1927,7 +1950,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     proof_type,
                     "Execution proof is accepted but not fully verified"
                 );
-                self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Accept);
+                self.propagate_validation_result(message_id, peer_id, gossip_behaviour);
             }
             Ok((ProofStatus::Syncing, _)) => {
                 debug!(
