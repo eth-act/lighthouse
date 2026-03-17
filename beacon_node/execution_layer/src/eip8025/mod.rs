@@ -8,11 +8,13 @@
 
 pub mod errors;
 pub mod json_structures;
+pub mod persisted_state;
 pub mod proof_engine;
 mod state;
 
 pub use errors::ProofEngineError;
 pub use json_structures::*;
+pub use persisted_state::PersistedProofEngineState;
 pub use proof_engine::{
     ENGINE_REQUEST_PROOFS_V1, ENGINE_VERIFY_EXECUTION_PROOF_V1,
     ENGINE_VERIFY_NEW_PAYLOAD_REQUEST_HEADER_V1, HttpProofEngine, PROOF_ENGINE_TIMEOUT,

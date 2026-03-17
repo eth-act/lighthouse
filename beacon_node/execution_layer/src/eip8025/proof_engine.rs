@@ -286,6 +286,21 @@ impl ProofEngine for HttpProofEngine {
 }
 
 impl HttpProofEngine {
+    /// Snapshot the current state into a persisted form for serialization.
+    pub fn to_persisted(&self) -> super::persisted_state::PersistedProofEngineState {
+        let state = self.state.read();
+        super::persisted_state::PersistedProofEngineState::from_state(&state)
+    }
+
+    /// Restore in-memory state from a previously persisted snapshot.
+    pub fn restore_from_persisted(
+        &self,
+        persisted: super::persisted_state::PersistedProofEngineState,
+    ) {
+        let restored = persisted.to_state();
+        *self.state.write() = restored;
+    }
+
     pub async fn request_proofs_v4_fulu<E: EthSpec>(
         &self,
         new_payload_request_fulu: NewPayloadRequestFulu<'_, E>,

@@ -633,6 +633,38 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         )?))
     }
 
+    /// Load persisted ProofEngine state from disk, returning `None` if not found or corrupt.
+    pub fn load_proof_engine_state(
+        store: BeaconStore<T>,
+    ) -> Option<execution_layer::eip8025::PersistedProofEngineState> {
+        use crate::persisted_proof_engine::{PROOF_ENGINE_DB_KEY, decode_proof_engine_state};
+
+        let bytes = match store
+            .hot_db
+            .get_bytes(
+                store::DBColumn::ProofEngine,
+                PROOF_ENGINE_DB_KEY.as_slice(),
+            ) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => return None,
+            Err(e) => {
+                tracing::warn!(error = ?e, "Failed to read ProofEngine state from disk, starting fresh");
+                return None;
+            }
+        };
+
+        match decode_proof_engine_state(&bytes, store.get_config()) {
+            Ok(persisted) => {
+                tracing::info!("Loaded ProofEngine state from disk");
+                Some(persisted)
+            }
+            Err(e) => {
+                tracing::warn!(error = ?e, "Failed to decode ProofEngine state, starting fresh");
+                None
+            }
+        }
+    }
+
     /// Persists `self.op_pool` to disk.
     ///
     /// ## Notes

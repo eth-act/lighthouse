@@ -379,6 +379,9 @@ pub enum DBColumn {
     /// The dummy table is used to force the db to sync
     #[strum(serialize = "dmy")]
     Dummy,
+    /// For persisting ProofEngine state (EIP-8025).
+    #[strum(serialize = "prf")]
+    ProofEngine,
 }
 
 /// A block from the database, which might have an execution payload or not.
@@ -421,7 +424,8 @@ impl DBColumn {
             | Self::BeaconRestorePoint
             | Self::DhtEnrs
             | Self::CustodyContext
-            | Self::OptimisticTransitionBlock => 32,
+            | Self::OptimisticTransitionBlock
+            | Self::ProofEngine => 32,
             Self::BeaconBlockRoots
             | Self::BeaconDataColumnCustodyInfo
             | Self::BeaconBlockRootsChunked
