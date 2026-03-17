@@ -177,7 +177,7 @@ impl<E: EthSpec> ServerSentEventHandler<E> {
             EventKind::ExecutionProofValidated(_) => self
                 .execution_proof_validated_tx
                 .send(kind)
-                .map(|count| log_count("execution_proof_validated", count)),
+                .map(|count| log_count("execution proof validated", count)),
         };
         if let Err(SendError(event)) = result {
             trace!(?event, "No receivers registered to listen for event");

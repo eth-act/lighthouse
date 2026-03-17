@@ -1,6 +1,6 @@
 //! EIP-8025 Execution Proof Service
 //!
-//! This service handles execution proof requests, signing and resigning execution proof workflows:
+//! This service handles execution proof requests, signing and resigning workflows.
 
 use beacon_node_fallback::BeaconNodeFallback;
 use bls::PublicKey;
@@ -9,17 +9,13 @@ use execution_layer::NewPayloadRequest;
 use execution_layer::eip8025::{HttpProofEngine, ProofEngine};
 use futures::StreamExt;
 use slot_clock::SlotClock;
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use task_executor::TaskExecutor;
-use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 use types::execution::eip8025::ProofAttributes;
-use types::{BeaconBlock, Epoch, EthSpec, ExecutionProof, Hash256};
+use types::{BeaconBlock, Epoch, EthSpec, ExecutionProof};
 use validator_store::{DoppelgangerStatus, ValidatorStore};
-
-use bls::PublicKeyBytes;
 
 /// Background service for execution proof handling
 pub struct ProofService<S: ValidatorStore, T: SlotClock> {
@@ -33,8 +29,6 @@ struct Inner<S: ValidatorStore, T: SlotClock> {
     slot_clock: T,
     executor: TaskExecutor,
     proof_types: Vec<u8>,
-    /// Tracks (validator_pubkey, new_payload_request_root) to prevent resigning loops.
-    resigned_proofs: RwLock<HashMap<(PublicKeyBytes, Hash256), Instant>>,
 }
 
 impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> ProofService<S, T> {
@@ -59,7 +53,6 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> ProofService<S
                 slot_clock,
                 executor,
                 proof_types,
-                resigned_proofs: RwLock::new(HashMap::new()),
             }),
         }
     }
@@ -205,79 +198,47 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> Inner<S, T> {
         }
     }
 
-    /// Handle a validated proof event by resigning with each local validator key
+    /// Handle a validated proof event by resigning with the first local validator key
     async fn handle_validated_proof(&self, event: SseExecutionProofValidated) {
         let execution_proof = event.execution_proof;
-        let request_root = execution_proof.public_input.new_payload_request_root;
         let epoch = Epoch::new(event.epoch);
 
-        // Get all validator pubkeys (non-slashable — bypass doppelganger)
-        let all_pubkeys: Vec<PublicKeyBytes> = self
+        let Some(pubkey) = self
             .validator_store
-            .voting_pubkeys(DoppelgangerStatus::ignored);
+            .voting_pubkeys::<Vec<_>, _>(DoppelgangerStatus::ignored)
+            .first()
+            .cloned()
+        else {
+            warn!("No local validators available to resign proof");
+            return;
+        };
 
-        for pubkey in all_pubkeys {
-            // Dedup: skip if this validator already resigned this proof
-            let dedup_key = (pubkey, request_root);
-            {
-                let cache = self.resigned_proofs.read().await;
-                if cache.contains_key(&dedup_key) {
-                    debug!(?pubkey, ?request_root, "Skipping already-resigned proof");
-                    continue;
-                }
-            }
-
-            // Sign the proof with this validator's key
-            match self
-                .validator_store
-                .sign_execution_proof(pubkey, execution_proof.clone(), epoch)
-                .await
-            {
-                Ok(signed_proof) => {
-                    let signed_proof_clone = signed_proof.clone();
-                    match self
-                        .beacon_nodes
-                        .first_success(move |node| {
-                            let proof = signed_proof_clone.clone();
-                            async move { node.post_beacon_execution_proofs(&[proof]).await }
-                        })
-                        .await
-                    {
-                        Ok(_) => {
-                            info!(?pubkey, ?request_root, "Resigned proof submitted");
-                            self.resigned_proofs
-                                .write()
-                                .await
-                                .insert(dedup_key, Instant::now());
-                        }
-                        Err(e) => {
-                            warn!(
-                                ?pubkey,
-                                error = %e,
-                                "Failed to submit resigned proof"
-                            );
-                        }
+        match self
+            .validator_store
+            .sign_execution_proof(pubkey, execution_proof, epoch)
+            .await
+        {
+            Ok(signed_proof) => {
+                match self
+                    .beacon_nodes
+                    .first_success(move |node| {
+                        let proof = signed_proof.clone();
+                        async move { node.post_beacon_execution_proofs(&[proof]).await }
+                    })
+                    .await
+                {
+                    Ok(_) => {
+                        info!(?pubkey, "Resigned proof submitted");
+                    }
+                    Err(e) => {
+                        warn!(?pubkey, error = %e, "Failed to submit resigned proof");
                     }
                 }
-                Err(e) => {
-                    warn!(
-                        ?pubkey,
-                        error = ?e,
-                        "Failed to sign proof for validator"
-                    );
-                }
+            }
+            Err(e) => {
+                warn!(?pubkey, error = ?e, "Failed to sign proof for validator");
             }
         }
-
-        // Periodic cache pruning (entries older than ~2 epochs ≈ 12.8 min)
-        self.prune_resigned_cache().await;
-    }
-
-    /// Remove expired entries from the dedup cache
-    async fn prune_resigned_cache(&self) {
-        let cutoff = Instant::now() - Duration::from_secs(768);
-        let mut cache = self.resigned_proofs.write().await;
-        cache.retain(|_, timestamp| *timestamp > cutoff);
     }
 
     /// Reactive: Sign and submit proof (called by HTTP API)
