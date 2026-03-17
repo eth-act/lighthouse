@@ -976,8 +976,10 @@ where
         debug!(?custody_context, "Loaded persisted custody context");
 
         // Restore ProofEngine state from disk if available.
-        if let Some(el) = self.execution_layer.as_ref()
-            && let Some(proof_engine) = el.proof_engine()
+        if let Some(proof_engine) = self
+            .execution_layer
+            .as_ref()
+            .and_then(|el| el.proof_engine())
             && let Some(store) = self.store
             && let Some(persisted) =
                 crate::BeaconChain::<Witness<TSlotClock, _, _, _>>::load_proof_engine_state(
