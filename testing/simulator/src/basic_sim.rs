@@ -27,7 +27,7 @@ use tracing::Level;
 use types::{Epoch, EthSpec, MinimalEthSpec};
 
 const END_EPOCH: u64 = 16;
-const GENESIS_DELAY: u64 = 38;
+const GENESIS_DELAY: u64 = 45;
 const ALTAIR_FORK_EPOCH: u64 = 0;
 const BELLATRIX_FORK_EPOCH: u64 = 0;
 const CAPELLA_FORK_EPOCH: u64 = 0;
@@ -372,7 +372,7 @@ pub fn run_basic_sim(matches: &ArgMatches) -> Result<(), String> {
             network_1.add_beacon_node_with_delay(
                 beacon_config.clone(),
                 mock_execution_config.clone(),
-                END_EPOCH - 1,
+                END_EPOCH - 3,
                 slot_duration,
                 slots_per_epoch
             ),

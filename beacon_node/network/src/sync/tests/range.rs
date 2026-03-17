@@ -14,12 +14,13 @@ use bls::SignatureBytes;
 use execution_layer::MissingProofInfo;
 use lighthouse_network::rpc::RequestType;
 use lighthouse_network::rpc::methods::{
-    BlobsByRangeRequest, DataColumnsByRangeRequest, OldBlocksByRangeRequest,
+    BlobsByRangeRequest, DataColumnsByRangeRequest, ExecutionProofStatus, OldBlocksByRangeRequest,
     OldBlocksByRangeRequestV2, StatusMessageV2,
 };
 use lighthouse_network::service::api_types::{
     AppRequestId, BlobsByRangeRequestId, BlocksByRangeRequestId, DataColumnsByRangeRequestId,
-    ExecutionProofsByRangeRequestId, ExecutionProofsByRootRequestId, SyncRequestId,
+    ExecutionProofStatusRequestId, ExecutionProofsByRangeRequestId, ExecutionProofsByRootRequestId,
+    SyncRequestId,
 };
 use lighthouse_network::{PeerId, SyncInfo};
 use std::sync::Arc;
@@ -328,16 +329,23 @@ impl TestRig {
     }
 
     /// Assert an `ExecutionProofsByRange` RPC was sent to the network.
-    /// Returns `(request_id, peer_id)`.
+    /// Returns `(request_id, peer_id, start_slot)`.
     fn find_execution_proofs_by_range_request(
         &mut self,
     ) -> (ExecutionProofsByRangeRequestId, PeerId) {
+        self.find_execution_proofs_by_range_request_with_slot().0
+    }
+
+    /// Assert an `ExecutionProofsByRange` RPC was sent; returns `((id, peer_id), start_slot)`.
+    fn find_execution_proofs_by_range_request_with_slot(
+        &mut self,
+    ) -> ((ExecutionProofsByRangeRequestId, PeerId), Slot) {
         self.pop_received_network_event(|ev| match ev {
             NetworkMessage::SendRequest {
                 peer_id,
-                request: RequestType::ExecutionProofsByRange(_),
+                request: RequestType::ExecutionProofsByRange(req),
                 app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofsByRange(id)),
-            } => Some((*id, *peer_id)),
+            } => Some(((*id, *peer_id), Slot::new(req.start_slot))),
             _ => None,
         })
         .unwrap_or_else(|e| panic!("Expected ExecutionProofsByRange request: {e:?}"))
@@ -401,6 +409,65 @@ impl TestRig {
             peer_id,
             execution_proof: None,
         });
+    }
+
+    /// Find an outbound `ExecutionProofStatus` RPC request; returns `(request_id, peer_id)`.
+    fn find_execution_proof_status_request(&mut self) -> (ExecutionProofStatusRequestId, PeerId) {
+        self.pop_received_network_event(|ev| match ev {
+            NetworkMessage::SendRequest {
+                peer_id,
+                request: RequestType::ExecutionProofStatus(_),
+                app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofStatus(id)),
+            } => Some((*id, *peer_id)),
+            _ => None,
+        })
+        .unwrap_or_else(|e| panic!("Expected ExecutionProofStatus request: {e:?}"))
+    }
+
+    /// Drain all pending `ExecutionProofStatus` outbound requests from the network queue.
+    ///
+    /// Called after `start_proof_sync()` to prevent status requests from leaking into
+    /// assertions in the caller.
+    fn drain_execution_proof_status_requests(&mut self) {
+        self.drain_network_rx();
+        self.network_rx_queue.retain(|ev| {
+            !matches!(
+                ev,
+                NetworkMessage::SendRequest {
+                    request: RequestType::ExecutionProofStatus(_),
+                    ..
+                }
+            )
+        });
+    }
+
+    /// Connect a proof-capable peer and deliver an `ExecutionProofStatus` for `peer_slot`.
+    ///
+    /// For slots within our head the block root is looked up so the entry is verified.
+    /// For slots ahead of our head the entry is cached as unverified (optimistic) but
+    /// still eligible for peer selection.
+    fn new_proof_peer_with_status(&mut self, peer_slot: u64) -> PeerId {
+        let peer_id = self.new_connected_proof_capable_peer();
+        let best_slot = self.harness.chain.best_slot();
+        let block_root = if Slot::new(peer_slot) <= best_slot {
+            self.harness
+                .chain
+                .block_root_at_slot(Slot::new(peer_slot), beacon_chain::WhenSlotSkipped::None)
+                .ok()
+                .flatten()
+                .unwrap_or_else(Hash256::random)
+        } else {
+            Hash256::random()
+        };
+        self.send_sync_message(SyncMessage::RpcExecutionProofStatus {
+            peer_id,
+            request_id: None,
+            status: ExecutionProofStatus {
+                slot: peer_slot,
+                block_root,
+            },
+        });
+        peer_id
     }
 
     fn find_and_complete_processing_chain_segment(&mut self, id: ChainSegmentProcessId) {
@@ -685,31 +752,11 @@ fn finalized_sync_not_enough_custody_peers_on_start() {
 // --- ProofSync state-machine tests ---
 
 // These tests exercise the `ProofSync` state machine directly, covering its full lifecycle:
-// Bootstrap (Idle → PendingRangeRequest → RangeRequestInFlight → FillingByRoot),
+// Idle → Syncing (range request for large gaps, by-root fill for small gaps),
 // pause/resume semantics, concurrency cap, in-flight deduplication, and response forwarding.
-
-/// Drive ProofSync through the full bootstrap cycle:
-/// start() → PendingRangeRequest → poll() → RangeRequestInFlight → terminate → FillingByRoot.
-/// Returns the `(req_id, peer_id)` of the range request that was terminated.
-///
-/// Advances the harness slot clock by 1 so that `chain.slot()` > `finalized_start_slot`,
-/// which is required for the range request to be sent (otherwise the genesis check triggers).
-fn bootstrap_proof_sync_to_fill_mode(
-    rig: &mut TestRig,
-) -> (ExecutionProofsByRangeRequestId, PeerId) {
-    // Advance the slot clock so current_slot >= start_slot (genesis check does not fire).
-    rig.harness.advance_slot();
-    rig.sync_manager.start_proof_sync();
-    rig.sync_manager.poll_proof_sync();
-    let (req_id, peer_id) = rig.find_execution_proofs_by_range_request();
-    rig.terminate_execution_proofs_by_range(req_id, peer_id);
-    assert_eq!(
-        rig.sync_manager.proof_sync_state(),
-        ProofSyncState::FillingByRoot,
-        "Expected FillingByRoot after range stream termination"
-    );
-    (req_id, peer_id)
-}
+//
+// In tests, range_request_threshold = 0, so any non-zero slot gap triggers a range request.
+// At genesis (slot 0, gap = 0) the poll goes directly to by-root fill requests.
 
 /// Build a `MissingProofInfo` with a fresh random root for test seeding.
 fn missing_proof(root: Hash256) -> MissingProofInfo {
@@ -732,185 +779,174 @@ fn make_signed_proof() -> Arc<types::SignedExecutionProof> {
 #[test]
 fn test_proof_sync_starts_in_idle() {
     let mut rig = TestRig::test_setup();
-    assert_eq!(rig.sync_manager.proof_sync_state(), ProofSyncState::Idle);
+    assert_eq!(rig.sync_manager.proof_sync().state(), ProofSyncState::Idle);
     rig.sync_manager.poll_proof_sync();
     rig.expect_empty_network();
 }
 
-/// Test 2: After `start()`, the next `poll()` sends an `ExecutionProofsByRange` RPC and
-/// transitions to `RangeRequestInFlight`.
+/// Test 2: After `start()`, the next `poll()` sends an `ExecutionProofsByRange` RPC.
+/// (slot gap = 1 > range_request_threshold = 0 in tests → range request).
 #[test]
 fn test_proof_sync_pending_range_issues_request_on_poll() {
     let mut rig = TestRig::test_setup();
-    let _proof_peer = rig.new_connected_proof_capable_peer();
-    rig.harness.advance_slot(); // current_slot must be >= start_slot for range request
+    let _proof_peer = rig.new_proof_peer_with_status(1);
+    rig.harness.advance_slot();
 
     rig.sync_manager.start_proof_sync();
     assert_eq!(
-        rig.sync_manager.proof_sync_state(),
-        ProofSyncState::PendingRangeRequest,
-        "Expected PendingRangeRequest after start()"
+        rig.sync_manager.proof_sync().state(),
+        ProofSyncState::Syncing
     );
 
     rig.sync_manager.poll_proof_sync();
     let _ = rig.find_execution_proofs_by_range_request();
-    assert_eq!(
-        rig.sync_manager.proof_sync_state(),
-        ProofSyncState::RangeRequestInFlight,
-        "Expected RangeRequestInFlight after polling"
+    assert!(
+        rig.sync_manager.proof_sync().range_request().is_some(),
+        "Range request should be in-flight after poll"
     );
 }
 
-/// Test 3: With no proof-capable peer, `poll()` in PendingRangeRequest stays in that state
-/// and emits no request (soft failure). Adding a peer and polling again sends the request.
+/// Test 3: With no proof-capable peer, `poll()` emits no request (soft failure).
+/// Adding a peer and polling again sends the range request.
 #[test]
 fn test_proof_sync_no_peer_stays_pending() {
     let mut rig = TestRig::test_setup();
-    rig.harness.advance_slot(); // current_slot must be >= start_slot for range request
+    rig.harness.advance_slot();
 
     rig.sync_manager.start_proof_sync();
-    // No proof-capable peer yet — poll should be a no-op.
     rig.sync_manager.poll_proof_sync();
     rig.expect_no_execution_proof_range_request();
     assert_eq!(
-        rig.sync_manager.proof_sync_state(),
-        ProofSyncState::PendingRangeRequest,
-        "Should stay PendingRangeRequest when no proof-capable peer"
+        rig.sync_manager.proof_sync().state(),
+        ProofSyncState::Syncing
     );
+    assert!(rig.sync_manager.proof_sync().range_request().is_none());
 
-    // Now add a proof-capable peer; the next poll should send the request.
-    let _proof_peer = rig.new_connected_proof_capable_peer();
+    // Adding a proof-capable peer; the next poll sends the request.
+    let _proof_peer = rig.new_proof_peer_with_status(1);
     rig.sync_manager.poll_proof_sync();
     let _ = rig.find_execution_proofs_by_range_request();
-    assert_eq!(
-        rig.sync_manager.proof_sync_state(),
-        ProofSyncState::RangeRequestInFlight
-    );
+    assert!(rig.sync_manager.proof_sync().range_request().is_some());
 }
 
-/// Test 4: In `RangeRequestInFlight`, `poll()` must not send any requests.
+/// Test 4: While a range request is in-flight, `poll()` must not send any new requests.
 #[test]
 fn test_proof_sync_in_flight_poll_is_noop() {
     let mut rig = TestRig::test_setup();
-    let _proof_peer = rig.new_connected_proof_capable_peer();
+    let _proof_peer = rig.new_proof_peer_with_status(1);
     rig.harness.advance_slot();
 
     rig.sync_manager.start_proof_sync();
     rig.sync_manager.poll_proof_sync();
     let _ = rig.find_execution_proofs_by_range_request();
-    assert_eq!(
-        rig.sync_manager.proof_sync_state(),
-        ProofSyncState::RangeRequestInFlight
-    );
+    rig.drain_execution_proof_status_requests();
+    assert!(rig.sync_manager.proof_sync().range_request().is_some());
 
-    // A second poll while in-flight should produce nothing.
+    // A second poll while a range request is in-flight should produce nothing.
     rig.sync_manager.poll_proof_sync();
     rig.expect_empty_network();
-    assert_eq!(
-        rig.sync_manager.proof_sync_state(),
-        ProofSyncState::RangeRequestInFlight
-    );
+    assert!(rig.sync_manager.proof_sync().range_request().is_some());
 }
 
-/// Test 5: Stream termination with the correct ID transitions from `RangeRequestInFlight`
-/// to `FillingByRoot`.
+/// Test 5: Stream termination with the correct ID clears the in-flight range request.
+/// The next poll will then issue by-root fill requests (gap is now 0 at genesis).
 #[test]
 fn test_proof_sync_range_termination_enters_fill_mode() {
     let mut rig = TestRig::test_setup();
-    let _proof_peer = rig.new_connected_proof_capable_peer();
+    let _proof_peer = rig.new_proof_peer_with_status(1);
     rig.harness.advance_slot();
 
     rig.sync_manager.start_proof_sync();
     rig.sync_manager.poll_proof_sync();
     let (req_id, peer_id) = rig.find_execution_proofs_by_range_request();
-    assert_eq!(
-        rig.sync_manager.proof_sync_state(),
-        ProofSyncState::RangeRequestInFlight
-    );
+    assert!(rig.sync_manager.proof_sync().range_request().is_some());
 
     rig.terminate_execution_proofs_by_range(req_id, peer_id);
     assert_eq!(
-        rig.sync_manager.proof_sync_state(),
-        ProofSyncState::FillingByRoot,
-        "Should enter FillingByRoot after correct range termination"
+        rig.sync_manager.proof_sync().state(),
+        ProofSyncState::Syncing
+    );
+    assert!(
+        rig.sync_manager.proof_sync().range_request().is_none(),
+        "Range request should be cleared after stream termination"
     );
 }
 
-/// Test 6: Stream termination with a wrong ID is ignored; state stays `RangeRequestInFlight`.
+/// Test 6: Stream termination with a wrong ID is ignored; the range request stays in-flight.
 #[test]
 fn test_proof_sync_wrong_id_termination_ignored() {
     let mut rig = TestRig::test_setup();
-    let _proof_peer = rig.new_connected_proof_capable_peer();
+    let _proof_peer = rig.new_proof_peer_with_status(1);
     rig.harness.advance_slot();
 
     rig.sync_manager.start_proof_sync();
     rig.sync_manager.poll_proof_sync();
     let (_req_id, peer_id) = rig.find_execution_proofs_by_range_request();
-    assert_eq!(
-        rig.sync_manager.proof_sync_state(),
-        ProofSyncState::RangeRequestInFlight
-    );
+    assert!(rig.sync_manager.proof_sync().range_request().is_some());
 
-    // Terminate with a different (fake) ID.
+    // Terminate with a different (fake) ID — should be ignored.
     let fake_id = ExecutionProofsByRangeRequestId { id: 9999 };
     rig.terminate_execution_proofs_by_range(fake_id, peer_id);
-    assert_eq!(
-        rig.sync_manager.proof_sync_state(),
-        ProofSyncState::RangeRequestInFlight,
-        "Wrong ID should not trigger transition"
+    assert!(
+        rig.sync_manager.proof_sync().range_request().is_some(),
+        "Wrong ID should not clear the in-flight range request"
     );
 }
 
-/// Test 7: In `FillingByRoot` with no missing proofs, `poll()` is a no-op.
+/// Test 7: With no missing proofs, `poll()` in `Syncing` is a no-op.
 #[test]
 fn test_proof_sync_fill_mode_no_missing_proofs() {
     let mut rig = TestRig::test_setup();
-    let _proof_peer = rig.new_connected_proof_capable_peer();
+    let _proof_peer = rig.new_proof_peer_with_status(0);
 
-    // Bootstrap to FillingByRoot; test_missing_proofs stays None → returns empty.
-    let _ = bootstrap_proof_sync_to_fill_mode(&mut rig);
+    // At genesis (gap = 0) start() transitions directly to by-root fill behaviour.
+    rig.sync_manager.start_proof_sync();
+    rig.drain_execution_proof_status_requests();
 
+    // test_missing_proofs is None → chain returns empty → no requests sent.
     rig.sync_manager.poll_proof_sync();
     rig.expect_empty_network();
     assert_eq!(
-        rig.sync_manager.proof_sync_state(),
-        ProofSyncState::FillingByRoot
+        rig.sync_manager.proof_sync().state(),
+        ProofSyncState::Syncing
     );
 }
 
-/// Test 8: In `FillingByRoot` with seeded missing proofs, `poll()` sends one
-/// `ExecutionProofsByRoot` request per missing proof.
+/// Test 8: With seeded missing proofs, `poll()` sends one `ExecutionProofsByRoot`
+/// request per missing proof.
 #[test]
 fn test_proof_sync_fill_mode_issues_by_root_requests() {
     let mut rig = TestRig::test_setup();
-    let _proof_peer = rig.new_connected_proof_capable_peer();
+    let _proof_peer = rig.new_proof_peer_with_status(0);
 
-    let _ = bootstrap_proof_sync_to_fill_mode(&mut rig);
+    rig.sync_manager.start_proof_sync();
+    rig.drain_execution_proof_status_requests();
 
     let missing = vec![
         missing_proof(Hash256::random()),
         missing_proof(Hash256::random()),
     ];
-    rig.sync_manager.set_proof_sync_missing(missing);
+    rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(missing);
     rig.sync_manager.poll_proof_sync();
 
     let _ = rig.find_execution_proofs_by_root_request();
     let _ = rig.find_execution_proofs_by_root_request();
-    assert_eq!(rig.sync_manager.proof_sync_in_flight_count(), 2);
+    assert_eq!(rig.sync_manager.proof_sync().in_flight().len(), 2);
 }
 
-/// Test 9: `poll()` in `FillingByRoot` must not exceed `DEFAULT_MAX_CONCURRENT = 4`
-/// in-flight requests even when more missing proofs are present.
+/// Test 9: `poll()` must not exceed `DEFAULT_MAX_CONCURRENT = 4` in-flight requests
+/// even when more missing proofs are present.
 #[test]
 fn test_proof_sync_fill_mode_respects_max_concurrent() {
     let mut rig = TestRig::test_setup();
-    let _proof_peer = rig.new_connected_proof_capable_peer();
+    let _proof_peer = rig.new_proof_peer_with_status(0);
 
-    let _ = bootstrap_proof_sync_to_fill_mode(&mut rig);
+    rig.sync_manager.start_proof_sync();
+    rig.drain_execution_proof_status_requests();
 
     // Seed 6 distinct missing proofs; only 4 should be requested.
     let missing: Vec<MissingProofInfo> = (0..6).map(|_| missing_proof(Hash256::random())).collect();
-    rig.sync_manager.set_proof_sync_missing(missing);
+    rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(missing);
     rig.sync_manager.poll_proof_sync();
 
     // Consume exactly 4 requests.
@@ -918,7 +954,7 @@ fn test_proof_sync_fill_mode_respects_max_concurrent() {
         let _ = rig.find_execution_proofs_by_root_request();
     }
     assert_eq!(
-        rig.sync_manager.proof_sync_in_flight_count(),
+        rig.sync_manager.proof_sync().in_flight().len(),
         4,
         "Should have exactly 4 in-flight requests (max_concurrent)"
     );
@@ -930,53 +966,52 @@ fn test_proof_sync_fill_mode_respects_max_concurrent() {
 #[test]
 fn test_proof_sync_fill_mode_skips_in_flight_roots() {
     let mut rig = TestRig::test_setup();
-    let _proof_peer = rig.new_connected_proof_capable_peer();
+    let _proof_peer = rig.new_proof_peer_with_status(0);
 
-    let _ = bootstrap_proof_sync_to_fill_mode(&mut rig);
+    rig.sync_manager.start_proof_sync();
+    rig.drain_execution_proof_status_requests();
 
     let missing = vec![
         missing_proof(Hash256::random()),
         missing_proof(Hash256::random()),
     ];
-    rig.sync_manager.set_proof_sync_missing(missing);
+    rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(missing);
 
     // First poll: 2 requests sent, in_flight = 2.
     rig.sync_manager.poll_proof_sync();
     let _ = rig.find_execution_proofs_by_root_request();
     let _ = rig.find_execution_proofs_by_root_request();
-    assert_eq!(rig.sync_manager.proof_sync_in_flight_count(), 2);
+    assert_eq!(rig.sync_manager.proof_sync().in_flight().len(), 2);
 
     // Second poll with same missing list: roots already in-flight, no new requests.
     rig.sync_manager.poll_proof_sync();
     rig.expect_empty_network();
     assert_eq!(
-        rig.sync_manager.proof_sync_in_flight_count(),
+        rig.sync_manager.proof_sync().in_flight().len(),
         2,
         "In-flight count should be unchanged after second poll"
     );
 }
 
-/// Test 11: `NoPeer` from `request_execution_proofs_by_root` must stop iteration
-/// and leave in_flight at 0.
-///
-/// Uses `force_proof_sync_fill_mode` to skip the bootstrap cycle so there is no
-/// proof-capable peer in the peerDB when the fill poll fires.
+/// Test 11: With no proof-capable peer, `poll()` in `Syncing` emits no requests.
 #[test]
 fn test_proof_sync_fill_mode_no_peer_breaks() {
     let mut rig = TestRig::test_setup();
-    // No proof-capable peer — find_any_proof_capable_peer returns None → NoPeer.
-    rig.sync_manager.force_proof_sync_fill_mode();
+    // Force Syncing with no proof-capable peer — best_proof_peer() returns None.
+    rig.sync_manager
+        .proof_sync_mut()
+        .set_state(ProofSyncState::Syncing);
 
     let missing = vec![
         missing_proof(Hash256::random()),
         missing_proof(Hash256::random()),
     ];
-    rig.sync_manager.set_proof_sync_missing(missing);
+    rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(missing);
     rig.sync_manager.poll_proof_sync();
 
     rig.expect_empty_network();
     assert_eq!(
-        rig.sync_manager.proof_sync_in_flight_count(),
+        rig.sync_manager.proof_sync().in_flight().len(),
         0,
         "NoPeer should break iteration leaving in_flight empty"
     );
@@ -986,112 +1021,108 @@ fn test_proof_sync_fill_mode_no_peer_breaks() {
 #[test]
 fn test_proof_sync_on_request_terminated_clears_in_flight() {
     let mut rig = TestRig::test_setup();
-    let _proof_peer = rig.new_connected_proof_capable_peer();
+    let _proof_peer = rig.new_proof_peer_with_status(0);
 
-    let _ = bootstrap_proof_sync_to_fill_mode(&mut rig);
+    rig.sync_manager.start_proof_sync();
+    rig.drain_execution_proof_status_requests();
 
     let missing = vec![missing_proof(Hash256::random())];
-    rig.sync_manager.set_proof_sync_missing(missing);
+    rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(missing);
     rig.sync_manager.poll_proof_sync();
 
     let (req_id, peer_id) = rig.find_execution_proofs_by_root_request();
-    assert_eq!(rig.sync_manager.proof_sync_in_flight_count(), 1);
+    assert_eq!(rig.sync_manager.proof_sync().in_flight().len(), 1);
 
     rig.terminate_execution_proofs_by_root(req_id, peer_id);
     assert_eq!(
-        rig.sync_manager.proof_sync_in_flight_count(),
+        rig.sync_manager.proof_sync().in_flight().len(),
         0,
         "in_flight should be empty after termination"
     );
 }
 
-/// Test 13: `pause()` clears `in_flight`, clears `range_request_id`, and resets to `Idle`.
+/// Test 13: `pause()` resets state to `Idle` but leaves in-flight by-root requests open
+/// so that any responses that arrive can still be processed.
 #[test]
 fn test_proof_sync_pause_resets_to_idle() {
     let mut rig = TestRig::test_setup();
-    let _proof_peer = rig.new_connected_proof_capable_peer();
+    let _proof_peer = rig.new_proof_peer_with_status(0);
 
-    let _ = bootstrap_proof_sync_to_fill_mode(&mut rig);
+    rig.sync_manager.start_proof_sync();
+    rig.drain_execution_proof_status_requests();
 
     // Seed some in-flight requests.
     let missing = vec![
         missing_proof(Hash256::random()),
         missing_proof(Hash256::random()),
     ];
-    rig.sync_manager.set_proof_sync_missing(missing);
+    rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(missing);
     rig.sync_manager.poll_proof_sync();
     let _ = rig.find_execution_proofs_by_root_request();
     let _ = rig.find_execution_proofs_by_root_request();
-    assert!(rig.sync_manager.proof_sync_in_flight_count() > 0);
+    assert!(!rig.sync_manager.proof_sync().in_flight().is_empty());
 
-    // Pause resets everything.
-    rig.sync_manager.pause_proof_sync();
-    assert_eq!(rig.sync_manager.proof_sync_state(), ProofSyncState::Idle);
-    assert_eq!(rig.sync_manager.proof_sync_in_flight_count(), 0);
+    // Pause resets state but preserves in-flight by-root entries.
+    rig.sync_manager.proof_sync_mut().pause();
+    assert_eq!(rig.sync_manager.proof_sync().state(), ProofSyncState::Idle);
+    assert!(
+        !rig.sync_manager.proof_sync().in_flight().is_empty(),
+        "in-flight by-root requests are preserved across pause so responses can still land"
+    );
 
-    // Polling in Idle emits nothing.
+    // Polling in Idle emits nothing new.
     rig.sync_manager.poll_proof_sync();
     rig.expect_empty_network();
 }
 
-/// Test 14: Re-entering range sync (pause) then completing again restarts the full bootstrap.
+/// Test 14: Re-entering range sync (pause) then completing again issues a fresh range request.
 #[test]
 fn test_proof_sync_re_enter_range_resets_then_restarts() {
     let mut rig = TestRig::test_setup();
-    let _proof_peer = rig.new_connected_proof_capable_peer();
-    rig.harness.advance_slot(); // current_slot must be >= start_slot for range request
+    let _proof_peer = rig.new_proof_peer_with_status(1);
+    rig.harness.advance_slot();
 
-    // First bootstrap cycle.
+    // First range request cycle.
     rig.sync_manager.start_proof_sync();
     rig.sync_manager.poll_proof_sync();
     let (req_id, peer_id) = rig.find_execution_proofs_by_range_request();
     rig.terminate_execution_proofs_by_range(req_id, peer_id);
-    assert_eq!(
-        rig.sync_manager.proof_sync_state(),
-        ProofSyncState::FillingByRoot
-    );
+    assert!(rig.sync_manager.proof_sync().range_request().is_none());
 
     // Re-entering range sync pauses ProofSync.
-    rig.sync_manager.pause_proof_sync();
-    assert_eq!(rig.sync_manager.proof_sync_state(), ProofSyncState::Idle);
+    rig.sync_manager.proof_sync_mut().pause();
+    assert_eq!(rig.sync_manager.proof_sync().state(), ProofSyncState::Idle);
 
-    // Range sync completes again → start() → PendingRangeRequest.
+    // Range sync completes again → start() → Syncing.
     rig.sync_manager.start_proof_sync();
     assert_eq!(
-        rig.sync_manager.proof_sync_state(),
-        ProofSyncState::PendingRangeRequest
+        rig.sync_manager.proof_sync().state(),
+        ProofSyncState::Syncing
     );
 
-    // New poll sends a fresh range request.
+    // New poll sends a fresh range request (slot gap still > 0).
     rig.sync_manager.poll_proof_sync();
     let _ = rig.find_execution_proofs_by_range_request();
-    assert_eq!(
-        rig.sync_manager.proof_sync_state(),
-        ProofSyncState::RangeRequestInFlight
-    );
+    assert!(rig.sync_manager.proof_sync().range_request().is_some());
 }
 
-/// Test 15: When `current_slot < start_slot` (slot clock behind finalized + 1), skip the
-/// range request and transition directly to `FillingByRoot`.
-///
-/// At genesis the slot clock is at slot 0, finalized epoch is 0,
-/// so `start_slot = 1` and `current_slot (0) < start_slot (1)` → skip range request.
+/// Test 15: At genesis (slot gap = 0 ≤ range_request_threshold = 0), no range request
+/// is issued — `poll()` goes directly to the by-root fill path.
 #[test]
 fn test_proof_sync_count_zero_skips_to_fill() {
     let mut rig = TestRig::test_setup();
-    let _proof_peer = rig.new_connected_proof_capable_peer();
+    let _proof_peer = rig.new_proof_peer_with_status(0);
 
-    // Chain starts at slot 0, finalized_epoch = 0 → count == 0.
     rig.sync_manager.start_proof_sync();
+    rig.drain_execution_proof_status_requests();
     rig.sync_manager.poll_proof_sync();
 
-    // No range request should have been issued.
     rig.expect_no_execution_proof_range_request();
     assert_eq!(
-        rig.sync_manager.proof_sync_state(),
-        ProofSyncState::FillingByRoot,
-        "Should skip directly to FillingByRoot when count == 0"
+        rig.sync_manager.proof_sync().state(),
+        ProofSyncState::Syncing
     );
+    assert!(rig.sync_manager.proof_sync().range_request().is_none());
 }
 
 /// Test 16: A proof arriving on an `ExecutionProofsByRange` stream must be forwarded
@@ -1099,16 +1130,13 @@ fn test_proof_sync_count_zero_skips_to_fill() {
 #[test]
 fn test_proof_sync_range_response_forwarded_to_processor() {
     let mut rig = TestRig::test_setup();
-    let _proof_peer = rig.new_connected_proof_capable_peer();
+    let _proof_peer = rig.new_proof_peer_with_status(1);
     rig.harness.advance_slot();
 
     rig.sync_manager.start_proof_sync();
     rig.sync_manager.poll_proof_sync();
     let (req_id, peer_id) = rig.find_execution_proofs_by_range_request();
-    assert_eq!(
-        rig.sync_manager.proof_sync_state(),
-        ProofSyncState::RangeRequestInFlight
-    );
+    assert!(rig.sync_manager.proof_sync().range_request().is_some());
 
     // Send a proof (non-termination) response.
     rig.send_sync_message(SyncMessage::RpcExecutionProof {
@@ -1122,11 +1150,8 @@ fn test_proof_sync_range_response_forwarded_to_processor() {
     })
     .unwrap_or_else(|e| panic!("Expected GossipExecutionProof work event: {e:?}"));
 
-    // State remains RangeRequestInFlight (stream not yet terminated).
-    assert_eq!(
-        rig.sync_manager.proof_sync_state(),
-        ProofSyncState::RangeRequestInFlight
-    );
+    // Range request is still in-flight (stream not yet terminated).
+    assert!(rig.sync_manager.proof_sync().range_request().is_some());
 }
 
 /// Test 17: A proof arriving on an `ExecutionProofsByRoot` stream must be forwarded
@@ -1134,12 +1159,14 @@ fn test_proof_sync_range_response_forwarded_to_processor() {
 #[test]
 fn test_proof_sync_root_response_forwarded_to_processor() {
     let mut rig = TestRig::test_setup();
-    let _proof_peer = rig.new_connected_proof_capable_peer();
+    let _proof_peer = rig.new_proof_peer_with_status(0);
 
-    let _ = bootstrap_proof_sync_to_fill_mode(&mut rig);
+    // At genesis (gap = 0) poll goes directly to by-root fill.
+    rig.sync_manager.start_proof_sync();
+    rig.drain_execution_proof_status_requests();
 
     let missing = vec![missing_proof(Hash256::random())];
-    rig.sync_manager.set_proof_sync_missing(missing);
+    rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(missing);
     rig.sync_manager.poll_proof_sync();
 
     let (req_id, peer_id) = rig.find_execution_proofs_by_root_request();
@@ -1155,4 +1182,283 @@ fn test_proof_sync_root_response_forwarded_to_processor() {
         (ev.work_type() == WorkType::GossipExecutionProof).then_some(())
     })
     .unwrap_or_else(|e| panic!("Expected GossipExecutionProof work event: {e:?}"));
+}
+
+/// Test 18: A peer that claims an implausible block root (slot we have, wrong root)
+/// must be ignored — an implausible status must not overwrite a valid cached entry.
+#[test]
+fn test_implausible_block_root_ignored() {
+    let mut rig = TestRig::test_setup();
+    let proof_peer = rig.new_connected_proof_capable_peer();
+
+    // Send a valid inbound status at slot 0 with the correct genesis block root.
+    let genesis_root = rig
+        .harness
+        .chain
+        .canonical_head
+        .cached_head()
+        .head_block_root();
+    rig.send_sync_message(SyncMessage::RpcExecutionProofStatus {
+        peer_id: proof_peer,
+        request_id: None,
+        status: ExecutionProofStatus {
+            slot: 0,
+            block_root: genesis_root,
+        },
+    });
+
+    assert!(
+        rig.sync_manager
+            .proof_sync()
+            .peer_status(&proof_peer)
+            .is_some(),
+        "Peer should be cached after valid status"
+    );
+    assert_eq!(
+        rig.sync_manager
+            .proof_sync()
+            .peer_status(&proof_peer)
+            .map(|s| s.verified),
+        Some(true),
+        "Cached entry should be verified"
+    );
+
+    // Send an inbound status with a wrong block root for a slot we have.
+    rig.send_sync_message(SyncMessage::RpcExecutionProofStatus {
+        peer_id: proof_peer,
+        request_id: None,
+        status: ExecutionProofStatus {
+            slot: 0,
+            block_root: Hash256::random(),
+        },
+    });
+
+    // The implausible status must be dropped; the original valid entry should remain.
+    assert!(
+        rig.sync_manager
+            .proof_sync()
+            .peer_status(&proof_peer)
+            .is_some(),
+        "Valid cached entry must survive an implausible status update"
+    );
+    assert_eq!(
+        rig.sync_manager
+            .proof_sync()
+            .peer_status(&proof_peer)
+            .map(|s| s.verified),
+        Some(true),
+        "Cached entry should still be verified after implausible status"
+    );
+}
+
+/// Test 19: A peer that claims a slot ahead of our head is cached optimistically
+/// with `verified = false`.
+#[test]
+fn test_optimistic_caching_for_ahead_peer() {
+    let mut rig = TestRig::test_setup();
+    let proof_peer = rig.new_connected_proof_capable_peer();
+
+    // best_slot() == 0 at genesis; slot 999 is well ahead of our head.
+    rig.send_sync_message(SyncMessage::RpcExecutionProofStatus {
+        peer_id: proof_peer,
+        request_id: None, // inbound (peer-initiated)
+        status: ExecutionProofStatus {
+            slot: 999,
+            block_root: Hash256::random(),
+        },
+    });
+
+    assert!(
+        rig.sync_manager
+            .proof_sync()
+            .peer_status(&proof_peer)
+            .is_some(),
+        "Ahead-of-head peer should be cached optimistically"
+    );
+    assert_eq!(
+        rig.sync_manager
+            .proof_sync()
+            .peer_status(&proof_peer)
+            .map(|s| s.verified),
+        Some(false),
+        "Ahead-of-head peer must be cached as unverified"
+    );
+}
+
+/// Test 20: `start()` re-requests status for a peer whose cached entry is unverified.
+///
+/// `needs_refresh()` returns `true` for unverified entries, so a subsequent `start()`
+/// should issue a fresh `ExecutionProofStatus` request for that peer.
+#[test]
+fn test_start_refreshes_unverified_entries() {
+    let mut rig = TestRig::test_setup();
+    let proof_peer = rig.new_connected_proof_capable_peer();
+
+    // Override the peer's initial (verified) cache entry with an optimistic one by sending
+    // an inbound status with a slot beyond our head — this makes the entry unverified.
+    rig.send_sync_message(SyncMessage::RpcExecutionProofStatus {
+        peer_id: proof_peer,
+        request_id: None,
+        status: ExecutionProofStatus {
+            slot: 999,
+            block_root: Hash256::random(),
+        },
+    });
+    assert_eq!(
+        rig.sync_manager
+            .proof_sync()
+            .peer_status(&proof_peer)
+            .map(|s| s.verified),
+        Some(false),
+        "Entry should be unverified after optimistic caching"
+    );
+
+    // First start(): peer is unverified → needs_refresh=true → sends a status request.
+    rig.sync_manager.start_proof_sync();
+    let (id1, _) = rig.find_execution_proof_status_request();
+
+    // Respond with another optimistic status so the entry stays unverified.
+    rig.send_sync_message(SyncMessage::RpcExecutionProofStatus {
+        peer_id: proof_peer,
+        request_id: Some(id1),
+        status: ExecutionProofStatus {
+            slot: 999,
+            block_root: Hash256::random(),
+        },
+    });
+    assert_eq!(
+        rig.sync_manager
+            .proof_sync()
+            .peer_status(&proof_peer)
+            .map(|s| s.verified),
+        Some(false),
+        "Entry should still be unverified"
+    );
+
+    // Pause and restart — start() must re-request because the entry is still unverified.
+    rig.sync_manager.proof_sync_mut().pause();
+    rig.sync_manager.start_proof_sync();
+
+    // If this succeeds, start() issued a fresh status request for the unverified peer.
+    let (_id2, peer2) = rig.find_execution_proof_status_request();
+    assert_eq!(
+        peer2, proof_peer,
+        "New status request should target the same proof peer"
+    );
+}
+
+/// Test 21: An inbound `ExecutionProofStatus` (peer-initiated, `request_id = None`)
+/// populates the proof-sync peer cache exactly as an outbound response does.
+#[test]
+fn test_inbound_status_populates_cache() {
+    let mut rig = TestRig::test_setup();
+    let proof_peer = rig.new_connected_proof_capable_peer();
+
+    // Simulate a peer-initiated status exchange: the peer sends us their status.
+    rig.send_sync_message(SyncMessage::RpcExecutionProofStatus {
+        peer_id: proof_peer,
+        request_id: None,
+        status: ExecutionProofStatus {
+            slot: 42,
+            block_root: Hash256::random(),
+        },
+    });
+
+    assert!(
+        rig.sync_manager
+            .proof_sync()
+            .peer_status(&proof_peer)
+            .is_some(),
+        "Inbound status must populate the cache"
+    );
+    // Slot 42 > best_slot(0) → optimistically cached as unverified.
+    assert_eq!(
+        rig.sync_manager
+            .proof_sync()
+            .peer_status(&proof_peer)
+            .map(|s| s.verified),
+        Some(false),
+        "Slot ahead of head must be cached as unverified"
+    );
+}
+
+/// Test 22: `local_execution_proof_status` can be set and read back via `network_globals`.
+///
+/// This verifies the `NetworkGlobals` getter/setter used by the proof-verified callback path
+/// (in `gossip_methods.rs`) and consumed by `ProofSync.poll()`.
+#[test]
+fn test_local_execution_proof_status_read_write() {
+    let rig = TestRig::test_setup();
+
+    // Default should be zero slot.
+    let initial = rig.network_globals.local_execution_proof_status();
+    assert_eq!(initial.slot, 0);
+
+    // Set a new status and read it back.
+    let block_root = Hash256::repeat_byte(0xab);
+    rig.network_globals
+        .set_local_execution_proof_status(ExecutionProofStatus {
+            slot: 42,
+            block_root,
+        });
+
+    let updated = rig.network_globals.local_execution_proof_status();
+    assert_eq!(updated.slot, 42);
+    assert_eq!(updated.block_root, block_root);
+}
+
+/// Test 23: `ProofSync.poll()` uses `local_execution_proof_status` as the lower bound
+/// for `start_slot`, so proofs already verified locally are never re-requested.
+///
+/// Setup: peer announces slot 10, local proof status is at slot 7.
+/// Expected: range request start_slot = max(finalized_slot, local_proof_slot) + 1 = 8.
+#[test]
+fn test_proof_sync_start_slot_respects_local_proof_status() {
+    let mut rig = TestRig::test_setup();
+
+    // Peer has proofs up to slot 10.
+    let _proof_peer = rig.new_proof_peer_with_status(10);
+    rig.harness.advance_slot();
+
+    // Simulate that we have already verified proofs up to slot 7 locally.
+    rig.network_globals
+        .set_local_execution_proof_status(ExecutionProofStatus {
+            slot: 7,
+            block_root: Hash256::repeat_byte(0xcc),
+        });
+
+    rig.sync_manager.start_proof_sync();
+    rig.sync_manager.poll_proof_sync();
+
+    let ((_req_id, _peer_id), start_slot) = rig.find_execution_proofs_by_range_request_with_slot();
+
+    // start_slot must be at least local_proof_slot + 1 = 8.
+    assert!(
+        start_slot.as_u64() >= 8,
+        "start_slot {start_slot} should be >= 8 (local_proof_slot + 1)"
+    );
+}
+
+/// Test 24: When `local_execution_proof_status` is updated to a slot beyond the peer's
+/// announced slot, `ProofSync.poll()` computes a zero gap and issues no range request.
+#[test]
+fn test_proof_sync_no_request_when_local_status_ahead_of_peer() {
+    let mut rig = TestRig::test_setup();
+
+    // Peer only has proofs up to slot 5.
+    let _proof_peer = rig.new_proof_peer_with_status(5);
+    rig.harness.advance_slot();
+
+    // Local proof status is already at slot 5 (equal to peer) — gap = 0.
+    rig.network_globals
+        .set_local_execution_proof_status(ExecutionProofStatus {
+            slot: 5,
+            block_root: Hash256::repeat_byte(0xdd),
+        });
+
+    rig.sync_manager.start_proof_sync();
+    rig.sync_manager.poll_proof_sync();
+
+    // No range request should be emitted since start_slot (6) > peer_slot (5).
+    rig.expect_no_execution_proof_range_request();
 }

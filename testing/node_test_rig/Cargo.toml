@@ -22,7 +22,7 @@ task_executor = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-tree_hash = { workspace = true}
+tree_hash = { workspace = true }
 types = { workspace = true }
 validator_client = { workspace = true }
 validator_dir = { workspace = true, features = ["insecure_keys"] }

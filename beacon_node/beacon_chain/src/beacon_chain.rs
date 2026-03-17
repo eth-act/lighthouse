@@ -7502,7 +7502,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     pub async fn verify_execution_proof(
         self: &Arc<Self>,
         signed_proof: types::SignedExecutionProof,
-    ) -> Result<ProofStatus, Error> {
+    ) -> Result<(ProofStatus, Option<(Hash256, Slot)>), Error> {
         // TODO: This function clones the proof multiple times. Optimise it.
 
         // Clone for moving into closures
@@ -7602,9 +7602,18 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 ?request_root,
                 "Updated fork choice for verified proof"
             );
+
+            // Look up the slot so callers can update local execution proof status.
+            let slot = self
+                .store
+                .get_blinded_block(&block_root)
+                .ok()
+                .flatten()
+                .map(|b| b.slot());
+            return Ok((verification_result, slot.map(|s| (block_root, s))));
         }
 
-        Ok(verification_result)
+        Ok((verification_result, None))
     }
 }
 

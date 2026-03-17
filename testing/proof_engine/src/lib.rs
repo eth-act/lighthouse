@@ -36,11 +36,12 @@ mod test {
                 extra_nodes: 0,
                 proof_generator_nodes: 1,
                 proof_verifier_nodes: 1,
-                genesis_delay: 20,
+                genesis_delay: 120,
             })
     }
 
     #[tokio::test]
+    #[cfg_attr(debug_assertions, ignore = "too slow in debug mode")]
     async fn test_proof_engine_basic() -> anyhow::Result<()> {
         let mut fixture = test_fixture_builder_base()
             .with_log_level(LevelFilter::DEBUG)
@@ -73,6 +74,7 @@ mod test {
     }
 
     #[tokio::test]
+    #[cfg_attr(debug_assertions, ignore = "too slow in debug mode")]
     async fn test_proof_engine_sync() -> anyhow::Result<()> {
         let mut fixture = test_fixture_builder_base()
             .map_spec(|spec| {

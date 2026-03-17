@@ -196,9 +196,7 @@ impl<E: EthSpec> RangeBlockComponentsRequest<E> {
         &mut self,
         spec: &ChainSpec,
     ) -> Option<Result<Vec<RpcBlock<E>>, CouplingError>> {
-        let Some(blocks) = self.blocks_request.to_finished() else {
-            return None;
-        };
+        let blocks = self.blocks_request.to_finished()?;
 
         // Increment the attempt once this function returns the response or errors
         match &mut self.block_data_request {
@@ -206,9 +204,7 @@ impl<E: EthSpec> RangeBlockComponentsRequest<E> {
                 Some(Self::responses_with_blobs(blocks.to_vec(), vec![], spec))
             }
             RangeBlockDataRequest::Blobs(request) => {
-                let Some(blobs) = request.to_finished() else {
-                    return None;
-                };
+                let blobs = request.to_finished()?;
                 Some(Self::responses_with_blobs(
                     blocks.to_vec(),
                     blobs.to_vec(),
@@ -224,9 +220,7 @@ impl<E: EthSpec> RangeBlockComponentsRequest<E> {
                 let mut data_columns = vec![];
                 let mut column_to_peer_id: HashMap<u64, PeerId> = HashMap::new();
                 for req in requests.values() {
-                    let Some(data) = req.to_finished() else {
-                        return None;
-                    };
+                    let data = req.to_finished()?;
                     data_columns.extend(data.clone())
                 }
 

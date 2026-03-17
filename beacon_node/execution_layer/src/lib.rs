@@ -2344,16 +2344,14 @@ fn verify_builder_bid<E: EthSpec>(
         bid.data.message.value().to_i64(),
     );
 
-    let expected_withdrawals_root = payload_attributes
-        .withdrawals()
-        .ok()
-        .cloned()
-        .map(|withdrawals| {
+    let expected_withdrawals_root = match payload_attributes.withdrawals().ok().cloned() {
+        Some(withdrawals) => Some(
             Withdrawals::<E>::try_from(withdrawals)
                 .map_err(InvalidBuilderPayload::SszTypesError)
-                .map(|w| w.tree_hash_root())
-        })
-        .transpose()?;
+                .map(|w| w.tree_hash_root())?,
+        ),
+        None => None,
+    };
 
     let payload_withdrawals_root = header.withdrawals_root().ok();
     let expected_gas_limit = proposer_gas_limit

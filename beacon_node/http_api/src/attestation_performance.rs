@@ -32,6 +32,7 @@ impl From<BeaconStateError> for AttestationPerformanceError {
     }
 }
 
+#[allow(clippy::result_large_err)]
 pub fn get_attestation_performance<T: BeaconChainTypes>(
     target: String,
     query: AttestationPerformanceQuery,
@@ -111,6 +112,7 @@ pub fn get_attestation_performance<T: BeaconChainTypes>(
     let first_block = chain
         .get_blinded_block(first_block_root)
         .and_then(|maybe_block| {
+            #[allow(clippy::result_large_err)]
             maybe_block.ok_or(BeaconChainError::MissingBeaconBlock(*first_block_root))
         })
         .map_err(unhandled_error)?;
@@ -119,6 +121,7 @@ pub fn get_attestation_performance<T: BeaconChainTypes>(
     let prior_block = chain
         .get_blinded_block(&first_block.parent_root())
         .and_then(|maybe_block| {
+            #[allow(clippy::result_large_err)]
             maybe_block
                 .ok_or_else(|| BeaconChainError::MissingBeaconBlock(first_block.parent_root()))
         })
@@ -131,7 +134,10 @@ pub fn get_attestation_performance<T: BeaconChainTypes>(
     // to cache states so that future calls are faster.
     let state = chain
         .get_state(&state_root, Some(prior_slot), true)
-        .and_then(|maybe_state| maybe_state.ok_or(BeaconChainError::MissingBeaconState(state_root)))
+        .and_then(|maybe_state| {
+            #[allow(clippy::result_large_err)]
+            maybe_state.ok_or(BeaconChainError::MissingBeaconState(state_root))
+        })
         .map_err(unhandled_error)?;
 
     // Allocate an AttestationPerformance vector for each validator in the range.
@@ -199,6 +205,7 @@ pub fn get_attestation_performance<T: BeaconChainTypes>(
                 chain
                     .get_blinded_block(root)
                     .and_then(|maybe_block| {
+                        #[allow(clippy::result_large_err)]
                         maybe_block.ok_or(BeaconChainError::MissingBeaconBlock(*root))
                     })
                     .map_err(unhandled_error)

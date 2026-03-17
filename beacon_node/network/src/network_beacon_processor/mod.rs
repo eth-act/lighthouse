@@ -717,11 +717,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
     ) -> Result<(), Error<T::EthSpec>> {
         let processor = self.clone();
         let process_fn = move || {
-            processor.handle_execution_proofs_by_range_request(
-                peer_id,
-                inbound_request_id,
-                request,
-            )
+            processor.handle_execution_proofs_by_range_request(peer_id, inbound_request_id, request)
         };
 
         self.try_send(BeaconWorkEvent {

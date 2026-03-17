@@ -1119,6 +1119,7 @@ fn get_state_for_block(harness: &TestHarness, block_root: Hash256) -> BeaconStat
 }
 
 /// Check the invariants that apply to `shuffling_is_compatible`.
+#[allow(clippy::result_large_err)]
 fn check_shuffling_compatible(
     harness: &TestHarness,
     head_state: &BeaconState<E>,

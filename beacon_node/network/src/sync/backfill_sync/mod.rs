@@ -82,8 +82,10 @@ pub enum SyncStart {
     /// The chain started syncing or is already syncing.
     Syncing {
         /// The number of slots that have been processed so far.
+        #[cfg_attr(feature = "disable-backfill", allow(dead_code))]
         completed: usize,
         /// The number of slots still to be processed.
+        #[cfg_attr(feature = "disable-backfill", allow(dead_code))]
         remaining: usize,
     },
     /// The chain didn't start syncing.
@@ -156,6 +158,7 @@ pub struct BackFillSync<T: BeaconChainTypes> {
     network_globals: Arc<NetworkGlobals<T::EthSpec>>,
 }
 
+#[cfg_attr(feature = "disable-backfill", allow(dead_code))]
 impl<T: BeaconChainTypes> BackFillSync<T> {
     pub fn new(
         beacon_chain: Arc<BeaconChain<T>>,
@@ -1192,6 +1195,7 @@ impl<T: BeaconChainTypes> BackFillSync<T> {
 }
 
 /// Error kind for attempting to restart the sync from beacon chain parameters.
+#[cfg_attr(feature = "disable-backfill", allow(dead_code))]
 enum ResetEpochError {
     /// The chain has already completed.
     SyncCompleted,

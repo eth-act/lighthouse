@@ -79,6 +79,7 @@ fn cached_attestation_duties<T: BeaconChainTypes>(
 
 /// Compute some attester duties by reading a `BeaconState` from disk, completely ignoring the
 /// shuffling cache.
+#[allow(clippy::result_large_err)]
 fn compute_historic_attester_duties<T: BeaconChainTypes>(
     request_epoch: Epoch,
     request_indices: &[u64],
@@ -151,6 +152,7 @@ fn compute_historic_attester_duties<T: BeaconChainTypes>(
     let duties = request_indices
         .iter()
         .map(|&validator_index| {
+            #[allow(clippy::result_large_err)]
             state
                 .get_attestation_duties(validator_index as usize, relative_epoch)
                 .map_err(BeaconChainError::from)

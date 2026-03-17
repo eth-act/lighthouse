@@ -9,7 +9,7 @@ use crate::peer_manager::{
     peerdb::score::PeerAction, peerdb::score::ReportSource,
 };
 use crate::peer_manager::{MIN_OUTBOUND_ONLY_FACTOR, PEER_EXCESS_FACTOR, PRIORITY_PEER_EXCESS};
-use crate::rpc::methods::MetadataRequest;
+use crate::rpc::methods::{ExecutionProofStatus, MetadataRequest};
 use crate::rpc::{
     GoodbyeReason, HandlerErr, InboundRequestId, Protocol, RPC, RPCError, RPCMessage, RPCReceived,
     RequestType, ResponseTermination, RpcResponse, RpcSuccessResponse,
@@ -105,6 +105,11 @@ pub enum NetworkEvent<E: EthSpec> {
     ZeroListeners,
     /// A peer has an updated custody group count from MetaData.
     PeerUpdatedCustodyGroupCount(PeerId),
+    /// A peer sent us their `ExecutionProofStatus` in the body of an inbound request.
+    PeerExecutionProofStatus {
+        peer_id: PeerId,
+        status: ExecutionProofStatus,
+    },
 }
 
 pub type Gossipsub = gossipsub::Behaviour<SnappyTransform, SubscriptionFilter>;
@@ -1634,6 +1639,20 @@ impl<E: EthSpec> Network<E> {
                             request_type,
                         })
                     }
+                    RequestType::ExecutionProofStatus(peer_status) => {
+                        // Respond immediately with our local status.
+                        let local_status =
+                            *self.network_globals.local_execution_proof_status.read();
+                        let response = RpcResponse::Success(
+                            RpcSuccessResponse::ExecutionProofStatus(local_status),
+                        );
+                        self.send_response(peer_id, inbound_request_id, response);
+                        // Route peer's status to sync layer so it populates the ProofSync cache.
+                        Some(NetworkEvent::PeerExecutionProofStatus {
+                            peer_id,
+                            status: peer_status,
+                        })
+                    }
                 }
             }
             Ok(RPCReceived::Response(id, resp)) => {
@@ -1694,11 +1713,18 @@ impl<E: EthSpec> Network<E> {
                         peer_id,
                         Response::LightClientUpdatesByRange(Some(update)),
                     ),
-                    RpcSuccessResponse::ExecutionProofsByRange(proof) => {
-                        self.build_response(id, peer_id, Response::ExecutionProofsByRange(Some(proof)))
-                    }
-                    RpcSuccessResponse::ExecutionProofsByRoot(proof) => {
-                        self.build_response(id, peer_id, Response::ExecutionProofsByRoot(Some(proof)))
+                    RpcSuccessResponse::ExecutionProofsByRange(proof) => self.build_response(
+                        id,
+                        peer_id,
+                        Response::ExecutionProofsByRange(Some(proof)),
+                    ),
+                    RpcSuccessResponse::ExecutionProofsByRoot(proof) => self.build_response(
+                        id,
+                        peer_id,
+                        Response::ExecutionProofsByRoot(Some(proof)),
+                    ),
+                    RpcSuccessResponse::ExecutionProofStatus(status) => {
+                        self.build_response(id, peer_id, Response::ExecutionProofStatus(status))
                     }
                 }
             }

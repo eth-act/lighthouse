@@ -25,8 +25,6 @@ pub enum ExecutionProofError {
     InvalidValidatorPubkey,
     /// Failed to decompress the signature.
     InvalidSignatureFormat,
-    /// The fork does not support EIP-8025.
-    UnsupportedFork,
     /// Failed to retrieve beacon state.
     StateError(String),
     /// No execution layer configured.
@@ -54,9 +52,6 @@ impl fmt::Display for ExecutionProofError {
             }
             ExecutionProofError::InvalidSignatureFormat => {
                 write!(f, "Invalid signature format")
-            }
-            ExecutionProofError::UnsupportedFork => {
-                write!(f, "Fork does not support EIP-8025")
             }
             ExecutionProofError::StateError(msg) => {
                 write!(f, "Beacon state error: {}", msg)
@@ -299,39 +294,6 @@ mod tests {
             result,
             Err(BeaconChainError::ExecutionProofError(
                 ExecutionProofError::EmptyProofData
-            ))
-        ));
-    }
-
-    #[test]
-    fn test_verify_unsupported_fork() {
-        let keypair = Keypair::random();
-        let spec = MainnetEthSpec::default_spec();
-        let genesis_validators_root = Hash256::repeat_byte(0xcd);
-        let proof = create_test_proof(vec![1, 2, 3, 4]);
-
-        // Use Electra spec (pre-Fulu, EIP-8025 not enabled)
-        let electra_spec = ForkName::Electra.make_genesis_spec(spec.clone());
-        let signed = sign_proof(
-            &proof,
-            &keypair,
-            ForkName::Electra,
-            genesis_validators_root,
-            &electra_spec,
-        );
-
-        let result = verify_signed_execution_proof_signature::<MainnetEthSpec>(
-            &signed,
-            &keypair.pk.compress(),
-            ForkName::Electra, // Pre-Fulu fork
-            genesis_validators_root,
-            &electra_spec,
-        );
-
-        assert!(matches!(
-            result,
-            Err(BeaconChainError::ExecutionProofError(
-                ExecutionProofError::UnsupportedFork
             ))
         ));
     }

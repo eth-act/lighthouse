@@ -4,7 +4,7 @@ use kzg::trusted_setup::get_trusted_setup;
 use lighthouse_network::types::Enr;
 use node_test_rig::{
     ClientConfig, ClientGenesis, LocalBeaconNode, LocalExecutionNode, LocalValidatorClient,
-    MockExecutionConfig, MockServerConfig, ValidatorConfig, ValidatorFiles,
+    MockExecutionConfig, ValidatorConfig, ValidatorFiles,
     environment::RuntimeContext,
     eth2::{BeaconNodeHttpClient, types::StateId},
     testing_client_config,
@@ -22,12 +22,6 @@ use task_executor::TaskExecutor;
 use tempfile::tempdir;
 use types::{ChainSpec, Epoch, EthSpec};
 use validator_http_api::{Config as ValidatorHttpConfig, PK_FILENAME};
-
-const BOOTNODE_PORT: u16 = 42424;
-const QUIC_PORT: u16 = 43424;
-
-pub const EXECUTION_PORT: u16 = 4000;
-pub const PROOF_PORT: u16 = 6000;
 
 pub const TERMINAL_BLOCK: u64 = 0;
 
@@ -120,15 +114,7 @@ fn default_client_config(network_params: LocalNetworkParams, genesis_time: u64) 
     beacon_config.chain.enable_light_client_server = true;
     beacon_config.chain.optimistic_finalized_sync = false;
     beacon_config.trusted_setup = get_trusted_setup();
-    beacon_config.chain.node_custody_type = NodeCustodyType::Supernode;
 
-    let el_config = execution_layer::Config {
-        execution_endpoint: Some(
-            SensitiveUrl::parse(&format!("http://localhost:{}", EXECUTION_PORT)).unwrap(),
-        ),
-        ..Default::default()
-    };
-    beacon_config.execution_layer = Some(el_config);
     beacon_config
 }
 
@@ -136,13 +122,7 @@ fn default_mock_execution_config<E: EthSpec>(
     spec: &ChainSpec,
     genesis_time: u64,
 ) -> MockExecutionConfig {
-    let mut mock_execution_config = MockExecutionConfig {
-        server_config: MockServerConfig {
-            listen_port: EXECUTION_PORT,
-            ..Default::default()
-        },
-        ..Default::default()
-    };
+    let mut mock_execution_config = MockExecutionConfig::default();
 
     if let Some(capella_fork_epoch) = spec.capella_fork_epoch {
         mock_execution_config.shanghai_time = Some(
@@ -281,15 +261,6 @@ impl<E: EthSpec> LocalNetwork<E> {
         mut beacon_config: ClientConfig,
         mock_execution_config: MockExecutionConfig,
     ) -> Result<(LocalBeaconNode<E>, LocalExecutionNode<E>), String> {
-        beacon_config.network.set_ipv4_listening_address(
-            std::net::Ipv4Addr::UNSPECIFIED,
-            BOOTNODE_PORT,
-            BOOTNODE_PORT,
-            QUIC_PORT,
-        );
-
-        beacon_config.network.enr_udp4_port = Some(BOOTNODE_PORT.try_into().expect("non zero"));
-        beacon_config.network.enr_tcp4_port = Some(BOOTNODE_PORT.try_into().expect("non zero"));
         beacon_config.network.discv5_config.table_filter = |_| true;
 
         // The boot node is a full data-availability node and should custody all columns from
@@ -318,7 +289,7 @@ impl<E: EthSpec> LocalNetwork<E> {
     async fn construct_beacon_node(
         &self,
         mut beacon_config: ClientConfig,
-        mut mock_execution_config: MockExecutionConfig,
+        mock_execution_config: MockExecutionConfig,
         node_type: NodeType,
     ) -> Result<
         (
@@ -328,25 +299,10 @@ impl<E: EthSpec> LocalNetwork<E> {
         ),
         String,
     > {
-        let count = (self.beacon_node_count() + self.proposer_node_count()) as u16;
-
-        // Set config.
-        let libp2p_tcp_port = BOOTNODE_PORT + count;
-        let discv5_port = BOOTNODE_PORT + count;
-        beacon_config.network.set_ipv4_listening_address(
-            std::net::Ipv4Addr::UNSPECIFIED,
-            libp2p_tcp_port,
-            discv5_port,
-            QUIC_PORT + count,
-        );
-        beacon_config.network.enr_udp4_port = Some(discv5_port.try_into().unwrap());
-        beacon_config.network.enr_tcp4_port = Some(libp2p_tcp_port.try_into().unwrap());
         beacon_config.network.discv5_config.table_filter = |_| true;
         beacon_config.network.proposer_only = node_type.is_proposer();
 
         let execution_node = if node_type.requires_execution_node() {
-            // Construct execution node.
-            mock_execution_config.server_config.listen_port = EXECUTION_PORT + count;
             let execution_node =
                 LocalExecutionNode::new(self.context.clone(), mock_execution_config);
 
@@ -366,8 +322,7 @@ impl<E: EthSpec> LocalNetwork<E> {
         };
 
         let proof_node = if node_type.requires_proof_node() {
-            let mut config = MockProofEngineConfig::default();
-            config.server_config.listen_port = PROOF_PORT + self.proof_engine_count() as u16;
+            let config = MockProofEngineConfig::default();
             let proof_engine = LocalProofEngine::new(self.context.clone(), config).await;
             if let Some(exeuction_layer) = beacon_config.execution_layer.as_mut() {
                 exeuction_layer.proof_engine_endpoint = Some(proof_engine.server.url().clone());
@@ -397,18 +352,34 @@ impl<E: EthSpec> LocalNetwork<E> {
         Ok((beacon_node, execution_node, proof_node))
     }
 
-    pub fn boot_node_enr(&self) -> Option<Enr> {
-        self.beacon_nodes
-            .read()
-            .first()
-            .and_then(|bn| bn.client.enr())
-    }
-
     pub fn proof_generator_enr(&self) -> Option<Enr> {
         self.beacon_nodes
             .read()
             .last()
             .and_then(|bn| bn.client.enr())
+    }
+
+    /// Returns the boot node's ENR once it has a valid (non-zero) TCP port, or an error if
+    /// the port isn't populated within 10 seconds.
+    async fn boot_node_enr(&self) -> Result<Option<Enr>, String> {
+        // If there are no beacon nodes yet, the network hasn't started — return None immediately.
+        if self.beacon_nodes.read().is_empty() {
+            return Ok(None);
+        }
+
+        for _ in 0..100 {
+            if let Some(enr) = self
+                .beacon_nodes
+                .read()
+                .first()
+                .and_then(|bn| bn.client.enr())
+                .filter(|e| e.tcp4().is_some_and(|p| p != 0))
+            {
+                return Ok(Some(enr));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Err("Boot node ENR did not get a valid TCP port within 10 seconds".to_string())
     }
 
     /// Adds a beacon node to the network, connecting to the 0'th beacon node via ENR.
@@ -419,8 +390,9 @@ impl<E: EthSpec> LocalNetwork<E> {
         node_type: NodeType,
     ) -> Result<(), String> {
         let (beacon_node, execution_node, proof_node) =
-            if let Some(boot_node) = self.boot_node_enr() {
-                // Network already exists. We construct a new node.
+            if let Some(boot_node) = self.boot_node_enr().await? {
+                // Network already exists. The boot node ENR has a valid TCP port; use it to
+                // bootstrap the new node.
                 beacon_config.network.boot_nodes_enr.push(boot_node);
                 self.construct_beacon_node(beacon_config, mock_execution_config, node_type)
                     .await?

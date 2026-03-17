@@ -7,13 +7,14 @@
 use crate::block_id::BlockId;
 use beacon_chain::{BeaconChain, BeaconChainTypes};
 use execution_layer::eip8025::ProofEngine;
-use lighthouse_network::PubsubMessage;
+use lighthouse_network::rpc::methods::ExecutionProofStatus;
+use lighthouse_network::{NetworkGlobals, PubsubMessage};
 use network::NetworkMessage;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, warn};
-use types::SignedExecutionProof;
+use types::{ProofStatus, SignedExecutionProof};
 use warp::Reply;
 use warp::http::Response;
 use warp::hyper::Body;
@@ -48,11 +49,12 @@ pub fn get_execution_proofs<T: BeaconChainTypes>(
         .as_ref()
         .ok_or_else(|| custom_server_error("Execution layer not available".to_string()))?;
 
-    let proof_engine = execution_layer
-        .proof_engine()
-        .ok_or_else(|| custom_bad_request(
-            "Proof engine not configured. Start with --proof-engine-endpoint to enable EIP-8025.".to_string(),
-        ))?;
+    let proof_engine = execution_layer.proof_engine().ok_or_else(|| {
+        custom_bad_request(
+            "Proof engine not configured. Start with --proof-engine-endpoint to enable EIP-8025."
+                .to_string(),
+        )
+    })?;
 
     // Get the block to retrieve its execution payload root
     let (block_root, execution_optimistic, finalized) = block_id.root(&chain)?;
@@ -85,6 +87,7 @@ pub fn get_execution_proofs<T: BeaconChainTypes>(
 pub async fn submit_execution_proofs<T: BeaconChainTypes>(
     request: SubmitExecutionProofsRequest,
     chain: Arc<BeaconChain<T>>,
+    network_globals: Arc<NetworkGlobals<T::EthSpec>>,
     network_send: UnboundedSender<NetworkMessage<T::EthSpec>>,
 ) -> Result<Response<Body>, warp::Rejection> {
     // TODO: should we add a verify: bool to verify_execution_proof to allow skipping verification checks from this endpoint if we trust the source?
@@ -118,35 +121,71 @@ pub async fn submit_execution_proofs<T: BeaconChainTypes>(
         );
 
         // Verify proof (BLS signature + execution engine + fork choice update)
-        if let Err(e) = chain.verify_execution_proof(signed_proof.clone()).await {
-            warn!(
-                error = ?e,
-                ?request_root,
-                proof_type,
-                validator_index,
-                "Signed proof validation failed"
-            );
-            return Err(custom_bad_request(format!(
-                "Proof validation failed: {e:?}"
-            )));
-        }
+        let (status, verified_block) = chain
+            .verify_execution_proof(signed_proof.clone())
+            .await
+            .map_err(|e| {
+                warn!(
+                    error = ?e,
+                    ?request_root,
+                    proof_type,
+                    validator_index,
+                    "Signed proof validation failed"
+                );
+                custom_bad_request(format!("Proof validation failed: {e:?}"))
+            })?;
 
-        // Gossip publish the signed proof
-        if let Err(e) = network_send.send(NetworkMessage::Publish {
-            messages: vec![PubsubMessage::ExecutionProof(Box::new(signed_proof))],
-        }) {
-            warn!(
-                error = ?e,
-                ?request_root,
-                proof_type,
-                "Failed to gossip signed proof"
-            );
-        }
+        // Update local execution proof status watermark if the proof was fully valid.
+        if status.is_valid()
+            && let Some((block_root, slot)) = verified_block
+        {
+            network_globals.set_local_execution_proof_status(ExecutionProofStatus {
+                slot: slot.as_u64(),
+                block_root,
+            });
+        };
 
-        debug!(
-            ?request_root,
-            proof_type, validator_index, "Signed execution proof verified, stored, and gossiped"
-        );
+        // Only propagate proofs the execution engine accepted as valid or tentatively accepted.
+        // Invalid, Syncing, and NotSupported proofs must not be gossiped.
+        match status {
+            ProofStatus::Valid | ProofStatus::Accepted => {
+                if let Err(e) = network_send.send(NetworkMessage::Publish {
+                    messages: vec![PubsubMessage::ExecutionProof(Box::new(signed_proof))],
+                }) {
+                    warn!(
+                        error = ?e,
+                        ?request_root,
+                        proof_type,
+                        "Failed to gossip signed proof"
+                    );
+                }
+                debug!(
+                    ?request_root,
+                    proof_type, validator_index, "Signed execution proof verified and gossiped"
+                );
+            }
+            ProofStatus::Invalid => {
+                return Err(custom_bad_request(format!(
+                    "Proof {request_root:?} is invalid"
+                )));
+            }
+            ProofStatus::Syncing => {
+                debug!(
+                    ?request_root,
+                    proof_type,
+                    validator_index,
+                    "Proof skipped: node is still syncing the associated block"
+                );
+            }
+            ProofStatus::NotSupported => {
+                debug!(
+                    ?request_root,
+                    proof_type,
+                    validator_index,
+                    "Proof skipped: proof type not supported by local engine"
+                );
+            }
+        }
     }
 
     Ok(warp::reply().into_response())

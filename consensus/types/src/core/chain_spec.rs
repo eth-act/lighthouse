@@ -820,7 +820,9 @@ impl ChainSpec {
         let blob_retention_epoch =
             current_epoch.saturating_sub(self.min_epochs_for_blob_sidecars_requests);
         match self.fulu_fork_epoch {
-            Some(fulu_fork_epoch) if self.min_epochs_for_data_column_sidecars_requests == 0 => None,
+            Some(_fulu_fork_epoch) if self.min_epochs_for_data_column_sidecars_requests == 0 => {
+                None
+            }
             Some(fulu_fork_epoch) if blob_retention_epoch > fulu_fork_epoch => Some(
                 current_epoch.saturating_sub(self.min_epochs_for_data_column_sidecars_requests),
             ),

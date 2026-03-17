@@ -171,6 +171,7 @@ impl<T: BeaconChainTypes> SlasherService<T> {
         Self::process_proposer_slashings(beacon_chain, slasher, network_sender);
     }
 
+    #[allow(clippy::result_large_err)]
     fn process_attester_slashings(
         beacon_chain: &BeaconChain<T>,
         slasher: &Slasher<T::EthSpec>,
@@ -223,6 +224,7 @@ impl<T: BeaconChainTypes> SlasherService<T> {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn process_proposer_slashings(
         beacon_chain: &BeaconChain<T>,
         slasher: &Slasher<T::EthSpec>,
