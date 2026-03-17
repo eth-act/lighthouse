@@ -3,6 +3,7 @@
 //! This module defines the interface for interacting with proof engines
 //! and provides an HTTP JSON-RPC implementation with an internal proof cache.
 
+use super::persisted_state::PersistedProofEngineState;
 use super::{errors::ProofEngineError, json_structures::*};
 use crate::{
     ForkchoiceState, ForkchoiceUpdatedResponse, MissingProofInfo, NewPayloadRequest,
@@ -286,6 +287,18 @@ impl ProofEngine for HttpProofEngine {
 }
 
 impl HttpProofEngine {
+    /// Snapshot the current state into a persisted form for serialization.
+    pub fn to_persisted(&self) -> PersistedProofEngineState {
+        let state = self.state.read();
+        PersistedProofEngineState::from_state(&state)
+    }
+
+    /// Restore in-memory state from a previously persisted snapshot.
+    pub fn restore_from_persisted(&self, persisted: PersistedProofEngineState) {
+        let restored = persisted.to_state();
+        *self.state.write() = restored;
+    }
+
     pub async fn request_proofs_v4_fulu<E: EthSpec>(
         &self,
         new_payload_request_fulu: NewPayloadRequestFulu<'_, E>,

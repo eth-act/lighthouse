@@ -42,6 +42,7 @@ use crate::{
     validator_monitor::get_slot_delay_ms,
 };
 use eth2::types::{EventKind, SseChainReorg, SseFinalizedCheckpoint, SseHead, SseLateHead};
+use execution_layer::eip8025::PROOF_ENGINE_DB_KEY;
 use fork_choice::{
     ExecutionStatus, ForkChoiceStore, ForkChoiceView, ForkchoiceUpdateParameters, ProtoBlock,
     ResetPayloadStatuses,
@@ -55,7 +56,8 @@ use state_processing::AllCaches;
 use std::sync::Arc;
 use std::time::Duration;
 use store::{
-    Error as StoreError, KeyValueStore, KeyValueStoreOp, StoreConfig, iter::StateRootsIterator,
+    Error as StoreError, KeyValueStore, KeyValueStoreOp, StoreConfig, StoreItem,
+    iter::StateRootsIterator,
 };
 use task_executor::{JoinHandle, ShutdownReason};
 use tracing::info_span;
@@ -867,6 +869,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
 
         if is_epoch_transition || reorg_distance.is_some() {
             self.persist_fork_choice()?;
+            self.persist_proof_engine()?;
             self.op_pool.prune_attestations(self.epoch()?);
         }
 
@@ -1045,6 +1048,23 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             self.store.get_config(),
         )
         .map_err(Into::into)
+    }
+
+    /// Persist the proof engine to disk, writing immediately.
+    pub fn persist_proof_engine(&self) -> Result<(), Error> {
+        let Some(proof_engine) = self
+            .execution_layer
+            .as_ref()
+            .and_then(|el| el.proof_engine())
+        else {
+            return Ok(());
+        };
+
+        let op = proof_engine
+            .to_persisted()
+            .as_kv_store_op(PROOF_ENGINE_DB_KEY);
+        self.store.hot_db.do_atomically(vec![op])?;
+        Ok(())
     }
 
     /// Return a database operation for writing fork choice to disk.

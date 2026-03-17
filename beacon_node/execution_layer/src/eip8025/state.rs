@@ -28,9 +28,9 @@ pub struct State {
     pub min_required_proofs: usize,
 }
 
-impl State {
-    /// Create a new State with the specified proof buffer size.
-    pub fn new() -> Self {
+impl Default for State {
+    /// Create a new State with default min required proofs.
+    fn default() -> Self {
         Self {
             latest_fcs: None,
             last_valid_fcs: ForkchoiceState {
@@ -39,9 +39,16 @@ impl State {
                 finalized_block_hash: ExecutionBlockHash::zero(),
             },
             tree: TreeState::default(),
-            buffer: RequestBuffer::new(),
+            buffer: RequestBuffer::default(),
             min_required_proofs: MIN_REQUIRED_EXECUTION_PROOFS,
         }
+    }
+}
+
+impl State {
+    /// Create a new State with default values.
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Return all buffer entries that do not yet have sufficient proofs for promotion.
@@ -526,7 +533,7 @@ impl State {
                 finalized_block_hash: ExecutionBlockHash::zero(),
             },
             tree: TreeState::default(),
-            buffer: RequestBuffer::new(),
+            buffer: RequestBuffer::default(),
             min_required_proofs,
         }
     }
@@ -557,7 +564,7 @@ impl TreeState {
 }
 
 /// A buffer of new payload requests and their associated execution proofs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct RequestBuffer {
     /// Map of new payload request root to execution proofs.
     pub proofs: HashMap<Hash256, PayloadRequest>,
@@ -603,15 +610,6 @@ pub struct RequestMetadata {
     pub block_number: u64,
 }
 
-impl RequestBuffer {
-    /// Create a new ProofBuffer with the specified maximum size.
-    pub fn new() -> Self {
-        Self {
-            proofs: Default::default(),
-        }
-    }
-}
-
 impl<E: EthSpec> From<&NewPayloadRequest<'_, E>> for RequestMetadata {
     fn from(request: &NewPayloadRequest<'_, E>) -> Self {
         Self {
@@ -624,21 +622,21 @@ impl<E: EthSpec> From<&NewPayloadRequest<'_, E>> for RequestMetadata {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod test_utils {
     use super::*;
     use bls::SignatureBytes;
     use ssz_types::VariableList;
     use types::{ExecutionProof, PublicInput};
 
-    fn test_hash(byte: u8) -> Hash256 {
+    pub fn test_hash(byte: u8) -> Hash256 {
         Hash256::repeat_byte(byte)
     }
 
-    fn test_exec_hash(byte: u8) -> ExecutionBlockHash {
+    pub fn test_exec_hash(byte: u8) -> ExecutionBlockHash {
         ExecutionBlockHash::repeat_byte(byte)
     }
 
-    fn create_request_metadata(
+    pub fn create_request_metadata(
         request_root: Hash256,
         block_hash: ExecutionBlockHash,
         parent_hash: ExecutionBlockHash,
@@ -652,7 +650,10 @@ mod tests {
         }
     }
 
-    fn create_signed_proof(request_root: Hash256, validator_index: u64) -> SignedExecutionProof {
+    pub fn create_signed_proof(
+        request_root: Hash256,
+        validator_index: u64,
+    ) -> SignedExecutionProof {
         SignedExecutionProof {
             message: ExecutionProof {
                 proof_data: VariableList::new(vec![0xaa, 0xbb, 0xcc]).unwrap(),
@@ -666,7 +667,7 @@ mod tests {
         }
     }
 
-    fn create_forkchoice_state(
+    pub fn create_forkchoice_state(
         head: ExecutionBlockHash,
         safe: ExecutionBlockHash,
         finalized: ExecutionBlockHash,
@@ -681,20 +682,20 @@ mod tests {
     /// Test data provider for state tests
     ///
     /// Generates payload requests, proofs, and hashes.
-    struct TestStateFixture {
+    pub struct TestStateFixture {
         /// Generated block data
         /// blocks[0] = canonical chain
         /// blocks[1] = fork 0
         /// blocks[2] = fork 1
         /// etc.
-        blocks: Vec<Vec<PayloadRequest>>,
+        pub blocks: Vec<Vec<PayloadRequest>>,
     }
 
     impl TestStateFixture {
         /// Get the genesis fcs
         ///
         /// Defined as the first block in the canonical chain
-        fn genesis_fcs(&self) -> ForkchoiceState {
+        pub fn genesis_fcs(&self) -> ForkchoiceState {
             let finalized_block = &self.blocks[0][0];
             create_forkchoice_state(
                 finalized_block.metadata.block_hash,
@@ -704,58 +705,58 @@ mod tests {
         }
 
         /// Get canonical chain block data
-        fn canonical(&self, index: usize) -> &PayloadRequest {
+        pub fn canonical(&self, index: usize) -> &PayloadRequest {
             &self.blocks[0][index]
         }
 
         /// Get fork block data
-        fn fork(&self, fork_id: usize, index: usize) -> &PayloadRequest {
+        pub fn fork(&self, fork_id: usize, index: usize) -> &PayloadRequest {
             &self.blocks[fork_id + 1][index]
         }
 
         /// Get canonical block hash
-        fn canonical_block_hash(&self, index: usize) -> ExecutionBlockHash {
+        pub fn canonical_block_hash(&self, index: usize) -> ExecutionBlockHash {
             self.canonical(index).metadata.block_hash
         }
 
         /// Get fork block hash
-        fn fork_block_hash(&self, fork_id: usize, index: usize) -> ExecutionBlockHash {
+        pub fn fork_block_hash(&self, fork_id: usize, index: usize) -> ExecutionBlockHash {
             self.fork(fork_id, index).metadata.block_hash
         }
 
         /// Get canonical request root
-        fn canonical_request_root(&self, index: usize) -> Hash256 {
+        pub fn canonical_request_root(&self, index: usize) -> Hash256 {
             self.canonical(index).metadata.request_root
         }
 
         /// Get canonical metadata
-        fn canonical_metadata(&self, index: usize) -> RequestMetadata {
+        pub fn canonical_metadata(&self, index: usize) -> RequestMetadata {
             self.canonical(index).metadata.clone()
         }
 
         /// Get fork metadata
-        fn fork_metadata(&self, fork_id: usize, index: usize) -> RequestMetadata {
+        pub fn fork_metadata(&self, fork_id: usize, index: usize) -> RequestMetadata {
             self.fork(fork_id, index).metadata.clone()
         }
 
         /// Get canonical proofs
-        fn canonical_proofs(&self, index: usize) -> &[SignedExecutionProof] {
+        pub fn canonical_proofs(&self, index: usize) -> &[SignedExecutionProof] {
             &self.canonical(index).proofs
         }
 
         /// Get fork proofs
-        fn fork_proofs(&self, fork_id: usize, index: usize) -> &[SignedExecutionProof] {
+        pub fn fork_proofs(&self, fork_id: usize, index: usize) -> &[SignedExecutionProof] {
             &self.fork(fork_id, index).proofs
         }
 
-        fn bootstrap_canonical(&self, state: &mut State) -> anyhow::Result<()> {
+        pub fn bootstrap_canonical(&self, state: &mut State) -> anyhow::Result<()> {
             state.forkchoice_updated(self.genesis_fcs())?;
             self.insert_canonical(state, None)?;
             Ok(())
         }
 
         /// Insert the canonical chain into state (buffer + add proofs)
-        fn insert_canonical(
+        pub fn insert_canonical(
             &self,
             state: &mut State,
             block_index: Option<usize>,
@@ -774,7 +775,7 @@ mod tests {
         }
 
         /// Insert a fork into state (buffer + add proofs)
-        fn insert_fork(
+        pub fn insert_fork(
             &self,
             state: &mut State,
             fork_id: usize,
@@ -796,23 +797,29 @@ mod tests {
     }
 
     /// Builder for test state fixture
-    struct TestStateFixtureBuilder {
+    pub struct TestStateFixtureBuilder {
         /// Number of blocks in canonical chain
-        canonical_chain_length: usize,
+        pub canonical_chain_length: usize,
 
         /// Fork configurations (branch_point, fork_length, proofs_per_block)
-        forks: Vec<(usize, usize, Option<usize>)>,
+        pub forks: Vec<(usize, usize, Option<usize>)>,
 
         /// Default proofs per block
-        proofs_per_block: usize,
+        pub proofs_per_block: usize,
 
         /// Starting block number
-        starting_block_number: u64,
+        pub starting_block_number: u64,
+    }
+
+    impl Default for TestStateFixtureBuilder {
+        fn default() -> Self {
+            Self::new()
+        }
     }
 
     impl TestStateFixtureBuilder {
         /// Create new builder
-        fn new() -> Self {
+        pub fn new() -> Self {
             Self {
                 canonical_chain_length: 0,
                 forks: Vec::new(),
@@ -822,24 +829,24 @@ mod tests {
         }
 
         /// Create a simple chain with 3 blocks in the canonical chain
-        fn simple_chain() -> Self {
+        pub fn simple_chain() -> Self {
             Self::new().with_canonical_chain(3)
         }
 
         /// Set default proofs per block
-        fn with_proofs_per_block(mut self, proofs: usize) -> Self {
+        pub fn with_proofs_per_block(mut self, proofs: usize) -> Self {
             self.proofs_per_block = proofs;
             self
         }
 
         /// Set canonical chain length
-        fn with_canonical_chain(mut self, length: usize) -> Self {
+        pub fn with_canonical_chain(mut self, length: usize) -> Self {
             self.canonical_chain_length = length;
             self
         }
 
         /// Add a fork (uses default proofs per block)
-        fn with_fork(
+        pub fn with_fork(
             mut self,
             branch_point: usize,
             fork_length: usize,
@@ -851,7 +858,7 @@ mod tests {
         }
 
         /// Build the fixture
-        fn build(self) -> TestStateFixture {
+        pub fn build(self) -> TestStateFixture {
             let mut fixture = TestStateFixture {
                 blocks: vec![Vec::new()], // Start with empty canonical chain
             };
@@ -913,7 +920,7 @@ mod tests {
         }
 
         /// Generate data for a single block
-        fn generate_block(
+        pub fn generate_block(
             &self,
             chain_id: usize,
             block_index: usize,
@@ -941,6 +948,12 @@ mod tests {
             PayloadRequest { metadata, proofs }
         }
     }
+} // end test_utils
+
+#[cfg(test)]
+mod tests {
+    use super::test_utils::*;
+    use super::*;
 
     #[test]
     fn test_buffer_request_new() {

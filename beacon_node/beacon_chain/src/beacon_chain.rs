@@ -80,6 +80,7 @@ use eth2::types::{
     EventKind, SseBlobSidecar, SseBlock, SseBlockFull, SseDataColumnSidecar,
     SseExtendedPayloadAttributes,
 };
+use execution_layer::eip8025::{PROOF_ENGINE_DB_KEY, PersistedProofEngineState};
 use execution_layer::{
     BlockProposalContents, BlockProposalContentsType, BuilderParams, ChainHealth, ExecutionLayer,
     FailedCondition, MissingProofInfo, PayloadAttributes, PayloadStatus, eip8025::ProofEngine,
@@ -631,6 +632,21 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             fc_store,
             spec,
         )?))
+    }
+
+    /// Load persisted ProofEngine state from disk, returning `None` if not found or corrupt.
+    pub fn load_proof_engine_state(store: BeaconStore<T>) -> Option<PersistedProofEngineState> {
+        match store.get_item::<PersistedProofEngineState>(&PROOF_ENGINE_DB_KEY) {
+            Ok(Some(persisted)) => {
+                tracing::info!("Loaded ProofEngine state from disk");
+                Some(persisted)
+            }
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(error = ?e, "Failed to read ProofEngine state from disk, starting fresh");
+                None
+            }
+        }
     }
 
     /// Persists `self.op_pool` to disk.
@@ -7620,10 +7636,10 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
 impl<T: BeaconChainTypes> Drop for BeaconChain<T> {
     fn drop(&mut self) {
         let drop = || -> Result<(), Error> {
-            // TODO: Persist the proof engine state if the BeaconChain is dropped.
             self.persist_fork_choice()?;
             self.persist_op_pool()?;
-            self.persist_custody_context()
+            self.persist_custody_context()?;
+            self.persist_proof_engine()
         };
 
         if let Err(e) = drop() {
