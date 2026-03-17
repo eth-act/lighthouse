@@ -1214,8 +1214,7 @@ impl<'de> ContextDeserialize<'de, ForkName> for SseExtendedPayloadAttributes {
 pub struct SseExecutionProofValidated {
     pub execution_proof: ExecutionProof,
     #[serde(with = "serde_utils::quoted_u64")]
-    pub slot: u64,
-    pub block_root: Hash256,
+    pub epoch: u64,
 }
 
 #[derive(PartialEq, Debug, Serialize, Clone)]

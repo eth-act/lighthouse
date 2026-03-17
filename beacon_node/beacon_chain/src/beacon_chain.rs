@@ -7567,7 +7567,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         // Step 3: Update the fork choice if the proof engine returns valid.
         // The proof engine returns valid if the proof is valid and the criteria for the associated block root to be considered valid are met.
         // The proof engine returns ACCEPTED if the proof is valid but block validity criteria are not met.
-        if verification_result.is_valid() {
+        if verification_result.is_valid() || verification_result.is_accepted() {
             let request_root = signed_proof.request_root();
 
             // Look up the beacon block root from request root
