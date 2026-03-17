@@ -4,7 +4,7 @@
 
 use beacon_node_fallback::BeaconNodeFallback;
 use bls::PublicKey;
-use eth2::types::{EventKind, EventTopic, SseExecutionProofValidated};
+use eth2::types::{BlockId, EventKind, EventTopic, SseExecutionProofValidated};
 use execution_layer::NewPayloadRequest;
 use execution_layer::eip8025::{HttpProofEngine, ProofEngine};
 use futures::StreamExt;
@@ -14,7 +14,7 @@ use std::time::Duration;
 use task_executor::TaskExecutor;
 use tracing::{debug, error, info, warn};
 use types::execution::eip8025::ProofAttributes;
-use types::{BeaconBlock, Epoch, EthSpec, ExecutionProof};
+use types::{Epoch, EthSpec, ExecutionProof, Hash256};
 use validator_store::{DoppelgangerStatus, ValidatorStore};
 
 /// Background service for execution proof handling
@@ -85,7 +85,7 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> ProofService<S
 }
 
 impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> Inner<S, T> {
-    /// Subscribe to both `BlockFull` and `ExecutionProofValidated` events via a single SSE stream.
+    /// Subscribe to both `Block` and `ExecutionProofValidated` events via a single SSE stream.
     async fn subscribe_to_events(
         &self,
     ) -> Result<
@@ -94,11 +94,8 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> Inner<S, T> {
     > {
         self.beacon_nodes
             .first_success(|node| async move {
-                node.get_events::<S::E>(&[
-                    EventTopic::BlockFull,
-                    EventTopic::ExecutionProofValidated,
-                ])
-                .await
+                node.get_events::<S::E>(&[EventTopic::Block, EventTopic::ExecutionProofValidated])
+                    .await
             })
             .await
             .map_err(|e| format!("All beacon nodes failed to provide event stream: {}", e))
@@ -115,15 +112,16 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> Inner<S, T> {
 
                     while let Some(event_result) = stream.next().await {
                         match event_result {
-                            Ok(EventKind::BlockFull(block_event)) => {
-                                let block = block_event.data;
-                                if block.execution_optimistic {
+                            Ok(EventKind::Block(sse_block)) => {
+                                if sse_block.execution_optimistic {
                                     debug!(
-                                        slot = block.slot.as_u64(),
-                                        "Received execution optimistic block event"
+                                        slot = sse_block.slot.as_u64(),
+                                        "Skipping execution optimistic block"
                                     );
+                                    continue;
                                 }
-                                self.handle_block_event(&block.block, block.slot).await;
+                                self.handle_block_event(sse_block.block, sse_block.slot)
+                                    .await;
                             }
                             Ok(EventKind::ExecutionProofValidated(proof_event)) => {
                                 self.handle_validated_proof(proof_event).await;
@@ -147,35 +145,45 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> Inner<S, T> {
         }
     }
 
-    /// Handle a new block event by requesting proofs from proof engine
-    async fn handle_block_event(&self, block: &BeaconBlock<S::E>, slot: types::Slot) {
-        let block_root = block.canonical_root();
-
+    /// Handle a new block event by fetching the full block via RPC then requesting proofs
+    async fn handle_block_event(&self, block_root: Hash256, slot: types::Slot) {
         info!(
             slot = slot.as_u64(),
             block = %block_root,
-            "New block detected, requesting proofs from proof engine"
+            "New block detected, fetching full block via RPC"
         );
 
-        // Construct NewPayloadRequest from beacon block
-        let new_payload_request = match NewPayloadRequest::try_from(block.to_ref()) {
-            Ok(req) => req,
+        let signed_block = match self
+            .beacon_nodes
+            .first_success(|node| async move {
+                node.get_beacon_blocks::<S::E>(BlockId::Root(block_root))
+                    .await
+            })
+            .await
+        {
+            Ok(Some(response)) => response.data().clone(),
+            Ok(None) => {
+                warn!(block = %block_root, "Block not found on beacon node");
+                return;
+            }
             Err(e) => {
-                error!(
-                    error = ?e,
-                    block = %block_root,
-                    "Failed to construct NewPayloadRequest from block"
-                );
+                error!(block = %block_root, error = %e, "Failed to fetch block via RPC");
                 return;
             }
         };
 
-        // Use configured proof types
+        let new_payload_request = match NewPayloadRequest::try_from(signed_block.message()) {
+            Ok(req) => req,
+            Err(e) => {
+                error!(block = %block_root, error = ?e, "Failed to construct NewPayloadRequest");
+                return;
+            }
+        };
+
         let proof_attributes = ProofAttributes {
             proof_types: self.proof_types.clone(),
         };
 
-        // Request proofs from proof engine - HttpProofEngine handles JSON serialization
         match self
             .proof_engine
             .request_proofs(new_payload_request, proof_attributes)
@@ -189,11 +197,7 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> Inner<S, T> {
                 );
             }
             Err(e) => {
-                error!(
-                    error = ?e,
-                    block = %block_root,
-                    "Failed to request proofs from proof engine"
-                );
+                error!(block = %block_root, error = ?e, "Failed to request proofs from proof engine");
             }
         }
     }

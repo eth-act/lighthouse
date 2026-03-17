@@ -12,7 +12,6 @@ pub struct ServerSentEventHandler<E: EthSpec> {
     attestation_tx: Sender<EventKind<E>>,
     single_attestation_tx: Sender<EventKind<E>>,
     block_tx: Sender<EventKind<E>>,
-    block_full_tx: Sender<EventKind<E>>,
     blob_sidecar_tx: Sender<EventKind<E>>,
     data_column_sidecar_tx: Sender<EventKind<E>>,
     finalized_tx: Sender<EventKind<E>>,
@@ -41,7 +40,6 @@ impl<E: EthSpec> ServerSentEventHandler<E> {
         let (attestation_tx, _) = broadcast::channel(capacity);
         let (single_attestation_tx, _) = broadcast::channel(capacity);
         let (block_tx, _) = broadcast::channel(capacity);
-        let (block_full_tx, _) = broadcast::channel(capacity);
         let (blob_sidecar_tx, _) = broadcast::channel(capacity);
         let (data_column_sidecar_tx, _) = broadcast::channel(capacity);
         let (finalized_tx, _) = broadcast::channel(capacity);
@@ -64,7 +62,6 @@ impl<E: EthSpec> ServerSentEventHandler<E> {
             attestation_tx,
             single_attestation_tx,
             block_tx,
-            block_full_tx,
             blob_sidecar_tx,
             data_column_sidecar_tx,
             finalized_tx,
@@ -106,10 +103,6 @@ impl<E: EthSpec> ServerSentEventHandler<E> {
                 .block_tx
                 .send(kind)
                 .map(|count| log_count("block", count)),
-            EventKind::BlockFull(_) => self
-                .block_full_tx
-                .send(kind)
-                .map(|count| log_count("block_full", count)),
             EventKind::BlobSidecar(_) => self
                 .blob_sidecar_tx
                 .send(kind)
@@ -196,10 +189,6 @@ impl<E: EthSpec> ServerSentEventHandler<E> {
         self.block_tx.subscribe()
     }
 
-    pub fn subscribe_block_full(&self) -> Receiver<EventKind<E>> {
-        self.block_full_tx.subscribe()
-    }
-
     pub fn subscribe_blob_sidecar(&self) -> Receiver<EventKind<E>> {
         self.blob_sidecar_tx.subscribe()
     }
@@ -274,10 +263,6 @@ impl<E: EthSpec> ServerSentEventHandler<E> {
 
     pub fn has_block_subscribers(&self) -> bool {
         self.block_tx.receiver_count() > 0
-    }
-
-    pub fn has_block_full_subscribers(&self) -> bool {
-        self.block_full_tx.receiver_count() > 0
     }
 
     pub fn has_blob_sidecar_subscribers(&self) -> bool {

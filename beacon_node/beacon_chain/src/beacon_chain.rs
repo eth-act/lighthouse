@@ -77,8 +77,7 @@ use crate::{
 use bls::{PublicKey, PublicKeyBytes, Signature};
 use eth2::beacon_response::ForkVersionedResponse;
 use eth2::types::{
-    EventKind, SseBlobSidecar, SseBlock, SseBlockFull, SseDataColumnSidecar,
-    SseExtendedPayloadAttributes,
+    EventKind, SseBlobSidecar, SseBlock, SseDataColumnSidecar, SseExtendedPayloadAttributes,
 };
 use execution_layer::{
     BlockProposalContents, BlockProposalContentsType, BuilderParams, ChainHealth, ExecutionLayer,
@@ -4316,9 +4315,6 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         payload_verification_status: PayloadVerificationStatus,
         current_slot: Slot,
     ) {
-        // TODO: Optimise this so we don't have to clone.
-        let beacon_block = Arc::unwrap_or_clone(signed_block.clone());
-        let (beacon_block, _) = beacon_block.deconstruct();
         let block = signed_block.message();
 
         // Only present some metrics for blocks from the previous epoch or later.
@@ -4360,21 +4356,6 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                     block: block_root,
                     execution_optimistic: payload_verification_status.is_optimistic(),
                 }));
-            }
-
-            // Emit BlockFull event if there are block_full subscribers
-            if event_handler.has_block_full_subscribers() {
-                let slot = block.slot();
-                // Convert BeaconBlockRef to owned BeaconBlock for the event
-                event_handler.register(EventKind::BlockFull(Box::new(ForkVersionedResponse {
-                    data: SseBlockFull {
-                        slot,
-                        block: beacon_block,
-                        execution_optimistic: payload_verification_status.is_optimistic(),
-                    },
-                    metadata: Default::default(),
-                    version: self.spec.fork_name_at_slot::<T::EthSpec>(slot),
-                })));
             }
         }
 
