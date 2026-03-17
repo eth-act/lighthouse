@@ -811,6 +811,12 @@ pub mod test_utils {
         pub starting_block_number: u64,
     }
 
+    impl Default for TestStateFixtureBuilder {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     impl TestStateFixtureBuilder {
         /// Create new builder
         pub fn new() -> Self {
