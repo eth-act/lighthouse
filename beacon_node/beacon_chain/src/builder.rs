@@ -975,6 +975,18 @@ where
         };
         debug!(?custody_context, "Loaded persisted custody context");
 
+        // Restore ProofEngine state from disk if available.
+        if let Some(el) = self.execution_layer.as_ref()
+            && let Some(proof_engine) = el.proof_engine()
+            && let Some(store) = self.store
+            && let Some(persisted) =
+                crate::BeaconChain::<Witness<TSlotClock, _, _, _>>::load_proof_engine_state(
+                    store.clone(),
+                )
+        {
+            proof_engine.restore_from_persisted(persisted);
+        }
+
         let beacon_chain = BeaconChain {
             spec: self.spec.clone(),
             config: self.chain_config,
@@ -1057,15 +1069,6 @@ where
             kzg: self.kzg.clone(),
             rng: Arc::new(Mutex::new(rng)),
         };
-
-        // Restore ProofEngine state from disk if available.
-        if let Some(el) = beacon_chain.execution_layer.as_ref()
-            && let Some(proof_engine) = el.proof_engine()
-                && let Some(persisted) =
-                    crate::BeaconChain::<Witness<TSlotClock, _, _, _>>::load_proof_engine_state(beacon_chain.store.clone())
-                {
-                    proof_engine.restore_from_persisted(persisted);
-                }
 
         let head = beacon_chain.head_snapshot();
 
