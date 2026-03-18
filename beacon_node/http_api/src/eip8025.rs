@@ -6,7 +6,6 @@
 
 use crate::block_id::BlockId;
 use beacon_chain::{BeaconChain, BeaconChainTypes};
-use execution_layer::eip8025::ProofEngine;
 use lighthouse_network::rpc::methods::ExecutionProofStatus;
 use lighthouse_network::{NetworkGlobals, PubsubMessage};
 use network::NetworkMessage;

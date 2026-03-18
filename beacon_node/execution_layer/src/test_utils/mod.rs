@@ -34,6 +34,7 @@ pub use execution_block_generator::{
 pub use hook::Hook;
 pub use mock_builder::{MockBuilder, Operation, mock_builder_extra_data};
 pub use mock_execution_layer::MockExecutionLayer;
+pub use mock_proof_node_client::{MOCK_PROOF_ENGINE_URL, MockClientEvent, MockProofNodeClient};
 
 pub const DEFAULT_TERMINAL_DIFFICULTY: u64 = 6400;
 pub const DEFAULT_TERMINAL_BLOCK: u64 = 64;
@@ -73,6 +74,7 @@ mod handle_rpc;
 mod hook;
 mod mock_builder;
 mod mock_execution_layer;
+mod mock_proof_node_client;
 
 /// Configuration for the MockExecutionLayer.
 #[derive(Clone)]

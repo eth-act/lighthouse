@@ -25,11 +25,6 @@ pub use execution_layer::test_utils::{
 };
 pub use validator_client::{ApiSecret, Config as ValidatorConfig};
 
-mod mock_proof_engine_server;
-pub use mock_proof_engine_server::{
-    MockProofEngineConfig, MockProofEngineServer, ProofEngineServerConfig, ProofRequestRecord,
-};
-
 /// The global timeout for HTTP requests to the beacon node.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
 /// The timeout for a beacon node to start up.
@@ -277,26 +272,4 @@ impl<E: EthSpec> LocalExecutionNode<E> {
             datadir,
         }
     }
-}
-
-/// Provides a mock proof engine that is running in the current process.
-///
-/// Intended for use in testing and simulation. Not for production.
-pub struct LocalProofEngine<E: EthSpec> {
-    pub server: MockProofEngineServer<E>,
-    pub datadir: TempDir,
-}
-
-impl<E: EthSpec> LocalProofEngine<E> {
-    pub async fn new(context: RuntimeContext<E>, config: MockProofEngineConfig) -> Self {
-        let datadir = TempBuilder::new()
-            .prefix("lighthouse_proof_engine")
-            .tempdir()
-            .expect("should create temp directory for proof engine");
-
-        let server = MockProofEngineServer::new(config, context.executor.clone()).await;
-
-        Self { server, datadir }
-    }
-
 }

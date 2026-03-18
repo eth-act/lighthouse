@@ -6,7 +6,7 @@ use beacon_node_fallback::BeaconNodeFallback;
 use bls::PublicKey;
 use eth2::types::{BlockId, EventKind, EventTopic, SseExecutionProofValidated};
 use execution_layer::NewPayloadRequest;
-use execution_layer::eip8025::{HttpProofEngine, ProofEngine};
+use execution_layer::eip8025::HttpProofEngine;
 use futures::StreamExt;
 use slot_clock::SlotClock;
 use std::sync::Arc;

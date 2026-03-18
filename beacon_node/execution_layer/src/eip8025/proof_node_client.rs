@@ -1,55 +1,79 @@
-//! Low-level HTTP client for the proof engine REST+SSZ+SSE API.
+//! Proof node client trait and HTTP implementation for EIP-8025.
 //!
-//! Handles all network I/O: SSZ serialization, HTTP transport, and SSE streams.
-//! No proof state management — that stays in [`super::proof_engine::HttpProofEngine`].
+//! [`ProofNodeClient`] abstracts over the transport used to communicate with the
+//! proof engine. [`HttpProofNodeClient`] is the production implementation.
 
 use super::errors::ProofEngineError;
-use crate::NewPayloadRequestFulu;
 use bytes::Bytes;
 use futures::stream::Stream;
 use reqwest::Client;
 use reqwest_eventsource::{Event, EventSource};
 use sensitive_url::SensitiveUrl;
-use ssz::Encode;
-use ssz_derive::Encode as SszEncode;
-use ssz_types::VariableList;
 use std::pin::Pin;
 use std::time::Duration;
 use tokio_stream::StreamExt;
 
-use super::proof_engine::ProofEvent;
+use super::types::{ProofEvent, SseEventParts};
+use types::Hash256;
 use types::execution::eip8025::{ProofAttributes, ProofStatus};
-use types::{EthSpec, ExecutionPayloadFulu, ExecutionRequests, Hash256, VersionedHash};
 
 /// Default timeout for proof engine requests (1 second per spec).
 pub const PROOF_ENGINE_TIMEOUT: Duration = Duration::from_secs(1);
 
-// ─── Private SSZ Helper ─────────────────────────────────────────────────────
+const PATH_PROOF_REQUESTS: &str = "/v1/execution_proof_requests";
+const PATH_PROOF_VERIFICATIONS: &str = "/v1/execution_proof_verifications";
+const PATH_PROOFS: &str = "/v1/execution_proofs";
 
-/// SSZ-encodable owned representation of a Fulu NewPayloadRequest.
+const QUERY_PROOF_TYPES: &str = "proof_types";
+const QUERY_NEW_PAYLOAD_REQUEST_ROOT: &str = "new_payload_request_root";
+const QUERY_PROOF_TYPE: &str = "proof_type";
+
+const HEADER_CONTENT_TYPE: &str = "content-type";
+const HEADER_VALUE_SSZ: &str = "application/octet-stream";
+
+// ─── ProofNodeClient Trait ───────────────────────────────────────────────────
+
+/// Transport abstraction for communicating with a proof engine.
 ///
-/// Used to serialize the request body when sending to the proof engine.
-/// Field order matches the zkboost `NewPayloadRequest` Fulu variant.
-#[derive(SszEncode)]
-struct SszNewPayloadRequestFulu<E: EthSpec> {
-    execution_payload: ExecutionPayloadFulu<E>,
-    versioned_hashes: VariableList<VersionedHash, E::MaxBlobCommitmentsPerBlock>,
-    parent_beacon_block_root: Hash256,
-    execution_requests: ExecutionRequests<E>,
+/// The SSZ encoding of the payload is done by the caller ([`HttpProofEngine`])
+/// before invoking [`request_proofs`], so implementations receive raw bytes and
+/// do not need to be generic over [`EthSpec`].
+///
+/// [`HttpProofEngine`]: super::proof_engine::HttpProofEngine
+/// [`request_proofs`]: ProofNodeClient::request_proofs
+/// [`EthSpec`]: types::EthSpec
+#[async_trait::async_trait]
+pub trait ProofNodeClient: Send + Sync {
+    /// Submit an SSZ-encoded `NewPayloadRequest` to the proof engine.
+    ///
+    /// Returns the `new_payload_request_root` assigned by the proof engine.
+    async fn request_proofs(
+        &self,
+        ssz_body: Vec<u8>,
+        proof_attributes: ProofAttributes,
+    ) -> Result<Hash256, ProofEngineError>;
+
+    /// Verify a single proof via the proof engine.
+    async fn verify_proof(
+        &self,
+        root: Hash256,
+        proof_type: u8,
+        proof_data: &[u8],
+    ) -> Result<ProofStatus, ProofEngineError>;
+
+    /// Download a completed proof by root and proof type.
+    async fn get_proof(&self, root: Hash256, proof_type: u8) -> Result<Bytes, ProofEngineError>;
+
+    /// Subscribe to SSE proof events from the proof engine.
+    ///
+    /// When `filter_root` is provided, only events for that root are yielded.
+    fn subscribe_proof_events(
+        &self,
+        filter_root: Option<Hash256>,
+    ) -> Pin<Box<dyn Stream<Item = Result<ProofEvent, ProofEngineError>> + Send + '_>>;
 }
 
-impl<'a, E: EthSpec> From<&NewPayloadRequestFulu<'a, E>> for SszNewPayloadRequestFulu<E> {
-    fn from(req: &NewPayloadRequestFulu<'a, E>) -> Self {
-        Self {
-            execution_payload: req.execution_payload.clone(),
-            versioned_hashes: req.versioned_hashes.clone(),
-            parent_beacon_block_root: req.parent_beacon_block_root,
-            execution_requests: req.execution_requests.clone(),
-        }
-    }
-}
-
-// ─── Private REST API Response Types ─────────────────────────────────────────
+// ─── REST API Response Types ─────────────────────────────────────────────────
 
 /// Response for `POST /v1/execution_proof_requests`.
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -70,19 +94,21 @@ enum ProofVerificationStatus {
     Invalid,
 }
 
-// ─── ProofNodeClient ─────────────────────────────────────────────────────────
+// ─── HttpProofNodeClient ─────────────────────────────────────────────────────
 
-/// Low-level HTTP client for the proof engine REST+SSZ+SSE API.
+/// HTTP implementation of [`ProofNodeClient`].
 ///
-/// Handles all network I/O — SSZ serialization, HTTP transport, SSE streams.
-/// No proof state management; that stays in `HttpProofEngine`.
-pub struct ProofNodeClient {
+/// Handles all network I/O — SSZ body transport, HTTP requests, SSE streams.
+/// No proof state management; that stays in [`HttpProofEngine`].
+///
+/// [`HttpProofEngine`]: super::proof_engine::HttpProofEngine
+pub struct HttpProofNodeClient {
     client: Client,
     url: SensitiveUrl,
 }
 
-impl ProofNodeClient {
-    /// Create a new proof node client.
+impl HttpProofNodeClient {
+    /// Create a new HTTP proof node client.
     pub fn new(url: SensitiveUrl, timeout: Option<Duration>) -> Self {
         let client = Client::builder()
             .timeout(timeout.unwrap_or(PROOF_ENGINE_TIMEOUT))
@@ -92,34 +118,35 @@ impl ProofNodeClient {
         Self { client, url }
     }
 
-    /// Request proof generation from the proof engine.
-    ///
+    /// Build a URL from the base URL and a path.
+    fn url(&self, path: &str) -> reqwest::Url {
+        let mut url = self.url.expose_full().clone();
+        url.set_path(path);
+        url
+    }
+}
+
+#[async_trait::async_trait]
+impl ProofNodeClient for HttpProofNodeClient {
     /// `POST /v1/execution_proof_requests?proof_types=0,1,2`
-    /// Body: SSZ-encoded NewPayloadRequest
-    /// Returns the `new_payload_request_root` identifying this request.
-    pub async fn request_proofs<E: EthSpec>(
+    async fn request_proofs(
         &self,
-        new_payload_request_fulu: NewPayloadRequestFulu<'_, E>,
+        ssz_body: Vec<u8>,
         proof_attributes: ProofAttributes,
     ) -> Result<Hash256, ProofEngineError> {
-        let mut url = self.url.expose_full().clone();
-        url.set_path("/v1/execution_proof_requests");
-
         let proof_types_str = proof_attributes
             .proof_types
             .iter()
             .map(|t| t.to_string())
             .collect::<Vec<_>>()
             .join(",");
-        url.set_query(Some(&format!("proof_types={proof_types_str}")));
-
-        let ssz_body = SszNewPayloadRequestFulu::from(&new_payload_request_fulu);
 
         let response: ProofRequestResponse = self
             .client
-            .post(url)
-            .header("content-type", "application/octet-stream")
-            .body(ssz_body.as_ssz_bytes())
+            .post(self.url(PATH_PROOF_REQUESTS))
+            .query(&[(QUERY_PROOF_TYPES, &proof_types_str)])
+            .header(HEADER_CONTENT_TYPE, HEADER_VALUE_SSZ)
+            .body(ssz_body)
             .send()
             .await?
             .error_for_status()?
@@ -129,26 +156,21 @@ impl ProofNodeClient {
         Ok(response.new_payload_request_root)
     }
 
-    /// Verify a proof via the proof engine REST API.
-    ///
     /// `POST /v1/execution_proof_verifications?new_payload_request_root=...&proof_type=...`
-    /// Body: raw proof bytes
-    pub async fn verify_proof(
+    async fn verify_proof(
         &self,
-        new_payload_request_root: Hash256,
+        root: Hash256,
         proof_type: u8,
         proof_data: &[u8],
     ) -> Result<ProofStatus, ProofEngineError> {
-        let mut url = self.url.expose_full().clone();
-        url.set_path("/v1/execution_proof_verifications");
-        url.set_query(Some(&format!(
-            "new_payload_request_root={new_payload_request_root}&proof_type={proof_type}"
-        )));
-
         let response: ProofVerificationResponse = self
             .client
-            .post(url)
-            .header("content-type", "application/octet-stream")
+            .post(self.url(PATH_PROOF_VERIFICATIONS))
+            .query(&[
+                (QUERY_NEW_PAYLOAD_REQUEST_ROOT, &root.to_string()),
+                (QUERY_PROOF_TYPE, &proof_type.to_string()),
+            ])
+            .header(HEADER_CONTENT_TYPE, HEADER_VALUE_SSZ)
             .body(proof_data.to_vec())
             .send()
             .await?
@@ -162,43 +184,32 @@ impl ProofNodeClient {
         }
     }
 
-    /// Download a completed execution proof by proof type.
-    ///
     /// `GET /v1/execution_proofs/{root}/{proof_type}`
-    pub async fn get_proof(
-        &self,
-        new_payload_request_root: Hash256,
-        proof_type: u8,
-    ) -> Result<Bytes, ProofEngineError> {
-        let mut url = self.url.expose_full().clone();
-        url.set_path(&format!(
-            "/v1/execution_proofs/{new_payload_request_root}/{proof_type}"
-        ));
-
-        let response = self.client.get(url).send().await?.error_for_status()?;
-
-        Ok(response.bytes().await?)
+    async fn get_proof(&self, root: Hash256, proof_type: u8) -> Result<Bytes, ProofEngineError> {
+        Ok(self
+            .client
+            .get(self.url(&format!("{PATH_PROOFS}/{root}/{proof_type}")))
+            .send()
+            .await?
+            .error_for_status()?
+            .bytes()
+            .await?)
     }
 
-    /// Subscribe to SSE proof events from the proof engine.
-    ///
     /// Opens `GET /v1/execution_proof_requests` as an SSE stream.
-    /// When `filter_root` is provided, only events for that root are received.
-    pub fn subscribe_proof_events(
+    fn subscribe_proof_events(
         &self,
         filter_root: Option<Hash256>,
     ) -> Pin<Box<dyn Stream<Item = Result<ProofEvent, ProofEngineError>> + Send + '_>> {
         let client = self.client.clone();
-        let base_url = self.url.expose_full().clone();
+        let url = self.url(PATH_PROOF_REQUESTS);
 
         Box::pin(async_stream::try_stream! {
-            let mut url = base_url;
-            url.set_path("/v1/execution_proof_requests");
-            if let Some(root) = filter_root {
-                url.set_query(Some(&format!("new_payload_request_root={root}")));
-            }
-
-            let builder = client.get(url);
+            let builder = if let Some(root) = filter_root {
+                client.get(url).query(&[(QUERY_NEW_PAYLOAD_REQUEST_ROOT, &root.to_string())])
+            } else {
+                client.get(url)
+            };
             let mut es = EventSource::new(builder)
                 .map_err(|e| ProofEngineError::SseError(
                     format!("failed to create event source: {e}")
@@ -208,7 +219,7 @@ impl ProofNodeClient {
                 match event {
                     Ok(Event::Open) => {}
                     Ok(Event::Message(message)) => {
-                        yield ProofEvent::try_from_parts(&message.event, &message.data)?;
+                        yield ProofEvent::try_from(SseEventParts(&message.event, &message.data))?;
                     }
                     Err(error) => {
                         es.close();

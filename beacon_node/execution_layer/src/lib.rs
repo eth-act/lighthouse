@@ -4,7 +4,6 @@
 //! This crate only provides useful functionality for "The Merge", it does not provide any of the
 //! deposit-contract functionality that the `beacon_node/eth1` crate already provides.
 
-use crate::eip8025::proof_engine::ProofEngine;
 use crate::json_structures::{BlobAndProofV1, BlobAndProofV2};
 use crate::payload_cache::PayloadCache;
 use arc_swap::ArcSwapOption;
@@ -560,11 +559,20 @@ impl<E: EthSpec> ExecutionLayer<E> {
             None
         };
 
-        // Create ProofEngine if proof_engine_endpoint is provided
+        // Create ProofEngine if proof_engine_endpoint is provided.
+        // The sentinel URL "http://mock" instantiates an in-process MockProofNodeClient
+        // instead of opening a real HTTP connection — useful for tests and simulation.
         let proof_engine: Option<Arc<eip8025::HttpProofEngine>> =
             if let Some(proof_url) = proof_engine_endpoint {
-                debug!(endpoint = %proof_url, "Loaded proof engine endpoint");
-                Some(Arc::new(eip8025::HttpProofEngine::new(proof_url, None)))
+                if proof_url.expose_full().as_str() == test_utils::MOCK_PROOF_ENGINE_URL {
+                    debug!("Instantiating mock proof engine");
+                    Some(Arc::new(eip8025::HttpProofEngine::with_proof_node(
+                        test_utils::MockProofNodeClient::new(0),
+                    )))
+                } else {
+                    debug!(endpoint = %proof_url, "Loaded proof engine endpoint");
+                    Some(Arc::new(eip8025::HttpProofEngine::new(proof_url, None)))
+                }
             } else {
                 None
             };
