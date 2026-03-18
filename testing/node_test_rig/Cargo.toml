@@ -5,7 +5,6 @@ authors = ["Paul Hauner <paul@paulhauner.com>"]
 edition = { workspace = true }
 
 [dependencies]
-axum = { workspace = true }
 beacon_node = { workspace = true }
 beacon_node_fallback = { workspace = true }
 bls = { workspace = true }

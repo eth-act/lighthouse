@@ -96,7 +96,6 @@ version = "8.0.1"
 
 [workspace.dependencies]
 account_utils = { path = "common/account_utils" }
-async-stream = "0.3"
 alloy-consensus = { version = "1", default-features = false }
 alloy-dyn-abi = { version = "1", default-features = false }
 alloy-json-abi = { version = "1", default-features = false }
@@ -109,6 +108,7 @@ alloy-signer-local = { version = "1", default-features = false }
 anyhow = "1"
 arbitrary = { version = "1", features = ["derive"] }
 async-channel = "1.9.0"
+async-stream = "0.3"
 axum = "0.7.7"
 beacon_chain = { path = "beacon_node/beacon_chain" }
 beacon_node = { path = "beacon_node" }
