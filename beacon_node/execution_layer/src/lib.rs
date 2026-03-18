@@ -560,14 +560,17 @@ impl<E: EthSpec> ExecutionLayer<E> {
         };
 
         // Create ProofEngine if proof_engine_endpoint is provided.
-        // The sentinel URL "http://mock" instantiates an in-process MockProofNodeClient
-        // instead of opening a real HTTP connection — useful for tests and simulation.
+        // Mock URLs of the form "http://mock/{n}/" look up a pre-registered MockProofNodeClient
+        // from the global registry instead of opening a real HTTP connection — useful for tests
+        // and simulation.
         let proof_engine: Option<Arc<eip8025::HttpProofEngine>> =
             if let Some(proof_url) = proof_engine_endpoint {
-                if proof_url.expose_full().as_str() == test_utils::MOCK_PROOF_ENGINE_URL {
-                    debug!("Instantiating mock proof engine");
+                if let Some(idx) = test_utils::parse_mock_index(proof_url.expose_full().as_str()) {
+                    let mock = test_utils::get_mock_proof_engine(idx)
+                        .unwrap_or_else(|| panic!("no mock registered at index {idx}"));
+                    debug!(idx, "Instantiating mock proof engine from registry");
                     Some(Arc::new(eip8025::HttpProofEngine::with_proof_node(
-                        test_utils::MockProofNodeClient::new(0),
+                        (*mock).clone(),
                     )))
                 } else {
                     debug!(endpoint = %proof_url, "Loaded proof engine endpoint");
@@ -613,6 +616,15 @@ impl<E: EthSpec> ExecutionLayer<E> {
 
     pub fn proof_engine(&self) -> Option<Arc<eip8025::HttpProofEngine>> {
         self.inner.proof_engine.clone()
+    }
+
+    /// Subscribe to method-invocation events emitted by a mock proof node client.
+    ///
+    /// Returns `None` if no proof engine is configured or the client is a production HTTP client.
+    pub fn subscribe_proof_node_client_events(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<test_utils::MockClientEvent>> {
+        self.inner.proof_engine.as_ref()?.subscribe_client_events()
     }
 
     pub fn builder(&self) -> Option<Arc<BuilderHttpClient>> {

@@ -71,6 +71,18 @@ pub trait ProofNodeClient: Send + Sync {
         &self,
         filter_root: Option<Hash256>,
     ) -> Pin<Box<dyn Stream<Item = Result<ProofEvent, ProofEngineError>> + Send + '_>>;
+
+    /// Subscribe to method-invocation events emitted by a mock client.
+    ///
+    /// Returns `None` for production clients; overridden in [`MockProofNodeClient`] to
+    /// expose its internal broadcast channel for test assertions.
+    ///
+    /// [`MockProofNodeClient`]: crate::test_utils::MockProofNodeClient
+    fn subscribe_client_events(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<crate::test_utils::MockClientEvent>> {
+        None
+    }
 }
 
 // ─── REST API Response Types ─────────────────────────────────────────────────

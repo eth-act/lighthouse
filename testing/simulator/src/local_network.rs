@@ -309,8 +309,12 @@ impl<E: EthSpec> LocalNetwork<E> {
         if node_type.requires_proof_node() {
             // Subscribe to the execution_proof gossip topic and wire up the mock proof engine.
             beacon_config.network.enable_execution_proof = true;
-            let mock_url = SensitiveUrl::parse(execution_layer::test_utils::MOCK_PROOF_ENGINE_URL)
-                .expect("MOCK_PROOF_ENGINE_URL is a valid URL");
+            // Index = current length of beacon_nodes (this node's future position in the list).
+            let bn_idx = self.beacon_nodes.read().len();
+            execution_layer::test_utils::register_mock_proof_engine(bn_idx, 0);
+            let mock_url =
+                SensitiveUrl::parse(&execution_layer::test_utils::mock_proof_engine_url(bn_idx))
+                    .expect("mock URL is valid");
             if let Some(el_config) = beacon_config.execution_layer.as_mut() {
                 el_config.proof_engine_endpoint = Some(mock_url);
             } else {
@@ -424,6 +428,7 @@ impl<E: EthSpec> LocalNetwork<E> {
         validator_files: ValidatorFiles,
         node_type: NodeType,
     ) -> Result<(), String> {
+        let beacon_node_idx = beacon_node;
         let context = self.context.clone();
         let socket_addr = {
             let read_lock = self.beacon_nodes.read();
@@ -464,6 +469,13 @@ impl<E: EthSpec> LocalNetwork<E> {
                 http_token_path: token_path,
                 bn_long_timeouts: false,
             };
+            // Wire the VC's proof service to the same mock registered for this beacon node index.
+            validator_config.proof_engine_endpoint = Some(
+                SensitiveUrl::parse(&execution_layer::test_utils::mock_proof_engine_url(
+                    beacon_node_idx,
+                ))
+                .expect("mock URL is valid"),
+            );
         }
 
         // If we have a proposer node established, use it.
@@ -486,9 +498,6 @@ impl<E: EthSpec> LocalNetwork<E> {
             validator_files,
         )
         .await?;
-
-        // In the SSE-based API, the VC subscribes to proof events from the proof engine
-        // directly — no callback registration is needed.
 
         self.validator_clients.write().push(validator_client);
         Ok(())
@@ -553,6 +562,22 @@ impl<E: EthSpec> LocalNetwork<E> {
             .await
             .map_err(|e| format!("Cannot get head: {:?}", e))
             .map(|body| body.unwrap().data.finalized.epoch)
+    }
+
+    /// Subscribe to method-invocation events from the proof generator node's mock proof client.
+    ///
+    /// Searches all beacon nodes for the first one that exposes a mock client event stream
+    /// (i.e. a `ProofGenerator` node configured with the mock proof engine URL).
+    pub fn proof_generator_subscribe_client_events(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<execution_layer::test_utils::MockClientEvent>>
+    {
+        self.beacon_nodes.read().iter().find_map(|bn| {
+            bn.client
+                .beacon_chain()
+                .and_then(|chain| chain.execution_layer.as_ref().cloned())
+                .and_then(|el| el.subscribe_proof_node_client_events())
+        })
     }
 
     pub async fn duration_to_genesis(&self) -> Result<Duration, &'static str> {

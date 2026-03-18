@@ -51,11 +51,25 @@ mod test {
         fixture.payloads_valid();
         fixture.wait_for_genesis().await?;
 
-        // Verify continuous operation
+        // Subscribe before the run so events accumulate in the broadcast buffer.
+        let mut event_rx = fixture
+            .network
+            .proof_generator_subscribe_client_events()
+            .expect("proof generator node should expose a mock client event stream");
+
         tokio::time::sleep(Duration::from_secs(60)).await;
 
-        // TODO: Add assertions once proof engine integration is available in the test harness.
-        // https://github.com/sigp/lighthouse/issues/TODO
+        // Drain and count ProofRequested events.
+        let mut proof_requests = 0usize;
+        while let Ok(event) = event_rx.try_recv() {
+            if matches!(event, MockClientEvent::ProofRequested { .. }) {
+                proof_requests += 1;
+            }
+        }
+        assert!(
+            proof_requests > 0,
+            "expected at least one proof request after 60s"
+        );
 
         Ok(())
     }

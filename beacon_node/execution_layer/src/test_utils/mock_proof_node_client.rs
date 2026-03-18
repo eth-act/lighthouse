@@ -14,9 +14,10 @@ use bls::FixedBytesExtended;
 use bytes::Bytes;
 use futures::stream::Stream;
 use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio_stream::StreamExt;
@@ -42,9 +43,35 @@ pub enum MockClientEvent {
     ProofFetched { root: Hash256, proof_type: u8 },
 }
 
-/// Sentinel URL that triggers instantiation of [`MockProofNodeClient`] inside
-/// [`ExecutionLayer::from_config`] instead of opening a real HTTP connection.
-pub const MOCK_PROOF_ENGINE_URL: &str = "http://mock";
+static MOCK_REGISTRY: LazyLock<parking_lot::Mutex<HashMap<usize, Arc<MockProofNodeClient>>>> =
+    LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
+
+/// Register a mock at `index`. Must be called before `ExecutionLayer::from_config`.
+pub fn register_mock_proof_engine(
+    index: usize,
+    callback_delay_ms: u64,
+) -> Arc<MockProofNodeClient> {
+    let client = Arc::new(MockProofNodeClient::new(callback_delay_ms));
+    MOCK_REGISTRY.lock().insert(index, client.clone());
+    client
+}
+
+/// Fetch a registered mock by index (returns a clone sharing internal state).
+pub fn get_mock_proof_engine(index: usize) -> Option<Arc<MockProofNodeClient>> {
+    MOCK_REGISTRY.lock().get(&index).cloned()
+}
+
+/// URL encoding an index: `"http://mock/{n}/"`.
+pub fn mock_proof_engine_url(index: usize) -> String {
+    format!("http://mock/{}/", index)
+}
+
+/// Parse the index from a mock URL. Returns `None` for non-mock URLs.
+pub fn parse_mock_index(url: &str) -> Option<usize> {
+    url.strip_prefix("http://mock/")
+        .and_then(|s| s.strip_suffix('/'))
+        .and_then(|s| s.parse().ok())
+}
 
 /// In-memory proof node client for testing.
 ///
@@ -161,6 +188,12 @@ impl ProofNodeClient for MockProofNodeClient {
             .call_tx
             .send(MockClientEvent::ProofFetched { root, proof_type });
         Ok(Bytes::from(vec![0xDE, 0xAD, 0xBE, 0xEF]))
+    }
+
+    fn subscribe_client_events(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<crate::test_utils::MockClientEvent>> {
+        Some(self.call_tx.subscribe())
     }
 
     fn subscribe_proof_events(

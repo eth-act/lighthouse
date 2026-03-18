@@ -59,6 +59,15 @@ impl HttpProofEngine {
         }
     }
 
+    /// Subscribe to method-invocation events emitted by a mock proof node client.
+    ///
+    /// Returns `None` for production (HTTP) clients.
+    pub fn subscribe_client_events(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<crate::test_utils::MockClientEvent>> {
+        self.proof_node.subscribe_client_events()
+    }
+
     /// Subscribe to SSE proof events from the proof engine.
     pub fn subscribe_proof_events(
         &self,
