@@ -181,6 +181,11 @@ impl SignedExecutionProof {
         &self.message
     }
 
+    /// Returns the proof data of the underlying execution proof.
+    pub fn proof_data(&self) -> &ProofData {
+        &self.message.proof_data
+    }
+
     /// Returns the new payload request root this proof validates.
     pub fn request_root(&self) -> Hash256 {
         self.message.public_input.new_payload_request_root

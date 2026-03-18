@@ -1,111 +1,39 @@
-//! ProofEngine trait and HTTP implementation for EIP-8025.
+//! HTTP proof engine implementation for EIP-8025.
 //!
-//! This module defines the interface for interacting with proof engines
-//! and provides an HTTP JSON-RPC implementation with an internal proof cache.
+//! Provides an HTTP implementation with an internal proof cache.
+//! HTTP transport is delegated to a [`ProofNodeClient`] implementation.
 
+use super::errors::ProofEngineError;
 use super::persisted_state::PersistedProofEngineState;
-use super::{errors::ProofEngineError, json_structures::*};
+use super::proof_node_client::{HttpProofNodeClient, ProofNodeClient};
+use super::types::ProofEvent;
 use crate::{
     ForkchoiceState, ForkchoiceUpdatedResponse, MissingProofInfo, NewPayloadRequest,
-    NewPayloadRequestFulu, PayloadStatusV1, PayloadStatusV1Status,
+    PayloadStatusV1, PayloadStatusV1Status,
     eip8025::state::{RequestMetadata, State},
-    json_structures::{JsonExecutionPayload, JsonRequestBody, JsonResponseBody},
 };
+use bytes::Bytes;
+use futures::stream::Stream;
 use parking_lot::RwLock;
-use reqwest::Client;
-use reqwest::header::CONTENT_TYPE;
 use sensitive_url::SensitiveUrl;
-use serde::de::DeserializeOwned;
-use serde_json::json;
+use ssz::Encode;
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::time::Duration;
 
-use types::execution::eip8025::{ProofAttributes, ProofGenId, ProofStatus, SignedExecutionProof};
+use types::execution::eip8025::{ProofAttributes, ProofStatus, SignedExecutionProof};
 use types::{EthSpec, Hash256};
 
-/// Static ID for JSON-RPC requests.
-const STATIC_ID: u32 = 1;
+// ─── HttpProofEngine ─────────────────────────────────────────────────────────
 
-/// JSON-RPC version string.
-pub const JSONRPC_VERSION: &str = "2.0";
-
-/// This error is returned during a `chainId` call by Geth.
-pub const EIP155_ERROR_STR: &str = "chain not synced beyond EIP-155 replay-protection fork block";
-
-/// Engine API method for verifying execution proofs.
-pub const ENGINE_VERIFY_EXECUTION_PROOF_V1: &str = "engine_verifyExecutionProofV1";
-
-/// Engine API method for verifying new payload request headers.
+/// Proof engine with internal proof storage.
 ///
-/// This is currently unused but defined for completeness. We may use it in the future
-pub const ENGINE_VERIFY_NEW_PAYLOAD_REQUEST_HEADER_V1: &str =
-    "engine_verifyNewPayloadRequestHeaderV1";
-
-/// Engine API method for requesting proof generation.
-pub const ENGINE_REQUEST_PROOFS_V1: &str = "engine_requestProofsV1";
-
-/// Default timeout for proof engine requests (1 second per spec).
-pub const PROOF_ENGINE_TIMEOUT: Duration = Duration::from_secs(1);
-
-/// Trait defining the interface for a proof engine.
-#[async_trait::async_trait]
-pub trait ProofEngine: Send + Sync {
-    /// Get all proofs for a given new_payload_request_root.
-    fn get_proofs_by_root(&self, root: &Hash256) -> Vec<SignedExecutionProof>;
-
-    /// Return all buffer entries that do not yet have sufficient proofs for promotion.
-    ///
-    /// `MissingProofInfo.root` is populated with the new-payload request root.
-    /// The beacon chain layer replaces it with the beacon block root before the
-    /// sync manager issues `ExecutionProofsByRoot` RPC requests.
-    fn missing_proofs(&self) -> Vec<MissingProofInfo>;
-
-    /// Verify an individual execution proof via RPC.
-    ///
-    /// Maps to `engine_verifyExecutionProofV1`.
-    async fn verify_execution_proof(
-        &self,
-        proof: &SignedExecutionProof,
-    ) -> Result<ProofStatus, ProofEngineError>;
-
-    /// Verify that sufficient proofs exist for a new payload request via RPC.
-    ///
-    /// Maps to `engine_verifyNewPayloadRequestHeaderV*`.
-    async fn new_payload<E: EthSpec>(
-        &self,
-        header: &NewPayloadRequest<'_, E>,
-    ) -> Result<PayloadStatusV1, ProofEngineError>;
-
-    /// Notify the proof engine of a forkchoice update.
-    async fn forkchoice_updated(
-        &self,
-        forkchoice_state: ForkchoiceState,
-    ) -> Result<ForkchoiceUpdatedResponse, ProofEngineError>;
-
-    /// Request asynchronous proof generation via RPC.
-    ///
-    /// Maps to `engine_requestProofsV1`.
-    /// Returns a ProofGenId to track the generation request.
-    /// Generated proofs are delivered asynchronously via the beacon API endpoint
-    /// POST /eth/v1/prover/execution_proofs.
-    async fn request_proofs<E: EthSpec>(
-        &self,
-        new_payload_request: NewPayloadRequest<'_, E>,
-        attributes: ProofAttributes,
-    ) -> Result<ProofGenId, ProofEngineError>;
-}
-
-/// HTTP JSON-RPC implementation of the ProofEngine trait with internal proof storage.
-///
-/// This implementation:
 /// - Stores ALL unfinalized proofs indexed by new_payload_request_root (unbounded)
-/// - Calls out to the execution engine RPC for proof verification
+/// - Delegates transport to a [`ProofNodeClient`] implementation
 /// - Prunes proofs when finalization events occur
 pub struct HttpProofEngine {
-    /// HTTP client for making requests.
-    client: Client,
-    /// URL of the proof engine endpoint.
-    url: SensitiveUrl,
+    /// Transport client for proof engine REST+SSZ+SSE API.
+    proof_node: Box<dyn ProofNodeClient>,
     /// The internal state storing execution proofs in a tree structure and buffer.
     state: RwLock<State>,
     /// Buffered proofs for request roots not yet seen.
@@ -113,63 +41,54 @@ pub struct HttpProofEngine {
 }
 
 impl HttpProofEngine {
-    /// Create a new HTTP proof engine client with internal proof storage.
+    /// Create a new proof engine backed by the HTTP proof node client.
     pub fn new(url: SensitiveUrl, timeout: Option<Duration>) -> Self {
-        let client = Client::builder()
-            .timeout(timeout.unwrap_or(PROOF_ENGINE_TIMEOUT))
-            .build()
-            .expect("Failed to build HTTP client");
+        Self::with_proof_node(HttpProofNodeClient::new(url, timeout))
+    }
 
+    /// Create a proof engine backed by a custom [`ProofNodeClient`] implementation.
+    ///
+    /// Useful for injecting a [`MockProofNodeClient`] in tests.
+    ///
+    /// [`MockProofNodeClient`]: super::super::test_utils::MockProofNodeClient
+    pub fn with_proof_node(proof_node: impl ProofNodeClient + 'static) -> Self {
         Self {
-            client,
-            url,
+            proof_node: Box::new(proof_node),
             state: RwLock::new(State::new()),
             buffered_proofs: RwLock::new(HashMap::new()),
         }
     }
 
-    /// Make a generic JSON-RPC request to the proof engine.
-    pub async fn rpc_request<D: DeserializeOwned>(
+    /// Subscribe to method-invocation events emitted by a mock proof node client.
+    ///
+    /// Returns `None` for production (HTTP) clients.
+    pub fn subscribe_client_events(
         &self,
-        method: &str,
-        params: serde_json::Value,
-        timeout: Duration,
-    ) -> Result<D, ProofEngineError> {
-        let body = JsonRequestBody {
-            jsonrpc: JSONRPC_VERSION,
-            method,
-            params,
-            id: json!(STATIC_ID),
-        };
-
-        let request = self
-            .client
-            .post(self.url.expose_full().clone())
-            .timeout(timeout)
-            .header(CONTENT_TYPE, "application/json")
-            .json(&body);
-
-        // TODO: do we want to support authentication?
-        // Generate and add a jwt token to the header if auth is defined.
-        // if let Some(auth) = &self.auth {
-        //     request = request.bearer_auth(auth.generate_token()?);
-        // };
-
-        let body: JsonResponseBody = request.send().await?.error_for_status()?.json().await?;
-
-        match (body.result, body.error) {
-            (result, None) => Ok(serde_json::from_value(result)?),
-            (_, Some(error)) => Err(ProofEngineError::JsonRpcError {
-                code: error.code,
-                message: error.message,
-            }),
-        }
+    ) -> Option<tokio::sync::broadcast::Receiver<crate::test_utils::MockClientEvent>> {
+        self.proof_node.subscribe_client_events()
     }
-}
 
-#[async_trait::async_trait]
-impl ProofEngine for HttpProofEngine {
-    fn get_proofs_by_root(&self, root: &Hash256) -> Vec<SignedExecutionProof> {
+    /// Subscribe to SSE proof events from the proof engine.
+    pub fn subscribe_proof_events(
+        &self,
+        filter_root: Option<Hash256>,
+    ) -> Pin<Box<dyn Stream<Item = Result<ProofEvent, ProofEngineError>> + Send + '_>> {
+        self.proof_node.subscribe_proof_events(filter_root)
+    }
+
+    /// Download a completed execution proof by proof type.
+    pub async fn get_proof(
+        &self,
+        new_payload_request_root: Hash256,
+        proof_type: u8,
+    ) -> Result<Bytes, ProofEngineError> {
+        self.proof_node
+            .get_proof(new_payload_request_root, proof_type)
+            .await
+    }
+
+    /// Get all proofs for a given new_payload_request_root.
+    pub fn get_proofs_by_root(&self, root: &Hash256) -> Vec<SignedExecutionProof> {
         self.state
             .read()
             .get_proofs(root)
@@ -177,11 +96,17 @@ impl ProofEngine for HttpProofEngine {
             .unwrap_or_default()
     }
 
-    fn missing_proofs(&self) -> Vec<MissingProofInfo> {
+    /// Return all buffer entries that do not yet have sufficient proofs for promotion.
+    ///
+    /// `MissingProofInfo.root` is populated with the new-payload request root.
+    /// The beacon chain layer replaces it with the beacon block root before the
+    /// sync manager issues `ExecutionProofsByRoot` RPC requests.
+    pub fn missing_proofs(&self) -> Vec<MissingProofInfo> {
         self.state.read().missing_proofs()
     }
 
-    async fn verify_execution_proof(
+    /// Verify an individual execution proof via the proof engine.
+    pub async fn verify_execution_proof(
         &self,
         proof: &SignedExecutionProof,
     ) -> Result<ProofStatus, ProofEngineError> {
@@ -199,33 +124,23 @@ impl ProofEngine for HttpProofEngine {
             return Ok(ProofStatus::Syncing);
         }
 
-        let json_proof: JsonExecutionProofV1 = proof.message.clone().into();
-        let params = json!([json_proof]);
-
-        let result = self
-            .rpc_request(
-                ENGINE_VERIFY_EXECUTION_PROOF_V1,
-                params,
-                PROOF_ENGINE_TIMEOUT,
-            )
+        let status = self
+            .proof_node
+            .verify_proof(proof.request_root(), proof.proof_type(), proof.proof_data())
             .await?;
 
-        let status: JsonProofStatusV1 = serde_json::from_value(result)?;
-        let status: ProofStatus = status.into();
         if status.is_valid() {
-            // Insert the valid proof into state.
             return Ok(self.state.write().insert_proof(proof.clone())?);
         }
 
         Ok(status)
     }
 
-    async fn new_payload<E: EthSpec>(
+    /// Buffer a new payload request for proof association.
+    pub async fn new_payload<E: EthSpec>(
         &self,
         request: &NewPayloadRequest<'_, E>,
     ) -> Result<PayloadStatusV1, ProofEngineError> {
-        // We buffer the request in state for future proof association and return Syncing.
-        // TODO: Currently we don't support proof verification before payload processing to prevent DOS so its not possible that proofs are verified yet. Is this reasonable?
         let request: RequestMetadata = request.into();
         let buffered_proofs = self
             .buffered_proofs
@@ -249,7 +164,8 @@ impl ProofEngine for HttpProofEngine {
         })
     }
 
-    async fn forkchoice_updated(
+    /// Notify the proof engine of a forkchoice update.
+    pub async fn forkchoice_updated(
         &self,
         forkchoice_state: ForkchoiceState,
     ) -> Result<ForkchoiceUpdatedResponse, ProofEngineError> {
@@ -257,11 +173,15 @@ impl ProofEngine for HttpProofEngine {
         Ok(self.state.write().forkchoice_updated(forkchoice_state)?)
     }
 
-    async fn request_proofs<E: EthSpec>(
+    /// Request proof generation from the proof engine.
+    ///
+    /// SSZ-encodes the payload then sends it to `POST /v1/execution_proof_requests`.
+    /// Returns the `new_payload_request_root` identifying this request.
+    pub async fn request_proofs<E: EthSpec>(
         &self,
         new_payload_request: NewPayloadRequest<'_, E>,
         proof_attributes: ProofAttributes,
-    ) -> Result<ProofGenId, ProofEngineError> {
+    ) -> Result<Hash256, ProofEngineError> {
         match new_payload_request {
             NewPayloadRequest::Bellatrix(_) => {
                 Err(ProofEngineError::ForkNotSupported("Bellatrix".to_string()))
@@ -275,8 +195,9 @@ impl ProofEngine for HttpProofEngine {
             NewPayloadRequest::Electra(_) => {
                 Err(ProofEngineError::ForkNotSupported("Electra".to_string()))
             }
-            NewPayloadRequest::Fulu(new_payload_request_fulu) => {
-                self.request_proofs_v4_fulu(new_payload_request_fulu, proof_attributes)
+            NewPayloadRequest::Fulu(fulu) => {
+                self.proof_node
+                    .request_proofs(fulu.as_ssz_bytes(), proof_attributes)
                     .await
             }
             NewPayloadRequest::Gloas(_) => {
@@ -284,9 +205,7 @@ impl ProofEngine for HttpProofEngine {
             }
         }
     }
-}
 
-impl HttpProofEngine {
     /// Snapshot the current state into a persisted form for serialization.
     pub fn to_persisted(&self) -> PersistedProofEngineState {
         let state = self.state.read();
@@ -297,32 +216,5 @@ impl HttpProofEngine {
     pub fn restore_from_persisted(&self, persisted: PersistedProofEngineState) {
         let restored = persisted.to_state();
         *self.state.write() = restored;
-    }
-
-    pub async fn request_proofs_v4_fulu<E: EthSpec>(
-        &self,
-        new_payload_request_fulu: NewPayloadRequestFulu<'_, E>,
-        proof_attributes: ProofAttributes,
-    ) -> Result<ProofGenId, ProofEngineError> {
-        let params = json!([
-            JsonExecutionPayload::Fulu(
-                new_payload_request_fulu
-                    .execution_payload
-                    .clone()
-                    .try_into()?
-            ),
-            new_payload_request_fulu.versioned_hashes,
-            new_payload_request_fulu.parent_beacon_block_root,
-            new_payload_request_fulu
-                .execution_requests
-                .get_execution_requests_list(),
-            proof_attributes
-        ]);
-
-        let response: TransparentJsonProofGenId = self
-            .rpc_request(ENGINE_REQUEST_PROOFS_V1, params, PROOF_ENGINE_TIMEOUT)
-            .await?;
-
-        Ok(response.into())
     }
 }

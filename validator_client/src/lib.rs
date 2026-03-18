@@ -537,10 +537,16 @@ impl<E: EthSpec> ProductionValidatorClient<E> {
         // Create proof service (EIP-8025) if proof engine endpoint is configured
         let proof_service = config.proof_engine_endpoint.as_ref().map(|endpoint| {
             info!(endpoint = %endpoint, "Initializing proof engine client");
-            let proof_engine_client = Arc::new(execution_layer::eip8025::HttpProofEngine::new(
-                endpoint.clone(),
-                None, // No custom timeout
-            ));
+            let url_str = endpoint.expose_full();
+            let proof_engine_client = Arc::new(
+                if let Some(idx) = execution_layer::test_utils::parse_mock_index(url_str.as_str()) {
+                    let mock = execution_layer::test_utils::get_mock_proof_engine(idx)
+                        .unwrap_or_else(|| panic!("no mock registered at index {idx}"));
+                    execution_layer::eip8025::HttpProofEngine::with_proof_node((*mock).clone())
+                } else {
+                    execution_layer::eip8025::HttpProofEngine::new(endpoint.clone(), None)
+                },
+            );
 
             Arc::new(ProofService::new(
                 validator_store.clone(),

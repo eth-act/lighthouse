@@ -82,7 +82,7 @@ use eth2::types::{
 use execution_layer::eip8025::{PROOF_ENGINE_DB_KEY, PersistedProofEngineState};
 use execution_layer::{
     BlockProposalContents, BlockProposalContentsType, BuilderParams, ChainHealth, ExecutionLayer,
-    FailedCondition, MissingProofInfo, PayloadAttributes, PayloadStatus, eip8025::ProofEngine,
+    FailedCondition, MissingProofInfo, PayloadAttributes, PayloadStatus,
 };
 use fixed_bytes::FixedBytesExtended;
 use fork_choice::{

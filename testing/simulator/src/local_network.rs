@@ -9,7 +9,6 @@ use node_test_rig::{
     eth2::{BeaconNodeHttpClient, types::StateId},
     testing_client_config,
 };
-use node_test_rig::{LocalProofEngine, MockProofEngineConfig};
 use parking_lot::RwLock;
 use sensitive_url::SensitiveUrl;
 use std::{
@@ -157,7 +156,6 @@ pub struct Inner<E: EthSpec> {
     pub proposer_nodes: RwLock<Vec<LocalBeaconNode<E>>>,
     pub validator_clients: RwLock<Vec<LocalValidatorClient<E>>>,
     pub execution_nodes: RwLock<Vec<LocalExecutionNode<E>>>,
-    pub proof_engines: RwLock<Vec<node_test_rig::LocalProofEngine<E>>>,
 }
 
 /// Represents a set of interconnected `LocalBeaconNode` and `LocalValidatorClient`.
@@ -215,7 +213,6 @@ impl<E: EthSpec> LocalNetwork<E> {
                 proposer_nodes: RwLock::new(vec![]),
                 execution_nodes: RwLock::new(vec![]),
                 validator_clients: RwLock::new(vec![]),
-                proof_engines: RwLock::new(vec![]),
             }),
         };
 
@@ -241,11 +238,6 @@ impl<E: EthSpec> LocalNetwork<E> {
     /// (e.g., another Lighthouse process on the same machine.)
     pub fn proposer_node_count(&self) -> usize {
         self.proposer_nodes.read().len()
-    }
-
-    /// Returns the number of proof engines in the network.
-    pub fn proof_engine_count(&self) -> usize {
-        self.proof_engines.read().len()
     }
 
     /// Returns the number of validator clients in the network.
@@ -291,14 +283,7 @@ impl<E: EthSpec> LocalNetwork<E> {
         mut beacon_config: ClientConfig,
         mock_execution_config: MockExecutionConfig,
         node_type: NodeType,
-    ) -> Result<
-        (
-            LocalBeaconNode<E>,
-            Option<LocalExecutionNode<E>>,
-            Option<LocalProofEngine<E>>,
-        ),
-        String,
-    > {
+    ) -> Result<(LocalBeaconNode<E>, Option<LocalExecutionNode<E>>), String> {
         beacon_config.network.discv5_config.table_filter = |_| true;
         beacon_config.network.proposer_only = node_type.is_proposer();
 
@@ -321,23 +306,24 @@ impl<E: EthSpec> LocalNetwork<E> {
             None
         };
 
-        let proof_node = if node_type.requires_proof_node() {
-            let config = MockProofEngineConfig::default();
-            let proof_engine = LocalProofEngine::new(self.context.clone(), config).await;
-            if let Some(exeuction_layer) = beacon_config.execution_layer.as_mut() {
-                exeuction_layer.proof_engine_endpoint = Some(proof_engine.server.url().clone());
+        if node_type.requires_proof_node() {
+            // Subscribe to the execution_proof gossip topic and wire up the mock proof engine.
+            beacon_config.network.enable_execution_proof = true;
+            // Index = current length of beacon_nodes (this node's future position in the list).
+            let bn_idx = self.beacon_nodes.read().len();
+            execution_layer::test_utils::register_mock_proof_engine(bn_idx, 0);
+            let mock_url =
+                SensitiveUrl::parse(&execution_layer::test_utils::mock_proof_engine_url(bn_idx))
+                    .expect("mock URL is valid");
+            if let Some(el_config) = beacon_config.execution_layer.as_mut() {
+                el_config.proof_engine_endpoint = Some(mock_url);
             } else {
                 beacon_config.execution_layer = Some(execution_layer::Config {
-                    proof_engine_endpoint: Some(proof_engine.server.url().clone()),
+                    proof_engine_endpoint: Some(mock_url),
                     ..Default::default()
                 });
             }
-            // Subscribe to the execution_proof gossip topic for nodes with a proof engine.
-            beacon_config.network.enable_execution_proof = true;
-            Some(proof_engine)
-        } else {
-            None
-        };
+        }
 
         if node_type.is_proof_verifier() {
             beacon_config.chain.optimistic_finalized_sync = true;
@@ -349,7 +335,7 @@ impl<E: EthSpec> LocalNetwork<E> {
         // Construct beacon node using the config,
         let beacon_node = LocalBeaconNode::production(self.context.clone(), beacon_config).await?;
 
-        Ok((beacon_node, execution_node, proof_node))
+        Ok((beacon_node, execution_node))
     }
 
     pub fn proof_generator_enr(&self) -> Option<Enr> {
@@ -389,27 +375,23 @@ impl<E: EthSpec> LocalNetwork<E> {
         mock_execution_config: MockExecutionConfig,
         node_type: NodeType,
     ) -> Result<(), String> {
-        let (beacon_node, execution_node, proof_node) =
-            if let Some(boot_node) = self.boot_node_enr().await? {
-                // Network already exists. The boot node ENR has a valid TCP port; use it to
-                // bootstrap the new node.
-                beacon_config.network.boot_nodes_enr.push(boot_node);
-                self.construct_beacon_node(beacon_config, mock_execution_config, node_type)
-                    .await?
-            } else {
-                // Network does not exist. We construct a boot node.
-                let (bn, en) = self
-                    .construct_boot_node(beacon_config, mock_execution_config)
-                    .await?;
-                (bn, Some(en), None)
-            };
+        let (beacon_node, execution_node) = if let Some(boot_node) = self.boot_node_enr().await? {
+            // Network already exists. The boot node ENR has a valid TCP port; use it to
+            // bootstrap the new node.
+            beacon_config.network.boot_nodes_enr.push(boot_node);
+            self.construct_beacon_node(beacon_config, mock_execution_config, node_type)
+                .await?
+        } else {
+            // Network does not exist. We construct a boot node.
+            let (bn, en) = self
+                .construct_boot_node(beacon_config, mock_execution_config)
+                .await?;
+            (bn, Some(en))
+        };
 
         // Add nodes to the network.
         if let Some(execution_node) = execution_node {
             self.execution_nodes.write().push(execution_node);
-        }
-        if let Some(proof_node) = proof_node {
-            self.proof_engines.write().push(proof_node);
         }
         match node_type {
             NodeType::Proposer => self.proposer_nodes.write().push(beacon_node),
@@ -446,6 +428,7 @@ impl<E: EthSpec> LocalNetwork<E> {
         validator_files: ValidatorFiles,
         node_type: NodeType,
     ) -> Result<(), String> {
+        let beacon_node_idx = beacon_node;
         let context = self.context.clone();
         let socket_addr = {
             let read_lock = self.beacon_nodes.read();
@@ -474,17 +457,7 @@ impl<E: EthSpec> LocalNetwork<E> {
         .unwrap();
         validator_config.beacon_nodes = vec![beacon_node];
 
-        // If this is a proof generator node, we will set the proof engine endpoint to the first proof engine in the network.
         if node_type.is_proof_generator() {
-            let proof_engine_url = self
-                .proof_engines
-                .read()
-                .first()
-                .map(|proof_engine| proof_engine.server.url())
-                // use expect here to fail fast if the network has been instantiated incorrectly
-                // even though we wrap in Some(..) again in the line below.
-                .expect("Proof generator node must exist if validator is a proof generator");
-            validator_config.proof_engine_endpoint = Some(proof_engine_url);
             let token_path = tempdir().unwrap().path().join(PK_FILENAME);
             validator_config.http_api = ValidatorHttpConfig {
                 enabled: true,
@@ -496,7 +469,14 @@ impl<E: EthSpec> LocalNetwork<E> {
                 http_token_path: token_path,
                 bn_long_timeouts: false,
             };
-        };
+            // Wire the VC's proof service to the same mock registered for this beacon node index.
+            validator_config.proof_engine_endpoint = Some(
+                SensitiveUrl::parse(&execution_layer::test_utils::mock_proof_engine_url(
+                    beacon_node_idx,
+                ))
+                .expect("mock URL is valid"),
+            );
+        }
 
         // If we have a proposer node established, use it.
         if let Some(proposer_socket_addr) = proposer_socket_addr {
@@ -518,18 +498,6 @@ impl<E: EthSpec> LocalNetwork<E> {
             validator_files,
         )
         .await?;
-
-        // Set the callback url on the proof engine if this is a proof generator node.
-        if node_type.is_proof_generator() {
-            let validator_http_client = validator_client
-                .http_client()?
-                .expect("HTTP client should be available for proof generator node");
-            self.proof_engines
-                .write()
-                .first_mut()
-                .unwrap()
-                .set_validator_client(validator_http_client);
-        }
 
         self.validator_clients.write().push(validator_client);
         Ok(())
@@ -594,6 +562,22 @@ impl<E: EthSpec> LocalNetwork<E> {
             .await
             .map_err(|e| format!("Cannot get head: {:?}", e))
             .map(|body| body.unwrap().data.finalized.epoch)
+    }
+
+    /// Subscribe to method-invocation events from the proof generator node's mock proof client.
+    ///
+    /// Searches all beacon nodes for the first one that exposes a mock client event stream
+    /// (i.e. a `ProofGenerator` node configured with the mock proof engine URL).
+    pub fn proof_generator_subscribe_client_events(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<execution_layer::test_utils::MockClientEvent>>
+    {
+        self.beacon_nodes.read().iter().find_map(|bn| {
+            bn.client
+                .beacon_chain()
+                .and_then(|chain| chain.execution_layer.as_ref().cloned())
+                .and_then(|el| el.subscribe_proof_node_client_events())
+        })
     }
 
     pub async fn duration_to_genesis(&self) -> Result<Duration, &'static str> {
