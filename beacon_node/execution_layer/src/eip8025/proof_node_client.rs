@@ -146,17 +146,11 @@ impl ProofNodeClient for HttpProofNodeClient {
         ssz_body: Vec<u8>,
         proof_attributes: ProofAttributes,
     ) -> Result<Hash256, ProofEngineError> {
-        let proof_types_str = proof_attributes
-            .proof_types
-            .iter()
-            .map(|t| t.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-
         let response: ProofRequestResponse = self
             .client
             .post(self.url(PATH_PROOF_REQUESTS))
-            .query(&[(QUERY_PROOF_TYPES, &proof_types_str)])
+            // TODO: Should this be wrapped in a `ProofAttributes` struct instead of just passing the proof types as a query param?
+            .query(&[(QUERY_PROOF_TYPES, &proof_attributes.proof_types)])
             .header(HEADER_CONTENT_TYPE, HEADER_VALUE_SSZ)
             .body(ssz_body)
             .send()
