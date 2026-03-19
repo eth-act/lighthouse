@@ -1,23 +1,23 @@
-//! Mock zkboost server for integration testing.
+//! Lightweight test server that mirrors the zkBoost proof node HTTP API.
 //!
-//! This server mimics the real zkboost HTTP API, serving the same endpoints
-//! with compatible wire formats. It verifies that lighthouse's
-//! [`HttpProofNodeClient`] can communicate with a zkboost-compatible proof node.
+//! This harness uses **no zkBoost dependencies** — it independently implements
+//! the exact same HTTP endpoints, query parameters, and response shapes as
+//! the real zkBoost server. This validates that Lighthouse's
+//! [`HttpProofNodeClient`] speaks the correct wire protocol.
 //!
-//! ## Endpoints
+//! ## Why independent (no zkBoost dependency)?
 //!
-//! | Method | Path | Description |
-//! |--------|------|-------------|
-//! | POST | `/v1/execution_proof_requests` | Submit body for proof generation |
-//! | GET  | `/v1/execution_proof_requests` | SSE stream of proof events |
-//! | GET  | `/v1/execution_proofs/:root/:proof_type` | Download completed proof |
-//! | POST | `/v1/execution_proof_verifications` | Verify a proof |
+//! 1. **Linker conflict**: `ethrex_crypto` (transitive via `zkboost-server`
+//!    → `stateless-validator-ethrex`) defines SHA3 assembly symbols that
+//!    collide with `openssl_sys` used by Lighthouse.
 //!
-//! ## Design
+//! 2. **Independence**: keeping the test harness dependency-free proves that
+//!    the interface alignment is correct by construction, not by type reuse.
 //!
-//! The mock does NOT decode the SSZ body — it computes a deterministic hash
-//! of the raw bytes to produce a root. This isolates the test to the HTTP
-//! wire protocol rather than SSZ encoding (which is separately tested).
+//! ## Wire format
+//!
+//! All proof types use the zkBoost string format (`"reth-sp1"`, `"ethrex-risc0"`,
+//! etc.) — never numeric u8 values. This is the real zkBoost format.
 
 use axum::{
     Json, Router,
@@ -37,11 +37,26 @@ use tokio::sync::broadcast;
 use tokio_stream::{Stream, StreamExt, wrappers::BroadcastStream};
 use types::Hash256;
 
+/// The set of valid zkBoost proof type strings.
+/// This list mirrors zkBoost's `ProofType` enum exactly.
+pub const VALID_ZKBOOST_PROOF_TYPES: &[&str] = &[
+    "ethrex-risc0",
+    "ethrex-sp1",
+    "ethrex-zisk",
+    "reth-openvm",
+    "reth-risc0",
+    "reth-sp1",
+    "reth-zisk",
+];
+
+/// Check if a string is a valid zkBoost proof type.
+pub fn is_valid_zkboost_proof_type(value: &str) -> bool {
+    VALID_ZKBOOST_PROOF_TYPES.contains(&value)
+}
+
 // ─── Wire Types ─────────────────────────────────────────────────────────────
 
 /// Query params for `POST /v1/execution_proof_requests`.
-///
-/// Accepts proof_types in any format the client sends.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProofRequestQuery {
     #[serde(default)]
@@ -87,25 +102,17 @@ pub struct SseProofEvent {
     pub data: String,
 }
 
-// ─── SSE event payloads ─────────────────────────────────────────────────────
+// ─── SSE event payloads (string proof_type — the real zkBoost format) ───────
 
-/// proof_complete with numeric proof_type (lighthouse-compatible).
 #[derive(Serialize)]
-struct ProofCompleteNumeric {
-    new_payload_request_root: Hash256,
-    proof_type: u8,
-}
-
-/// proof_complete with string proof_type (zkboost-native).
-#[derive(Serialize)]
-struct ProofCompleteString {
+struct ProofCompletePayload {
     new_payload_request_root: Hash256,
     proof_type: String,
 }
 
 // ─── Shared Server State ────────────────────────────────────────────────────
 
-pub struct MockZkboostState {
+pub struct ZkboostTestState {
     /// Completed proofs stored by (root, proof_type_str).
     pub completed_proofs: Arc<RwLock<HashMap<(Hash256, String), Vec<u8>>>>,
     /// Broadcast channel for SSE events.
@@ -114,8 +121,6 @@ pub struct MockZkboostState {
     pub received_requests: RwLock<Vec<ReceivedRequest>>,
     /// Delay before emitting proof_complete events (ms).
     pub callback_delay_ms: u64,
-    /// Whether to use numeric (u8) or string proof types in SSE events.
-    pub use_numeric_proof_types: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -128,37 +133,32 @@ pub struct ReceivedRequest {
     pub root: Hash256,
 }
 
-impl MockZkboostState {
-    pub fn new(callback_delay_ms: u64, use_numeric_proof_types: bool) -> Self {
+impl ZkboostTestState {
+    pub fn new(callback_delay_ms: u64) -> Self {
         let (event_tx, _) = broadcast::channel(256);
         Self {
             completed_proofs: Arc::new(RwLock::new(HashMap::new())),
             event_tx,
             received_requests: RwLock::new(Vec::new()),
             callback_delay_ms,
-            use_numeric_proof_types,
         }
     }
 }
 
-// ─── Mock Server ────────────────────────────────────────────────────────────
+// ─── Test Server ────────────────────────────────────────────────────────────
 
-pub struct MockZkboostServer {
-    pub state: Arc<MockZkboostState>,
+pub struct ZkboostTestServer {
+    pub state: Arc<ZkboostTestState>,
     pub addr: SocketAddr,
     _shutdown_tx: tokio::sync::oneshot::Sender<()>,
 }
 
-impl MockZkboostServer {
-    /// Start a mock zkboost server on a random port.
+impl ZkboostTestServer {
+    /// Start a zkBoost-compatible test server on a random port.
     ///
-    /// `use_numeric_proof_types`: if true, SSE events emit `proof_type: 0`;
-    /// if false, they emit `proof_type: "0"` (string), matching zkboost's native format.
-    pub async fn start(callback_delay_ms: u64, use_numeric_proof_types: bool) -> Self {
-        let state = Arc::new(MockZkboostState::new(
-            callback_delay_ms,
-            use_numeric_proof_types,
-        ));
+    /// SSE events always use string proof types (the real zkBoost format).
+    pub async fn start(callback_delay_ms: u64) -> Self {
+        let state = Arc::new(ZkboostTestState::new(callback_delay_ms));
 
         let app = Router::new()
             .route(
@@ -199,7 +199,7 @@ impl MockZkboostServer {
         }
     }
 
-    /// Returns the base URL of the mock server.
+    /// Returns the base URL of the test server.
     pub fn url(&self) -> String {
         format!("http://127.0.0.1:{}", self.addr.port())
     }
@@ -226,11 +226,15 @@ async fn health() -> StatusCode {
 }
 
 /// `POST /v1/execution_proof_requests`
+///
+/// Accepts proof_types as comma-separated string values (e.g. `reth-sp1,ethrex-risc0`).
+/// Validates that all values are valid zkBoost proof types; rejects requests
+/// with unknown values (including numeric u8 values).
 async fn post_execution_proof_requests(
-    State(state): State<Arc<MockZkboostState>>,
+    State(state): State<Arc<ZkboostTestState>>,
     Query(params): Query<ProofRequestQuery>,
     body: Bytes,
-) -> Json<ProofRequestResponse> {
+) -> Result<Json<ProofRequestResponse>, (StatusCode, Json<ErrorResponse>)> {
     let root = hash_bytes(&body);
 
     let proof_types: Vec<String> = if params.proof_types.is_empty() {
@@ -243,6 +247,21 @@ async fn post_execution_proof_requests(
             .collect()
     };
 
+    // Validate all proof types are valid zkBoost identifiers.
+    for pt in &proof_types {
+        if !is_valid_zkboost_proof_type(pt) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse {
+                    error: format!(
+                        "unsupported proof type `{pt}`, expect one of [{}]",
+                        VALID_ZKBOOST_PROOF_TYPES.join(", ")
+                    ),
+                }),
+            ));
+        }
+    }
+
     state.received_requests.write().push(ReceivedRequest {
         ssz_body: body.to_vec(),
         proof_types_raw: params.proof_types.clone(),
@@ -253,7 +272,6 @@ async fn post_execution_proof_requests(
     // Schedule proof completion events.
     let event_tx = state.event_tx.clone();
     let delay = state.callback_delay_ms;
-    let use_numeric = state.use_numeric_proof_types;
     let completed = Arc::clone(&state.completed_proofs);
 
     tokio::spawn(async move {
@@ -263,20 +281,11 @@ async fn post_execution_proof_requests(
             let proof_data = [&[0xDE, 0xAD, 0xBE, 0xEF][..], &root.0[..16]].concat();
             completed.write().insert((root, pt.clone()), proof_data);
 
-            let event_data = if use_numeric {
-                let n = pt.parse::<u8>().unwrap_or(0);
-                serde_json::to_string(&ProofCompleteNumeric {
-                    new_payload_request_root: root,
-                    proof_type: n,
-                })
-                .unwrap()
-            } else {
-                serde_json::to_string(&ProofCompleteString {
-                    new_payload_request_root: root,
-                    proof_type: pt,
-                })
-                .unwrap()
-            };
+            let event_data = serde_json::to_string(&ProofCompletePayload {
+                new_payload_request_root: root,
+                proof_type: pt,
+            })
+            .unwrap();
 
             let _ = event_tx.send(SseProofEvent {
                 event_name: "proof_complete".to_string(),
@@ -285,14 +294,14 @@ async fn post_execution_proof_requests(
         }
     });
 
-    Json(ProofRequestResponse {
+    Ok(Json(ProofRequestResponse {
         new_payload_request_root: root,
-    })
+    }))
 }
 
 /// `GET /v1/execution_proof_requests` — SSE stream.
 async fn get_execution_proof_requests(
-    State(state): State<Arc<MockZkboostState>>,
+    State(state): State<Arc<ZkboostTestState>>,
     Query(params): Query<ProofEventQuery>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let rx = state.event_tx.subscribe();
@@ -305,7 +314,7 @@ async fn get_execution_proof_requests(
             .filter(|((r, _), _)| *r == root)
             .map(|((r, pt), _)| SseProofEvent {
                 event_name: "proof_complete".to_string(),
-                data: serde_json::to_string(&ProofCompleteString {
+                data: serde_json::to_string(&ProofCompletePayload {
                     new_payload_request_root: *r,
                     proof_type: pt.clone(),
                 })
@@ -342,7 +351,7 @@ async fn get_execution_proof_requests(
 
 /// `GET /v1/execution_proofs/:root/:proof_type`
 async fn get_execution_proofs(
-    State(state): State<Arc<MockZkboostState>>,
+    State(state): State<Arc<ZkboostTestState>>,
     Path((root_str, proof_type)): Path<(String, String)>,
 ) -> Response {
     let root: Hash256 = root_str.parse().unwrap_or(Hash256::repeat_byte(0));
@@ -368,7 +377,7 @@ async fn get_execution_proofs(
 
 /// `POST /v1/execution_proof_verifications`
 async fn post_execution_proof_verifications(
-    State(_state): State<Arc<MockZkboostState>>,
+    State(_state): State<Arc<ZkboostTestState>>,
     Query(_params): Query<ProofVerificationQuery>,
     _body: Bytes,
 ) -> Json<ProofVerificationResponse> {

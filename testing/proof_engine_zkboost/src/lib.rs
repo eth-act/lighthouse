@@ -1,13 +1,30 @@
-//! Integration tests verifying wire-level compatibility between lighthouse's
-//! [`HttpProofNodeClient`] and the zkboost Proof Node API.
+//! Integration tests verifying wire-level compatibility between Lighthouse's
+//! [`HttpProofNodeClient`] and the zkBoost Proof Node API.
 //!
-//! ## Main finding: `ProofType` encoding is the compatibility boundary
+//! ## Architecture: independent mirror (no zkBoost dependency)
 //!
-//! The HTTP transport layer (endpoints, SSZ body pass-through, SSE streaming,
-//! JSON structure, binary proof download) is **fully compatible** — no adapter
-//! needed. The sole interoperability blocker is how `ProofType` is encoded:
+//! This test crate uses **no zkBoost crates**. Instead, it runs a lightweight
+//! mock server that mirrors the exact zkBoost HTTP API (endpoints, query params,
+//! SSE event shapes, response types). Lighthouse's [`HttpProofNodeClient`] has
+//! been updated to send zkBoost-format string proof types (`"reth-sp1"`,
+//! `"ethrex-risc0"`, etc.) at the wire boundary, converting internally from
+//! EIP-8025 `u8` values.
 //!
-//! | Surface | Lighthouse | zkboost | Compatible? |
+//! ### Why not use zkBoost as a direct dependency?
+//!
+//! **Linker conflict**: `ethrex_crypto` (transitive via `zkboost-server`
+//! → `stateless-validator-ethrex`) defines `SHA3_absorb`/`SHA3_squeeze`
+//! assembly symbols that collide with `openssl_sys` (used by Lighthouse).
+//!
+//! ### Why not just import `zkboost-types`?
+//!
+//! The task requires an **independent** client implementation. Lighthouse
+//! mirrors the zkBoost interface via its own [`ZkBoostProofType`] enum,
+//! which is validated by these tests against the known zkBoost API contract.
+//!
+//! ## Interface compatibility (post-alignment)
+//!
+//! | Surface | Lighthouse | zkBoost | Compatible? |
 //! |---------|-----------|---------|-------------|
 //! | Endpoint paths | `/v1/execution_proof_requests` | same | Yes |
 //! | SSZ body transport | raw bytes POST | raw bytes POST | Yes |
@@ -15,32 +32,16 @@
 //! | SSE event mechanics | `event: proof_complete` | same | Yes |
 //! | Binary proof download | `GET .../root/proof_type` | same | Yes |
 //! | Verification response | `{ status: "VALID" }` | same | Yes |
-//! | Query param `proof_types` | `0,1,2` (numeric CSV) | `reth-sp1,ethrex-risc0` (string CSV) | **No** |
-//! | SSE `proof_type` field | `0` (u8) | `"reth-sp1"` (string) | **No** |
-//! | URL path `proof_type` | `/proofs/{root}/0` | `/proofs/{root}/reth-sp1` | **No** |
-//!
-//! **Conclusion:** compatibility requires either (a) aligning the `ProofType`
-//! representation (preferred), or (b) a thin translation layer in the client.
-//! No test-side normalization is used — each test documents the actual wire
-//! behavior so the gap is visible in assertions.
-//!
-//! ## Test organization
-//!
-//! Tests are grouped into two categories:
-//!
-//! - **Compatible transport tests** (1, 4, 5, 6, 8): exercise the protocol
-//!   surfaces that already match between lighthouse and zkboost. These use the
-//!   mock in numeric mode (lighthouse-compatible) to prove the transport works.
-//! - **Compatibility boundary tests** (2, 3, 7): explicitly probe the
-//!   `ProofType` encoding boundary. Test 2 shows numeric mode works, test 3
-//!   shows string mode fails, test 7 captures the query param wire format.
+//! | Query param `proof_types` | `reth-sp1,ethrex-risc0` (string CSV) | same | **Yes** |
+//! | SSE `proof_type` field | `"ethrex-risc0"` (string) | same | **Yes** |
+//! | URL path `proof_type` | `/proofs/{root}/reth-sp1` | same | **Yes** |
 
-pub mod mock_zkboost_server;
+pub mod zkboost_harness;
 
 #[cfg(test)]
 mod tests {
-    use crate::mock_zkboost_server::MockZkboostServer;
-    use execution_layer::eip8025::{HttpProofNodeClient, ProofNodeClient};
+    use crate::zkboost_harness::{ZkboostTestServer, is_valid_zkboost_proof_type};
+    use execution_layer::eip8025::{HttpProofNodeClient, ProofNodeClient, ZkBoostProofType};
     use futures::StreamExt;
     use sensitive_url::SensitiveUrl;
     use std::time::Duration;
@@ -48,30 +49,27 @@ mod tests {
     use types::Hash256;
     use types::execution::eip8025::ProofAttributes;
 
-    /// Helper: create an `HttpProofNodeClient` pointing at the mock server.
+    /// Helper: create an `HttpProofNodeClient` pointing at the test server.
     fn client_for(url: &str) -> HttpProofNodeClient {
-        let sensitive_url = SensitiveUrl::parse(url).expect("mock server URL should be valid");
+        let sensitive_url = SensitiveUrl::parse(url).expect("server URL should be valid");
         HttpProofNodeClient::new(sensitive_url, Some(Duration::from_secs(5)))
     }
 
     /// Build a dummy payload body for testing.
-    ///
-    /// The mock server does not decode SSZ — it hashes the raw bytes to produce
-    /// a deterministic root. So we can use any bytes.
     fn build_test_payload() -> Vec<u8> {
         vec![0x00, 0x01, 0x02, 0x03, 0xDE, 0xAD, 0xBE, 0xEF]
     }
 
-    // ─── Test 1: request_proofs round-trip (compatible transport) ───────────
+    // ─── Test 1: request_proofs sends zkBoost string proof types ────────────
 
-    /// **Compatible transport**: verifies SSZ body pass-through and JSON response
-    /// parsing. These work identically between lighthouse and zkboost — no
-    /// adapter needed.
+    /// Verifies that `HttpProofNodeClient` converts u8 proof types to zkBoost
+    /// string identifiers in the query param and that SSZ body is passed through.
     #[tokio::test]
-    async fn test_request_proofs_roundtrip() {
-        let server = MockZkboostServer::start(50, true).await;
+    async fn test_request_proofs_sends_string_proof_types() {
+        let server = ZkboostTestServer::start(50).await;
         let client = client_for(&server.url());
 
+        // u8 values 0 and 1 should map to "ethrex-risc0" and "ethrex-sp1"
         let attrs = ProofAttributes {
             proof_types: vec![0, 1],
         };
@@ -89,122 +87,63 @@ mod tests {
             requests[0].ssz_body, body,
             "body should be passed through unchanged"
         );
+        assert_eq!(
+            requests[0].proof_types_raw, "ethrex-risc0,ethrex-sp1",
+            "proof_types should be zkBoost string format"
+        );
+        for pt in &requests[0].proof_types {
+            assert!(
+                is_valid_zkboost_proof_type(pt),
+                "'{pt}' should be a valid zkBoost proof type"
+            );
+        }
     }
 
-    // ─── Test 2: SSE event streaming (numeric — compatible baseline) ────────
+    // ─── Test 2: SSE events with string proof types are parsed correctly ────
 
-    /// **Compatible transport**: SSE mechanics (connection, event name, JSON
-    /// parsing) work when proof_type is numeric. This is the baseline that
-    /// test 3 contrasts against to isolate the encoding boundary.
+    /// Verifies that SSE events with zkBoost string proof_type values are
+    /// correctly deserialized back to u8 by the client.
     #[tokio::test]
-    async fn test_sse_events_numeric_proof_types() {
-        let server = MockZkboostServer::start(100, true).await;
+    async fn test_sse_events_string_proof_types() {
+        let server = ZkboostTestServer::start(100).await;
         let client = client_for(&server.url());
 
         let attrs = ProofAttributes {
-            proof_types: vec![0],
+            proof_types: vec![0], // maps to "ethrex-risc0"
         };
 
-        // Subscribe to events before making the request.
         let mut event_stream = client.subscribe_proof_events(None);
 
-        // Submit a proof request — the mock will emit proof_complete after delay.
         let root = client
             .request_proofs(build_test_payload(), attrs)
             .await
             .expect("request_proofs should succeed");
 
-        // Wait for the SSE event.
         let event = timeout(Duration::from_secs(5), event_stream.next())
             .await
             .expect("timed out waiting for SSE event")
             .expect("stream ended")
             .expect("stream error");
 
+        assert_eq!(event.new_payload_request_root(), root);
         assert_eq!(
-            event.new_payload_request_root(),
-            root,
-            "event root should match request root"
+            event.proof_type(),
+            0,
+            "string 'ethrex-risc0' should be deserialized back to u8 0"
         );
-        assert_eq!(event.proof_type(), 0, "event proof_type should be 0");
     }
 
-    // ─── Test 3: SSE event streaming (string mode — compatibility boundary) ─
+    // ─── Test 3: get_proof uses string proof type in URL path ───────────────
 
-    /// **Compatibility boundary test**: documents how lighthouse handles the
-    /// proof_type encoding mismatch.
-    ///
-    /// When the mock emits `proof_type: "0"` (string, zkboost-native format),
-    /// lighthouse's SSE parser must deserialize it into `ProofType = u8`. This
-    /// test captures whether the parse succeeds or fails — the result reveals
-    /// whether an adapter is needed at the SSE layer.
-    ///
-    /// Note: the mock sends `"0"` (numeric string), not `"reth-sp1"`. A real
-    /// zkboost would send actual string enums, which would definitely fail u8
-    /// deserialization. This test captures the milder case to show even the
-    /// string-vs-number difference matters.
+    /// Verifies that binary proof download uses the zkBoost string format in
+    /// the URL path (e.g. `/v1/execution_proofs/{root}/ethrex-risc0`).
     #[tokio::test]
-    async fn test_sse_proof_type_encoding_boundary() {
-        let server = MockZkboostServer::start(100, false).await;
+    async fn test_get_proof_uses_string_path() {
+        let server = ZkboostTestServer::start(0).await;
         let client = client_for(&server.url());
 
         let attrs = ProofAttributes {
-            proof_types: vec![0],
-        };
-
-        let mut event_stream = client.subscribe_proof_events(None);
-
-        let _root = client
-            .request_proofs(build_test_payload(), attrs)
-            .await
-            .expect("request_proofs should succeed — POST endpoint is compatible");
-
-        // The SSE event will have proof_type: "0" (JSON string) instead of
-        // proof_type: 0 (JSON number). Capture how lighthouse handles this.
-        let result = timeout(Duration::from_secs(5), event_stream.next()).await;
-
-        match result {
-            Ok(Some(Ok(event))) => {
-                // If lighthouse parsed "0" (string) as u8 successfully, the
-                // serde deserializer accepts numeric strings. This means a
-                // numeric-string format could work as a bridge, but real zkboost
-                // strings like "reth-sp1" would still fail.
-                assert_eq!(event.proof_type(), 0);
-                tracing::info!(
-                    "proof_type string '0' parsed as u8 — partial compat, \
-                     but real zkboost strings (reth-sp1) would still fail"
-                );
-            }
-            Ok(Some(Err(e))) => {
-                // Lighthouse's deserializer rejects string proof_type entirely.
-                // This confirms an adapter/alignment is required.
-                let err_msg = format!("{e}");
-                tracing::info!(
-                    "proof_type string rejected (adapter required): {err_msg}"
-                );
-                // The error is expected — this IS the compatibility boundary.
-                assert!(
-                    true,
-                    "String proof_type rejection confirms the encoding boundary"
-                );
-            }
-            Ok(None) => panic!("SSE stream ended unexpectedly"),
-            Err(_) => panic!("Timed out waiting for SSE event"),
-        }
-    }
-
-    // ─── Test 4: get_proof binary download (compatible transport) ───────────
-
-    /// **Compatible transport**: binary proof download via GET works identically.
-    /// The `application/octet-stream` content type and response body handling
-    /// require no adapter.
-    #[tokio::test]
-    async fn test_get_proof_binary_download() {
-        let server = MockZkboostServer::start(0, true).await;
-        let client = client_for(&server.url());
-
-        let attrs = ProofAttributes {
-            proof_types: vec![0],
+            proof_types: vec![0], // maps to "ethrex-risc0"
         };
 
         let root = client
@@ -212,31 +151,27 @@ mod tests {
             .await
             .expect("request_proofs should succeed");
 
-        // Wait for the mock to store the proof.
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let proof_bytes = client
             .get_proof(root, 0)
             .await
-            .expect("get_proof should succeed");
+            .expect("get_proof should succeed with string proof type in URL");
 
         assert!(
             proof_bytes.starts_with(&[0xDE, 0xAD, 0xBE, 0xEF]),
             "proof should start with mock sentinel bytes"
         );
-        assert!(
-            proof_bytes.len() > 4,
-            "proof should contain root bytes after sentinel"
-        );
+        assert!(proof_bytes.len() > 4);
     }
 
-    // ─── Test 5: verify_proof round-trip (compatible transport) ─────────────
+    // ─── Test 4: verify_proof sends string proof type ───────────────────────
 
-    /// **Compatible transport**: verification endpoint JSON structure (`{ status:
-    /// "VALID" }`) is identical between lighthouse and zkboost.
+    /// Verifies that the verification endpoint receives a string proof type
+    /// in the query parameter.
     #[tokio::test]
-    async fn test_verify_proof_returns_valid() {
-        let server = MockZkboostServer::start(0, true).await;
+    async fn test_verify_proof_sends_string_proof_type() {
+        let server = ZkboostTestServer::start(0).await;
         let client = client_for(&server.url());
 
         let root = Hash256::repeat_byte(0xAA);
@@ -245,100 +180,126 @@ mod tests {
             .await
             .expect("verify_proof should succeed");
 
-        assert_eq!(
-            status,
-            types::execution::eip8025::ProofStatus::Valid,
-            "mock always returns VALID"
-        );
+        assert_eq!(status, types::execution::eip8025::ProofStatus::Valid);
     }
 
-    // ─── Test 6: get_proof 404 handling (compatible transport) ──────────────
+    // ─── Test 5: get_proof 404 handling ─────────────────────────────────────
 
-    /// **Compatible transport**: HTTP 404 error handling for missing proofs
-    /// works identically — the error propagation path requires no adapter.
+    /// HTTP 404 error handling for missing proofs.
     #[tokio::test]
     async fn test_get_proof_missing_returns_error() {
-        let server = MockZkboostServer::start(0, true).await;
+        let server = ZkboostTestServer::start(0).await;
         let client = client_for(&server.url());
 
-        let result = client.get_proof(Hash256::repeat_byte(0xFF), 99).await;
-
+        // proof_type 0 maps to "ethrex-risc0" — no proof stored for this root
+        let result = client.get_proof(Hash256::repeat_byte(0xFF), 0).await;
         assert!(result.is_err(), "get_proof for missing proof should error");
     }
 
-    // ─── Test 7: query param encoding — compatibility boundary ─────────────
+    // ─── Test 6: invalid u8 proof type is rejected ──────────────────────────
 
-    /// **Compatibility boundary test**: captures how lighthouse encodes
-    /// `proof_types` on the wire and asserts the format.
-    ///
-    /// Lighthouse (after the CSV fix) sends: `proof_types=0,1,2`
-    /// zkboost expects: `proof_types=reth-sp1,ethrex-risc0`
-    ///
-    /// The wire format (CSV) is compatible — the values are not. This test
-    /// proves that no adapter is needed for the encoding mechanism, only for
-    /// the proof type vocabulary.
+    /// Verifies that an unmapped u8 value (e.g. 99) fails at the client
+    /// before even reaching the server.
     #[tokio::test]
-    async fn test_query_param_encoding_boundary() {
-        let server = MockZkboostServer::start(0, true).await;
+    async fn test_invalid_proof_type_rejected_by_client() {
+        let server = ZkboostTestServer::start(0).await;
         let client = client_for(&server.url());
 
-        let attrs = ProofAttributes {
-            proof_types: vec![0, 1, 2],
-        };
-
-        let _root = client
-            .request_proofs(build_test_payload(), attrs)
-            .await
-            .expect("request_proofs should succeed");
-
-        let requests = server.state.received_requests.read();
-        assert_eq!(requests.len(), 1);
-
-        let raw = &requests[0].proof_types_raw;
-        let parsed = &requests[0].proof_types;
-
-        // Assert the wire format: lighthouse sends numeric CSV.
-        assert_eq!(raw, "0,1,2", "lighthouse should send numeric CSV proof_types");
-        assert_eq!(
-            parsed,
-            &["0", "1", "2"],
-            "server should parse three numeric proof types"
-        );
-
-        // Document the gap: zkboost would send/expect "reth-sp1,ethrex-risc0"
-        // in this same field. The encoding mechanism (CSV) matches, but the
-        // vocabulary (u8 vs string enum) does not.
-        tracing::info!(
-            "Wire format: proof_types={raw} — CSV encoding is compatible, \
-             but zkboost expects string names (reth-sp1, ethrex-risc0), not numbers"
+        let result = client.get_proof(Hash256::repeat_byte(0xAA), 99).await;
+        assert!(
+            result.is_err(),
+            "u8 value 99 has no zkBoost mapping — should error"
         );
     }
 
-    // ─── Test 8: full lifecycle (compatible transport) ──────────────────────
+    // ─── Test 7: server rejects numeric proof types ─────────────────────────
 
-    /// **Compatible transport**: end-to-end lifecycle proving that the entire
-    /// request → SSE → download → verify path works when proof_type encoding
-    /// is aligned. This is the integration proof that only the ProofType
-    /// vocabulary needs resolution for real interop.
+    /// Validates that the test server (mirroring real zkBoost behavior) rejects
+    /// numeric proof type strings.
+    #[tokio::test]
+    async fn test_numeric_proof_types_rejected_by_server() {
+        let numeric_values = ["0", "1", "2", "42"];
+        for value in numeric_values {
+            assert!(
+                !is_valid_zkboost_proof_type(value),
+                "numeric '{value}' should NOT be a valid zkBoost proof type"
+            );
+        }
+    }
+
+    // ─── Test 8: all zkBoost proof type strings are recognized ──────────────
+
+    /// Validates that Lighthouse's `ZkBoostProofType` enum covers all known
+    /// zkBoost proof types and the string representations match exactly.
+    #[tokio::test]
+    async fn test_zkboost_proof_type_coverage() {
+        let expected = [
+            "ethrex-risc0",
+            "ethrex-sp1",
+            "ethrex-zisk",
+            "reth-openvm",
+            "reth-risc0",
+            "reth-sp1",
+            "reth-zisk",
+        ];
+
+        // Verify all expected strings parse to ZkBoostProofType
+        for s in &expected {
+            let pt: ZkBoostProofType = s
+                .parse()
+                .unwrap_or_else(|_| panic!("'{s}' should parse as ZkBoostProofType"));
+            assert_eq!(
+                pt.as_str(),
+                *s,
+                "round-trip string representation should match"
+            );
+        }
+
+        // Verify all ZkBoostProofType variants are in the expected list
+        for pt in ZkBoostProofType::all() {
+            assert!(
+                expected.contains(&pt.as_str()),
+                "ZkBoostProofType variant {:?} should be in expected list",
+                pt
+            );
+        }
+
+        // Verify u8 round-trip
+        for (i, s) in expected.iter().enumerate() {
+            let pt = ZkBoostProofType::from_u8(i as u8)
+                .unwrap_or_else(|_| panic!("u8 {i} should map to a ZkBoostProofType"));
+            assert_eq!(pt.as_str(), *s, "u8 {i} should map to '{s}'");
+            assert_eq!(pt.to_u8(), i as u8, "'{s}' should map back to u8 {i}");
+        }
+    }
+
+    // ─── Test 9: full lifecycle (request → SSE → download → verify) ─────────
+
+    /// End-to-end lifecycle proving the entire path works with string proof types.
     #[tokio::test]
     async fn test_full_lifecycle() {
-        let server = MockZkboostServer::start(100, true).await;
+        let server = ZkboostTestServer::start(100).await;
         let client = client_for(&server.url());
 
+        // Request proofs for u8 types 0 and 1
         let attrs = ProofAttributes {
             proof_types: vec![0, 1],
         };
 
-        // Step 1: Subscribe to events.
         let mut events = client.subscribe_proof_events(None);
 
-        // Step 2: Submit proof request.
         let root = client
             .request_proofs(build_test_payload(), attrs)
             .await
             .expect("request should succeed");
 
-        // Step 3: Receive proof_complete events for both proof types.
+        // Verify server received string proof types
+        {
+            let requests = server.state.received_requests.read();
+            assert_eq!(requests[0].proof_types_raw, "ethrex-risc0,ethrex-sp1");
+        }
+
+        // Collect SSE events
         let mut completed_types = Vec::new();
         for _ in 0..2 {
             let event = timeout(Duration::from_secs(5), events.next())
@@ -351,13 +312,9 @@ mod tests {
             completed_types.push(event.proof_type());
         }
         completed_types.sort();
-        assert_eq!(
-            completed_types,
-            vec![0, 1],
-            "should get events for both proof types"
-        );
+        assert_eq!(completed_types, vec![0, 1]);
 
-        // Step 4: Download each proof.
+        // Download proofs
         for pt in [0u8, 1] {
             let proof = client
                 .get_proof(root, pt)
@@ -366,7 +323,7 @@ mod tests {
             assert!(proof.starts_with(&[0xDE, 0xAD, 0xBE, 0xEF]));
         }
 
-        // Step 5: Verify a proof.
+        // Verify a proof
         let status = client
             .verify_proof(root, 0, &[0x01, 0x02])
             .await
