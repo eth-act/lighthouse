@@ -56,8 +56,7 @@ use state_processing::AllCaches;
 use std::sync::Arc;
 use std::time::Duration;
 use store::{
-    Error as StoreError, KeyValueStore, KeyValueStoreOp, StoreConfig,
-    iter::StateRootsIterator,
+    Error as StoreError, KeyValueStore, KeyValueStoreOp, StoreConfig, iter::StateRootsIterator,
 };
 use task_executor::{JoinHandle, ShutdownReason};
 use tracing::info_span;
