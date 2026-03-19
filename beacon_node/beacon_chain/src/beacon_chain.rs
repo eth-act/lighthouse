@@ -635,10 +635,21 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
 
     /// Load persisted ProofEngine state from disk, returning `None` if not found or corrupt.
     pub fn load_proof_engine_state(store: BeaconStore<T>) -> Option<PersistedProofEngineState> {
-        match store.get_item::<PersistedProofEngineState>(&PROOF_ENGINE_DB_KEY) {
-            Ok(Some(persisted)) => {
-                tracing::info!("Loaded ProofEngine state from disk");
-                Some(persisted)
+        match store
+            .hot_db
+            .get_bytes(DBColumn::ProofEngine, PROOF_ENGINE_DB_KEY.as_slice())
+        {
+            Ok(Some(bytes)) => {
+                match PersistedProofEngineState::from_bytes(&bytes, store.get_config()) {
+                    Ok(persisted) => {
+                        tracing::info!("Loaded ProofEngine state from disk");
+                        Some(persisted)
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = ?e, "Failed to decode ProofEngine state from disk, starting fresh");
+                        None
+                    }
+                }
             }
             Ok(None) => None,
             Err(e) => {

@@ -56,8 +56,7 @@ use state_processing::AllCaches;
 use std::sync::Arc;
 use std::time::Duration;
 use store::{
-    Error as StoreError, KeyValueStore, KeyValueStoreOp, StoreConfig, StoreItem,
-    iter::StateRootsIterator,
+    Error as StoreError, KeyValueStore, KeyValueStoreOp, StoreConfig, iter::StateRootsIterator,
 };
 use task_executor::{JoinHandle, ShutdownReason};
 use tracing::info_span;
@@ -1062,7 +1061,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
 
         let op = proof_engine
             .to_persisted()
-            .as_kv_store_op(PROOF_ENGINE_DB_KEY);
+            .as_kv_store_op(PROOF_ENGINE_DB_KEY, self.store.get_config())?;
         self.store.hot_db.do_atomically(vec![op])?;
         Ok(())
     }
