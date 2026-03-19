@@ -142,15 +142,15 @@ impl HttpProofNodeClient {
 impl ProofNodeClient for HttpProofNodeClient {
     /// `POST /v1/execution_proof_requests?proof_types=reth-sp1,ethrex-risc0`
     ///
-    /// Converts EIP-8025 `u8` proof types to zkBoost string identifiers
+    /// Converts EIP-8025 `u8` proof types to string identifiers
     /// for the wire format.
     async fn request_proofs(
         &self,
         ssz_body: Vec<u8>,
         proof_attributes: ProofAttributes,
     ) -> Result<Hash256, ProofEngineError> {
-        // Convert u8 proof types to zkBoost string identifiers.
-        // zkBoost expects: `proof_types=reth-sp1,ethrex-risc0`
+        // Convert u8 proof types to string identifiers.
+        // proof node expects: `proof_types=reth-sp1,ethrex-risc0`
         let proof_types_csv = proof_attributes
             .proof_types
             .iter()
@@ -175,7 +175,7 @@ impl ProofNodeClient for HttpProofNodeClient {
 
     /// `POST /v1/execution_proof_verifications?new_payload_request_root=...&proof_type=reth-sp1`
     ///
-    /// Converts the `u8` proof type to a zkBoost string identifier for the query param.
+    /// Converts the `u8` proof type to a string identifier for the query param.
     async fn verify_proof(
         &self,
         root: Hash256,
@@ -206,7 +206,7 @@ impl ProofNodeClient for HttpProofNodeClient {
 
     /// `GET /v1/execution_proofs/{root}/{proof_type}`
     ///
-    /// Uses zkBoost string identifier in the URL path (e.g. `/reth-sp1`).
+    /// Uses string identifier in the URL path (e.g. `/reth-sp1`).
     async fn get_proof(&self, root: Hash256, proof_type: u8) -> Result<Bytes, ProofEngineError> {
         let proof_type_str = ProofType::from_u8(proof_type)?;
         Ok(self
