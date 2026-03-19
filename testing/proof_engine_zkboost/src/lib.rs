@@ -22,13 +22,13 @@ pub mod zkboost_harness;
 #[cfg(test)]
 mod tests {
     use crate::zkboost_harness::{FIXTURE_NEW_PAYLOAD_REQUEST, ZkboostTestHarness};
-    use execution_layer::eip8025::{HttpProofNodeClient, ProofNodeClient, ZkBoostProofType};
+    use execution_layer::eip8025::{HttpProofNodeClient, ProofNodeClient, ProofType};
     use futures::StreamExt;
     use sensitive_url::SensitiveUrl;
     use std::time::Duration;
     use tokio::time::timeout;
     use types::execution::eip8025::ProofAttributes;
-    use zkboost_types::ProofType;
+    use zkboost_types::ProofType as ZkBoostProofType;
 
     /// Helper: create an `HttpProofNodeClient` pointing at the test server.
     fn client_for(url: &str) -> HttpProofNodeClient {
@@ -38,7 +38,7 @@ mod tests {
 
     /// The u8 value for `EthrexZisk` (our default test proof type).
     fn ethrex_zisk_u8() -> u8 {
-        ZkBoostProofType::EthrexZisk.to_u8()
+        ProofType::EthrexZisk.to_u8()
     }
 
     // ─── Test 1: request_proofs succeeds against real server ─────────────────
@@ -61,10 +61,7 @@ mod tests {
             .expect("request_proofs should succeed against real server");
 
         // The root should be non-zero (the server computes tree_hash_root of the SSZ).
-        assert!(
-            !root.is_zero(),
-            "returned root should be non-zero"
-        );
+        assert!(!root.is_zero(), "returned root should be non-zero");
     }
 
     // ─── Test 2: SSE events from real server are parsed correctly ────────────
@@ -139,10 +136,7 @@ mod tests {
             .await
             .expect("get_proof should succeed with string proof type in URL");
 
-        assert!(
-            !proof_bytes.is_empty(),
-            "proof should not be empty"
-        );
+        assert!(!proof_bytes.is_empty(), "proof should not be empty");
     }
 
     // ─── Test 4: verify_proof against real server ────────────────────────────
@@ -196,7 +190,9 @@ mod tests {
         let harness = ZkboostTestHarness::start(0).await;
         let client = client_for(&harness.url());
 
-        let result = client.get_proof(types::Hash256::repeat_byte(0xAA), 99).await;
+        let result = client
+            .get_proof(types::Hash256::repeat_byte(0xAA), 99)
+            .await;
         assert!(
             result.is_err(),
             "u8 value 99 has no zkBoost mapping — should error at client level"
@@ -209,10 +205,9 @@ mod tests {
     /// zkBoost proof types with matching string representations.
     #[tokio::test]
     async fn test_zkboost_proof_type_matches_upstream() {
-        use strum::IntoEnumIterator;
-
         // Collect all upstream ProofType variants.
-        let upstream: Vec<(String, usize)> = ProofType::iter()
+        let upstream: Vec<(String, usize)> = ProofType::all()
+            .iter()
             .enumerate()
             .map(|(i, pt)| (pt.as_str().to_string(), i))
             .collect();
@@ -223,18 +218,19 @@ mod tests {
                 .parse()
                 .unwrap_or_else(|_| panic!("'{s}' should parse as ZkBoostProofType"));
             assert_eq!(
-                pt.as_str(), s.as_str(),
+                pt.as_str(),
+                s.as_str(),
                 "string representation should match upstream"
             );
             assert_eq!(
-                pt.to_u8(), *i as u8,
+                pt as u8, *i as u8,
                 "u8 mapping for '{s}' should match upstream ordinal {i}"
             );
         }
 
         // Verify all Lighthouse variants are in the upstream list.
         let upstream_strs: Vec<&str> = upstream.iter().map(|(s, _)| s.as_str()).collect();
-        for pt in ZkBoostProofType::all() {
+        for pt in ProofType::all() {
             assert!(
                 upstream_strs.contains(&pt.as_str()),
                 "Lighthouse variant {:?} should exist in upstream zkBoost",
@@ -244,7 +240,7 @@ mod tests {
 
         // Counts should match.
         assert_eq!(
-            ZkBoostProofType::all().len(),
+            ProofType::all().len(),
             upstream.len(),
             "variant count should match between Lighthouse and zkBoost"
         );

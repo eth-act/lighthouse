@@ -13,8 +13,8 @@ metrics-exporter-prometheus = { workspace = true }
 reqwest = { workspace = true }
 sensitive_url = { workspace = true }
 serde = { workspace = true }
-strum = { workspace = true }
 serde_json = { workspace = true }
+strum = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true }

@@ -13,7 +13,7 @@ use std::pin::Pin;
 use std::time::Duration;
 use tokio_stream::StreamExt;
 
-use super::types::{ProofEvent, SseEventParts, ZkBoostProofType};
+use super::types::{ProofEvent, ProofType, SseEventParts};
 use types::Hash256;
 use types::execution::eip8025::{ProofAttributes, ProofStatus};
 
@@ -154,9 +154,7 @@ impl ProofNodeClient for HttpProofNodeClient {
         let proof_types_csv = proof_attributes
             .proof_types
             .iter()
-            .map(|t| {
-                ZkBoostProofType::from_u8(*t).map(|pt| pt.as_str().to_string())
-            })
+            .map(|t| ProofType::from_u8(*t).map(|pt| pt.as_str().to_string()))
             .collect::<Result<Vec<_>, _>>()?
             .join(",");
 
@@ -184,7 +182,7 @@ impl ProofNodeClient for HttpProofNodeClient {
         proof_type: u8,
         proof_data: &[u8],
     ) -> Result<ProofStatus, ProofEngineError> {
-        let proof_type_str = ZkBoostProofType::from_u8(proof_type)?;
+        let proof_type_str = ProofType::from_u8(proof_type)?;
         let response: ProofVerificationResponse = self
             .client
             .post(self.url(PATH_PROOF_VERIFICATIONS))
@@ -210,7 +208,7 @@ impl ProofNodeClient for HttpProofNodeClient {
     ///
     /// Uses zkBoost string identifier in the URL path (e.g. `/reth-sp1`).
     async fn get_proof(&self, root: Hash256, proof_type: u8) -> Result<Bytes, ProofEngineError> {
-        let proof_type_str = ZkBoostProofType::from_u8(proof_type)?;
+        let proof_type_str = ProofType::from_u8(proof_type)?;
         Ok(self
             .client
             .get(self.url(&format!("{PATH_PROOFS}/{root}/{proof_type_str}")))

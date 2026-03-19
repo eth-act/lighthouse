@@ -1,18 +1,18 @@
 //! API types for EIP-8025 proof engine communication.
 //!
 //! This module contains:
-//! - [`ZkBoostProofType`]: an independent string enum that mirrors the zkBoost
-//!   proof node API's `ProofType` exactly, without importing zkBoost types.
+//! - [`ProofType`]: an independent string enum that mirrors the
+//!   proof node API's `ProofType` exactly.
 //! - SSE event types broadcast by the proof engine.
 //!
 //! ## ProofType encoding
 //!
 //! EIP-8025 uses `u8` for `ProofType` in SSZ containers (consensus layer).
-//! The zkBoost proof node API uses kebab-case string identifiers
+//! The proof node API uses kebab-case string identifiers
 //! (`"reth-sp1"`, `"ethrex-risc0"`, etc.) in HTTP query params, URL paths,
 //! and SSE event payloads.
 //!
-//! [`ZkBoostProofType`] bridges this gap: the [`HttpProofNodeClient`] converts
+//! [`ProofType`] bridges this gap: the [`HttpProofNodeClient`] converts
 //! between `u8` (internal) and string (wire) at the HTTP boundary.
 
 use super::errors::ProofEngineError;
@@ -21,28 +21,24 @@ use std::fmt;
 use std::str::FromStr;
 use types::Hash256;
 
-// ─── ZkBoostProofType ───────────────────────────────────────────────────────
+// ─── ProofType ─────────────────────────────────────────────────────────────
 
-/// Proof type identifiers matching the zkBoost proof node API exactly.
-///
-/// This is an **independent** mirror of zkBoost's `ProofType` enum — it does
-/// not import or depend on zkBoost crates. The string representations match
-/// zkBoost's canonical format so that Lighthouse's HTTP client speaks the
-/// exact same wire protocol.
+/// Proof type identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(into = "String", try_from = "String")]
-pub enum ZkBoostProofType {
-    EthrexRisc0,
-    EthrexSP1,
-    EthrexZisk,
-    RethOpenVM,
-    RethRisc0,
-    RethSP1,
-    RethZisk,
+#[repr(u8)]
+pub enum ProofType {
+    EthrexRisc0 = 0,
+    EthrexSP1 = 1,
+    EthrexZisk = 2,
+    RethOpenVM = 3,
+    RethRisc0 = 4,
+    RethSP1 = 5,
+    RethZisk = 6,
 }
 
-impl ZkBoostProofType {
-    /// Canonical string representation, matching zkBoost exactly.
+impl ProofType {
+    /// Canonical string representation, matching exactly.
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::EthrexRisc0 => "ethrex-risc0",
@@ -55,9 +51,9 @@ impl ZkBoostProofType {
         }
     }
 
-    /// Convert from EIP-8025 `u8` proof type to zkBoost string identifier.
+    /// Convert from EIP-8025 `u8` proof type to a string identifier.
     ///
-    /// The mapping follows the order defined in the zkBoost `ProofType` enum.
+    /// The mapping follows the order defined in the `ProofType` enum.
     pub fn from_u8(value: u8) -> Result<Self, ProofEngineError> {
         match value {
             0 => Ok(Self::EthrexRisc0),
@@ -68,26 +64,18 @@ impl ZkBoostProofType {
             5 => Ok(Self::RethSP1),
             6 => Ok(Self::RethZisk),
             _ => Err(ProofEngineError::InvalidProofType(format!(
-                "no zkBoost mapping for proof type {value}"
+                "no mapping for proof type {value}"
             ))),
         }
     }
 
     /// Convert back to EIP-8025 `u8` proof type.
     pub fn to_u8(self) -> u8 {
-        match self {
-            Self::EthrexRisc0 => 0,
-            Self::EthrexSP1 => 1,
-            Self::EthrexZisk => 2,
-            Self::RethOpenVM => 3,
-            Self::RethRisc0 => 4,
-            Self::RethSP1 => 5,
-            Self::RethZisk => 6,
-        }
+        self as u8
     }
 
     /// All known proof type variants.
-    pub fn all() -> &'static [ZkBoostProofType] {
+    pub fn all() -> &'static [ProofType] {
         &[
             Self::EthrexRisc0,
             Self::EthrexSP1,
@@ -100,7 +88,7 @@ impl ZkBoostProofType {
     }
 }
 
-impl FromStr for ZkBoostProofType {
+impl FromStr for ProofType {
     type Err = ProofEngineError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -113,25 +101,25 @@ impl FromStr for ZkBoostProofType {
             "reth-sp1" => Ok(Self::RethSP1),
             "reth-zisk" => Ok(Self::RethZisk),
             _ => Err(ProofEngineError::InvalidProofType(format!(
-                "unknown zkBoost proof type: {s}"
+                "unknown proof type: {s}"
             ))),
         }
     }
 }
 
-impl fmt::Display for ZkBoostProofType {
+impl fmt::Display for ProofType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.as_str())
     }
 }
 
-impl From<ZkBoostProofType> for String {
-    fn from(pt: ZkBoostProofType) -> Self {
+impl From<ProofType> for String {
+    fn from(pt: ProofType) -> Self {
         pt.as_str().to_string()
     }
 }
 
-impl TryFrom<String> for ZkBoostProofType {
+impl TryFrom<String> for ProofType {
     type Error = ProofEngineError;
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
@@ -179,9 +167,9 @@ pub struct ProofEventInfo {
     pub proof_type: u8,
 }
 
-/// Deserialize `proof_type` from either a zkBoost string (`"reth-sp1"`) or a
+/// Deserialize `proof_type` from either a string (`"reth-sp1"`) or a
 /// numeric value (`0`). This allows Lighthouse to consume SSE events from both
-/// zkBoost servers (string format) and test mocks (numeric format).
+/// servers (string format) and test mocks (numeric format).
 fn deserialize_proof_type<'de, D>(deserializer: D) -> Result<u8, D::Error>
 where
     D: Deserializer<'de>,
@@ -196,8 +184,8 @@ where
     match ProofTypeValue::deserialize(deserializer)? {
         ProofTypeValue::Number(n) => Ok(n),
         ProofTypeValue::String(s) => {
-            // Try parsing as zkBoost string identifier first.
-            if let Ok(pt) = s.parse::<ZkBoostProofType>() {
+            // Try parsing as string identifier first.
+            if let Ok(pt) = s.parse::<ProofType>() {
                 return Ok(pt.to_u8());
             }
             // Fall back to parsing as numeric string (e.g. "0").

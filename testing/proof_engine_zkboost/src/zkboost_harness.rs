@@ -44,10 +44,7 @@ struct MockElState {
 }
 
 /// Mock EL handler that responds to JSON-RPC requests with fixture data.
-async fn mock_el_handler(
-    State(state): State<Arc<MockElState>>,
-    body: Bytes,
-) -> Json<Value> {
+async fn mock_el_handler(State(state): State<Arc<MockElState>>, body: Bytes) -> Json<Value> {
     let request: Value = serde_json::from_slice(&body).unwrap_or_default();
     let method = request["method"].as_str().unwrap_or("");
 
@@ -118,9 +115,7 @@ async fn start_zkboost_server(
         .await
         .expect("failed to start zkBoost server");
 
-    let endpoint = format!("http://127.0.0.1:{}", addr.port())
-        .parse()
-        .unwrap();
+    let endpoint = format!("http://127.0.0.1:{}", addr.port()).parse().unwrap();
     (endpoint, shutdown)
 }
 
