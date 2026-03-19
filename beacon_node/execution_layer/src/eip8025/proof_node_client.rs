@@ -13,7 +13,7 @@ use std::pin::Pin;
 use std::time::Duration;
 use tokio_stream::StreamExt;
 
-use super::types::{ProofEvent, SseEventParts};
+use super::types::{ProofEvent, ProofType, SseEventParts};
 use types::Hash256;
 use types::execution::eip8025::{ProofAttributes, ProofStatus};
 
@@ -140,17 +140,28 @@ impl HttpProofNodeClient {
 
 #[async_trait::async_trait]
 impl ProofNodeClient for HttpProofNodeClient {
-    /// `POST /v1/execution_proof_requests?proof_types=0,1,2`
+    /// `POST /v1/execution_proof_requests?proof_types=reth-sp1,ethrex-risc0`
+    ///
+    /// Converts EIP-8025 `u8` proof types to string identifiers
+    /// for the wire format.
     async fn request_proofs(
         &self,
         ssz_body: Vec<u8>,
         proof_attributes: ProofAttributes,
     ) -> Result<Hash256, ProofEngineError> {
+        // Convert u8 proof types to string identifiers.
+        // proof node expects: `proof_types=reth-sp1,ethrex-risc0`
+        let proof_types_csv = proof_attributes
+            .proof_types
+            .iter()
+            .map(|t| ProofType::from_u8(*t).map(|pt| pt.as_str().to_string()))
+            .collect::<Result<Vec<_>, _>>()?
+            .join(",");
+
         let response: ProofRequestResponse = self
             .client
             .post(self.url(PATH_PROOF_REQUESTS))
-            // TODO: Should this be wrapped in a `ProofAttributes` struct instead of just passing the proof types as a query param?
-            .query(&[(QUERY_PROOF_TYPES, &proof_attributes.proof_types)])
+            .query(&[(QUERY_PROOF_TYPES, &proof_types_csv)])
             .header(HEADER_CONTENT_TYPE, HEADER_VALUE_SSZ)
             .body(ssz_body)
             .send()
@@ -162,19 +173,22 @@ impl ProofNodeClient for HttpProofNodeClient {
         Ok(response.new_payload_request_root)
     }
 
-    /// `POST /v1/execution_proof_verifications?new_payload_request_root=...&proof_type=...`
+    /// `POST /v1/execution_proof_verifications?new_payload_request_root=...&proof_type=reth-sp1`
+    ///
+    /// Converts the `u8` proof type to a string identifier for the query param.
     async fn verify_proof(
         &self,
         root: Hash256,
         proof_type: u8,
         proof_data: &[u8],
     ) -> Result<ProofStatus, ProofEngineError> {
+        let proof_type_str = ProofType::from_u8(proof_type)?;
         let response: ProofVerificationResponse = self
             .client
             .post(self.url(PATH_PROOF_VERIFICATIONS))
             .query(&[
                 (QUERY_NEW_PAYLOAD_REQUEST_ROOT, &root.to_string()),
-                (QUERY_PROOF_TYPE, &proof_type.to_string()),
+                (QUERY_PROOF_TYPE, &proof_type_str.to_string()),
             ])
             .header(HEADER_CONTENT_TYPE, HEADER_VALUE_SSZ)
             .body(proof_data.to_vec())
@@ -191,10 +205,13 @@ impl ProofNodeClient for HttpProofNodeClient {
     }
 
     /// `GET /v1/execution_proofs/{root}/{proof_type}`
+    ///
+    /// Uses string identifier in the URL path (e.g. `/reth-sp1`).
     async fn get_proof(&self, root: Hash256, proof_type: u8) -> Result<Bytes, ProofEngineError> {
+        let proof_type_str = ProofType::from_u8(proof_type)?;
         Ok(self
             .client
-            .get(self.url(&format!("{PATH_PROOFS}/{root}/{proof_type}")))
+            .get(self.url(&format!("{PATH_PROOFS}/{root}/{proof_type_str}")))
             .send()
             .await?
             .error_for_status()?

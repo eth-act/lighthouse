@@ -22,4 +22,6 @@ pub use proof_engine::HttpProofEngine;
 pub use proof_node_client::{
     HttpProofNodeClient, PROOF_ENGINE_TIMEOUT, ProofNodeClient, ProofRequestResponse,
 };
-pub use types::{ProofComplete, ProofEvent, ProofEventInfo, ProofFailure, SseEventParts};
+pub use types::{
+    ProofComplete, ProofEvent, ProofEventInfo, ProofFailure, ProofType, SseEventParts,
+};
