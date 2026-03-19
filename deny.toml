@@ -6,16 +6,20 @@
 multiple-versions = "allow"
 deny = [
     { crate = "ethers", reason = "legacy Ethereum crate, use alloy instead" },
-    { crate = "ethereum-types", reason = "legacy Ethereum crate, use alloy-primitives instead" },
-    { crate = "protobuf", reason = "use quick-protobuf instead" },
-    { crate = "derivative", reason = "use educe or derive_more instead" },
-    { crate = "ark-ff", reason = "present in Cargo.lock but not needed by Lighthouse" },
     { crate = "strum", deny-multiple-versions = true, reason = "takes a long time to compile" },
     { crate = "reqwest", deny-multiple-versions = true, reason = "takes a long time to compile" },
     { crate = "aes", deny-multiple-versions = true, reason = "takes a long time to compile" },
     { crate = "sha2", deny-multiple-versions = true, reason = "takes a long time to compile" },
     { crate = "pbkdf2", deny-multiple-versions = true, reason = "takes a long time to compile" },
     { crate = "scrypt", deny-multiple-versions = true, reason = "takes a long time to compile" },
+]
+# Crates banned upstream but required by zkboost/ethrex transitive dependencies
+skip = [
+    { crate = "ethereum-types@0.15.1", reason = "transitive dep of ethrex (zkboost)" },
+    { crate = "protobuf@2.28.0", reason = "transitive dep via prometheus (zkboost)" },
+    { crate = "protobuf@3.7.2", reason = "transitive dep of ethrex (zkboost)" },
+    { crate = "derivative@2.2.0", reason = "transitive dep of ethrex (zkboost)" },
+    { crate = "ark-ff", reason = "transitive dep of ethrex-levm (zkboost)" },
 ]
 
 [sources]
@@ -24,4 +28,4 @@ unknown-git = "warn"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 
 [sources.allow-org]
-github = ["sigp"]
+github = ["sigp", "lambdaclass", "eth-act", "paradigmxyz", "frisitano"]

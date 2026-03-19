@@ -3,6 +3,9 @@ name = "proof_engine_zkboost_test"
 version = "0.1.0"
 edition.workspace = true
 
+[features]
+portable = ["types/portable"]
+
 [dependencies]
 anyhow = { workspace = true }
 axum = { workspace = true }
