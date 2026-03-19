@@ -1,0 +1,20 @@
+[package]
+name = "proof_engine_zkboost_test"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+axum = { workspace = true }
+bytes = { workspace = true }
+execution_layer = { workspace = true }
+futures = { workspace = true }
+parking_lot = { workspace = true }
+reqwest = { workspace = true }
+reqwest-eventsource = { workspace = true }
+sensitive_url = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tracing = { workspace = true }
+types = { workspace = true }

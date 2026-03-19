@@ -146,11 +146,19 @@ impl ProofNodeClient for HttpProofNodeClient {
         ssz_body: Vec<u8>,
         proof_attributes: ProofAttributes,
     ) -> Result<Hash256, ProofEngineError> {
+        // Serialize proof types as a comma-separated string to match
+        // the zkboost API format: `proof_types=0,1,2`.
+        let proof_types_csv = proof_attributes
+            .proof_types
+            .iter()
+            .map(|t| t.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+
         let response: ProofRequestResponse = self
             .client
             .post(self.url(PATH_PROOF_REQUESTS))
-            // TODO: Should this be wrapped in a `ProofAttributes` struct instead of just passing the proof types as a query param?
-            .query(&[(QUERY_PROOF_TYPES, &proof_attributes.proof_types)])
+            .query(&[(QUERY_PROOF_TYPES, &proof_types_csv)])
             .header(HEADER_CONTENT_TYPE, HEADER_VALUE_SSZ)
             .body(ssz_body)
             .send()
