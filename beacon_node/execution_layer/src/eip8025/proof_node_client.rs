@@ -148,6 +148,10 @@ impl ProofNodeClient for HttpProofNodeClient {
     ) -> Result<Hash256, ProofEngineError> {
         // Serialize proof types as a comma-separated string to match
         // the zkboost API format: `proof_types=0,1,2`.
+        // Bug fix (discovered by proof_engine_zkboost integration tests):
+        // The original code passed `Vec<u8>` directly to `.query()`, which
+        // `serde_urlencoded` cannot serialize (produces "unsupported value").
+        // This was never caught because `MockProofNodeClient` bypasses HTTP.
         let proof_types_csv = proof_attributes
             .proof_types
             .iter()
