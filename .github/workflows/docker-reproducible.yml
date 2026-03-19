@@ -50,13 +50,13 @@ jobs:
           - arch: amd64
             rust_target: x86_64-unknown-linux-gnu
             rust_image: >-
-              rust:1.88-bullseye@sha256:8e3c421122bf4cd3b2a866af41a4dd52d87ad9e315fd2cb5100e87a7187a9816
+              rust:1.91-bullseye@sha256:ed6afcf912afc6aeddf0d1ff0dc6894c9b1c8f865964ef3f533e3ea77a64ffea
             platform: linux/amd64
             runner: ubuntu-22.04
           - arch: arm64
             rust_target: aarch64-unknown-linux-gnu
             rust_image: >-
-              rust:1.88-bullseye@sha256:8b22455a7ce2adb1355067638284ee99d21cc516fab63a96c4514beaf370aa94
+              rust:1.91-bullseye@sha256:2f06f086e3ceb2940b6f400f576aeec1abf6b6a7cbeb55a163ec2f9c0bbb1ed6
             platform: linux/arm64
             runner: ubuntu-22.04-arm
     runs-on: ${{ matrix.runner }}
