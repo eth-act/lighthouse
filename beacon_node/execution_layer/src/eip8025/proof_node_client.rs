@@ -142,8 +142,8 @@ impl HttpProofNodeClient {
 impl ProofNodeClient for HttpProofNodeClient {
     /// `POST /v1/execution_proof_requests?proof_types=reth-sp1,ethrex-risc0`
     ///
-    /// Converts EIP-8025 `u8` proof types to string identifiers
-    /// for the wire format.
+    /// Converts EIP-8025 `u8` proof types to string identifiers for the wire
+    /// format.
     async fn request_proofs(
         &self,
         ssz_body: Vec<u8>,

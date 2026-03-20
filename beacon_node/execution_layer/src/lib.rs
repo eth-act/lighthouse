@@ -70,6 +70,20 @@ mod payload_status;
 pub mod test_utils;
 pub mod versioned_hashes;
 
+/// Combine two optional results, preferring `Ok` values over `Err` values.
+///
+/// If both are `Some`, the first `Ok` is returned. If only one is `Ok`, that one wins.
+/// If both are `Err`, the first error is returned.
+fn prefer_ok<T, E>(a: Option<Result<T, E>>, b: Option<Result<T, E>>) -> Option<Result<T, E>> {
+    match (a, b) {
+        (Some(Ok(val)), _) => Some(Ok(val)),
+        (_, Some(Ok(val))) => Some(Ok(val)),
+        (some @ Some(_), _) => some,
+        (_, some @ Some(_)) => some,
+        (None, None) => None,
+    }
+}
+
 /// Indicates the default jwt authenticated execution endpoint.
 pub const DEFAULT_EXECUTION_ENDPOINT: &str = "http://localhost:8551/";
 
@@ -566,8 +580,13 @@ impl<E: EthSpec> ExecutionLayer<E> {
         let proof_engine: Option<Arc<eip8025::HttpProofEngine>> =
             if let Some(proof_url) = proof_engine_endpoint {
                 if let Some(idx) = test_utils::parse_mock_index(proof_url.expose_full().as_str()) {
-                    let mock = test_utils::get_mock_proof_engine(idx)
-                        .unwrap_or_else(|| panic!("no mock registered at index {idx}"));
+                    let mock = test_utils::get_mock_proof_engine(idx).unwrap_or_else(|| {
+                        debug!(
+                            idx,
+                            "No pre-registered mock; creating MockProofNodeClient on the fly"
+                        );
+                        test_utils::register_mock_proof_engine(idx, 0)
+                    });
                     debug!(idx, "Instantiating mock proof engine from registry");
                     Some(Arc::new(eip8025::HttpProofEngine::with_proof_node(
                         (*mock).clone(),
@@ -1476,13 +1495,18 @@ impl<E: EthSpec> ExecutionLayer<E> {
         };
 
         let proof_engine_result = if let Some(proof_engine) = self.proof_engine() {
-            Some(Ok(proof_engine.new_payload(&new_payload_request).await?))
+            match proof_engine.new_payload(&new_payload_request).await {
+                Ok(status) => Some(Ok(status)),
+                Err(e) => {
+                    debug!(error = ?e, "Proof engine new_payload error (non-fatal)");
+                    None
+                }
+            }
         } else {
             None
         };
 
-        let result = engine_result
-            .or(proof_engine_result)
+        let result = prefer_ok(engine_result, proof_engine_result)
             .expect("at least one of engine or proof engine must be present");
 
         if let Ok(status) = &result {
@@ -1635,15 +1659,18 @@ impl<E: EthSpec> ExecutionLayer<E> {
         };
 
         let proof_engine_result = if let Some(proof_engine) = self.proof_engine() {
-            Some(Ok(proof_engine
-                .forkchoice_updated(forkchoice_state)
-                .await?))
+            match proof_engine.forkchoice_updated(forkchoice_state).await {
+                Ok(response) => Some(Ok(response)),
+                Err(e) => {
+                    debug!(error = ?e, "Proof engine forkchoice_updated error (non-fatal)");
+                    None
+                }
+            }
         } else {
             None
         };
 
-        let result = engine_result
-            .or(proof_engine_result)
+        let result = prefer_ok(engine_result, proof_engine_result)
             .expect("at least one of engine or proof engine must be present");
 
         if let Ok(status) = &result {
