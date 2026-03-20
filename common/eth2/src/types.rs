@@ -981,38 +981,6 @@ pub struct SseBlock {
 }
 
 #[derive(PartialEq, Debug, Serialize, Deserialize, Clone)]
-#[serde(bound = "E: EthSpec")]
-pub struct SseBlockFull<E: EthSpec> {
-    pub slot: Slot,
-    pub block: BeaconBlock<E>,
-    pub execution_optimistic: bool,
-}
-
-#[derive(PartialEq, Debug, Serialize, Deserialize, Clone)]
-struct SseBlockFullGeneric<T> {
-    pub slot: Slot,
-    pub block: T,
-    pub execution_optimistic: bool,
-}
-
-type VersionedSseBlockFull<E> = ForkVersionedResponse<SseBlockFull<E>>;
-
-impl<'de, E: EthSpec> ContextDeserialize<'de, ForkName> for SseBlockFull<E> {
-    fn context_deserialize<D>(deserializer: D, context: ForkName) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let helper = SseBlockFullGeneric::<serde_json::Value>::deserialize(deserializer)?;
-        Ok(SseBlockFull {
-            slot: helper.slot,
-            block: BeaconBlock::context_deserialize(helper.block, context)
-                .map_err(serde::de::Error::custom)?,
-            execution_optimistic: helper.execution_optimistic,
-        })
-    }
-}
-
-#[derive(PartialEq, Debug, Serialize, Deserialize, Clone)]
 pub struct SseBlobSidecar {
     pub block_root: Hash256,
     #[serde(with = "serde_utils::quoted_u64")]
@@ -1206,13 +1174,23 @@ impl<'de> ContextDeserialize<'de, ForkName> for SseExtendedPayloadAttributes {
     }
 }
 
+/// SSE event payload for a validated execution proof (EIP-8025).
+///
+/// Emitted by the beacon node when an `ExecutionProof` passes verification,
+/// allowing validator clients to resign the proof with their own key.
+#[derive(PartialEq, Debug, Serialize, Deserialize, Clone)]
+pub struct SseExecutionProofValidated {
+    pub execution_proof: ExecutionProof,
+    #[serde(with = "serde_utils::quoted_u64")]
+    pub epoch: u64,
+}
+
 #[derive(PartialEq, Debug, Serialize, Clone)]
 #[serde(bound = "E: EthSpec", untagged)]
 pub enum EventKind<E: EthSpec> {
     Attestation(Box<Attestation<E>>),
     SingleAttestation(Box<SingleAttestation>),
     Block(SseBlock),
-    BlockFull(Box<VersionedSseBlockFull<E>>),
     BlobSidecar(SseBlobSidecar),
     DataColumnSidecar(SseDataColumnSidecar),
     FinalizedCheckpoint(SseFinalizedCheckpoint),
@@ -1230,6 +1208,7 @@ pub enum EventKind<E: EthSpec> {
     AttesterSlashing(Box<AttesterSlashing<E>>),
     BlsToExecutionChange(Box<SignedBlsToExecutionChange>),
     BlockGossip(Box<BlockGossip>),
+    ExecutionProofValidated(SseExecutionProofValidated),
 }
 
 impl<E: EthSpec> EventKind<E> {
@@ -1237,7 +1216,6 @@ impl<E: EthSpec> EventKind<E> {
         match self {
             EventKind::Head(_) => "head",
             EventKind::Block(_) => "block",
-            EventKind::BlockFull(_) => "block_full",
             EventKind::BlobSidecar(_) => "blob_sidecar",
             EventKind::DataColumnSidecar(_) => "data_column_sidecar",
             EventKind::Attestation(_) => "attestation",
@@ -1256,6 +1234,7 @@ impl<E: EthSpec> EventKind<E> {
             EventKind::AttesterSlashing(_) => "attester_slashing",
             EventKind::BlsToExecutionChange(_) => "bls_to_execution_change",
             EventKind::BlockGossip(_) => "block_gossip",
+            EventKind::ExecutionProofValidated(_) => "execution_proof_validated",
         }
     }
 
@@ -1271,9 +1250,6 @@ impl<E: EthSpec> EventKind<E> {
             )),
             "block" => Ok(EventKind::Block(serde_json::from_str(data).map_err(
                 |e| ServerError::InvalidServerSentEvent(format!("Block: {:?}", e)),
-            )?)),
-            "block_full" => Ok(EventKind::BlockFull(serde_json::from_str(data).map_err(
-                |e| ServerError::InvalidServerSentEvent(format!("Block Full: {:?}", e)),
             )?)),
             "blob_sidecar" => Ok(EventKind::BlobSidecar(serde_json::from_str(data).map_err(
                 |e| ServerError::InvalidServerSentEvent(format!("Blob Sidecar: {:?}", e)),
@@ -1352,6 +1328,14 @@ impl<E: EthSpec> EventKind<E> {
             "block_gossip" => Ok(EventKind::BlockGossip(serde_json::from_str(data).map_err(
                 |e| ServerError::InvalidServerSentEvent(format!("Block Gossip: {:?}", e)),
             )?)),
+            "execution_proof_validated" => Ok(EventKind::ExecutionProofValidated(
+                serde_json::from_str(data).map_err(|e| {
+                    ServerError::InvalidServerSentEvent(format!(
+                        "Execution Proof Validated: {:?}",
+                        e
+                    ))
+                })?,
+            )),
             _ => Err(ServerError::InvalidServerSentEvent(
                 "Could not parse event tag".to_string(),
             )),
@@ -1371,7 +1355,6 @@ pub struct EventQuery {
 pub enum EventTopic {
     Head,
     Block,
-    BlockFull,
     BlobSidecar,
     DataColumnSidecar,
     Attestation,
@@ -1390,6 +1373,7 @@ pub enum EventTopic {
     ProposerSlashing,
     BlsToExecutionChange,
     BlockGossip,
+    ExecutionProofValidated,
 }
 
 impl FromStr for EventTopic {
@@ -1399,7 +1383,6 @@ impl FromStr for EventTopic {
         match s {
             "head" => Ok(EventTopic::Head),
             "block" => Ok(EventTopic::Block),
-            "block_full" => Ok(EventTopic::BlockFull),
             "blob_sidecar" => Ok(EventTopic::BlobSidecar),
             "data_column_sidecar" => Ok(EventTopic::DataColumnSidecar),
             "attestation" => Ok(EventTopic::Attestation),
@@ -1418,6 +1401,7 @@ impl FromStr for EventTopic {
             "proposer_slashing" => Ok(EventTopic::ProposerSlashing),
             "bls_to_execution_change" => Ok(EventTopic::BlsToExecutionChange),
             "block_gossip" => Ok(EventTopic::BlockGossip),
+            "execution_proof_validated" => Ok(EventTopic::ExecutionProofValidated),
             _ => Err("event topic cannot be parsed.".to_string()),
         }
     }
@@ -1428,7 +1412,6 @@ impl fmt::Display for EventTopic {
         match self {
             EventTopic::Head => write!(f, "head"),
             EventTopic::Block => write!(f, "block"),
-            EventTopic::BlockFull => write!(f, "block_full"),
             EventTopic::BlobSidecar => write!(f, "blob_sidecar"),
             EventTopic::DataColumnSidecar => write!(f, "data_column_sidecar"),
             EventTopic::Attestation => write!(f, "attestation"),
@@ -1447,6 +1430,7 @@ impl fmt::Display for EventTopic {
             EventTopic::ProposerSlashing => write!(f, "proposer_slashing"),
             EventTopic::BlsToExecutionChange => write!(f, "bls_to_execution_change"),
             EventTopic::BlockGossip => write!(f, "block_gossip"),
+            EventTopic::ExecutionProofValidated => write!(f, "execution_proof_validated"),
         }
     }
 }
@@ -2564,32 +2548,5 @@ mod test {
     ) {
         let roundtrip = O::context_deserialize::<D>(deserializer, fork_name).unwrap();
         assert_eq!(original, roundtrip);
-    }
-
-    #[test]
-    fn test_versioned_sse_block_full_round_trip() {
-        let rng = &mut XorShiftRng::from_seed([42; 16]);
-        for fork_name in ForkName::list_all() {
-            let beacon_block = map_fork_name!(fork_name, BeaconBlock, <_>::random_for_test(rng));
-            let slot = Slot::random_for_test(rng);
-
-            let versioned_response = VersionedSseBlockFull::<MainnetEthSpec> {
-                version: fork_name,
-                metadata: EmptyMetadata {},
-                data: SseBlockFull {
-                    slot,
-                    block: beacon_block,
-                    execution_optimistic: true,
-                },
-            };
-
-            let json_str = serde_json::to_string(&versioned_response).unwrap();
-            let deserialized: VersionedSseBlockFull<MainnetEthSpec> =
-                serde_json::from_str(&json_str).unwrap();
-
-            assert_eq!(versioned_response, deserialized);
-            assert!(deserialized.data.execution_optimistic);
-            println!("fork_name: {:?} PASSED", fork_name);
-        }
     }
 }

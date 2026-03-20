@@ -8,6 +8,7 @@ pub use crate::basic_sim::SUGGESTED_FEE_RECIPIENT;
 pub use crate::local_network::{LocalNetwork, LocalNetworkParams, NodeType};
 pub use environment::LoggerConfig;
 pub use environment::test_utils::TestEnvironment;
+pub use execution_layer::test_utils::MockClientEvent;
 pub use logging::build_workspace_filter;
 pub use node_test_rig::ApiTopic;
 pub use node_test_rig::{

@@ -1,5 +1,6 @@
 use super::*;
 
+#[allow(clippy::vec_init_then_push)]
 pub fn get_votes_test_definition() -> ForkChoiceTestDefinition {
     let mut balances = vec![1; 2];
     let mut ops = vec![];

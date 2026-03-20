@@ -8,9 +8,9 @@ autotests = false # using a single test binary compiles faster
 
 [features]
 default = ["participation_metrics"]
-write_ssz_files = []  # Writes debugging .ssz files to /tmp during block processing.
-participation_metrics = []  # Exposes validator participation metrics to Prometheus.
-fork_from_env = [] # Initialise the harness chain spec from the FORK_NAME env variable
+write_ssz_files = []
+participation_metrics = []
+fork_from_env = []
 portable = ["bls/supranational-portable"]
 test_backfill = []
 

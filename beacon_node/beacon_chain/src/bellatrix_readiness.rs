@@ -2,7 +2,6 @@
 //! transition.
 
 use crate::{BeaconChain, BeaconChainError as Error, BeaconChainTypes};
-use execution_layer::eip8025::ProofEngine;
 use execution_layer::{BlockByNumberQuery, ForkchoiceState};
 use serde::{Deserialize, Serialize, Serializer};
 use std::fmt;

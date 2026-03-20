@@ -1255,12 +1255,8 @@ impl<E: EthSpec> BeaconProcessor<E> {
                         WorkType::BlobsByRootsRequest => work_queues.blob_broots_queue.len(),
                         WorkType::DataColumnsByRootsRequest => work_queues.dcbroots_queue.len(),
                         WorkType::DataColumnsByRangeRequest => work_queues.dcbrange_queue.len(),
-                        WorkType::ExecutionProofsByRangeRequest => {
-                            work_queues.epbrange_queue.len()
-                        }
-                        WorkType::ExecutionProofsByRootRequest => {
-                            work_queues.epbroots_queue.len()
-                        }
+                        WorkType::ExecutionProofsByRangeRequest => work_queues.epbrange_queue.len(),
+                        WorkType::ExecutionProofsByRootRequest => work_queues.epbroots_queue.len(),
                         WorkType::GossipBlsToExecutionChange => {
                             work_queues.gossip_bls_to_execution_change_queue.len()
                         }

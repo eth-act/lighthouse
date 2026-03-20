@@ -25,6 +25,8 @@ pub enum ProofEngineError {
     SerdeError(serde_json::Error),
     /// SSZ error.
     SszError(ssz_types::Error),
+    /// SSE stream error.
+    SseError(String),
     /// The specified fork is not supported.
     ForkNotSupported(String),
     /// The execution engine does not support the requested proof type.
@@ -112,6 +114,9 @@ impl fmt::Display for ProofEngineError {
             }
             ProofEngineError::SszError(err) => {
                 write!(f, "SSZ error: {}", err)
+            }
+            ProofEngineError::SseError(msg) => {
+                write!(f, "SSE stream error: {}", msg)
             }
             ProofEngineError::ForkNotSupported(fork) => {
                 write!(f, "Fork not supported: {}", fork)

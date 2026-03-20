@@ -1274,6 +1274,7 @@ async fn attestation_validator_receive_proposer_reward_and_withdrawals() {
 }
 
 #[tokio::test]
+#[allow(clippy::result_large_err)]
 async fn attestation_to_finalized_block() {
     let harness = get_harness(VALIDATOR_COUNT);
 

@@ -1,0 +1,72 @@
+name: zkboost-tests
+
+on:
+  push:
+    branches:
+      - stable
+      - staging
+      - trying
+      - 'pr/*'
+  pull_request:
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUSTFLAGS: "-D warnings -C debuginfo=0"
+  CARGO_INCREMENTAL: 0
+  TEST_FEATURES: portable
+  # Use Clang for C/C++ compilation. Required because leveldb-sys uses
+  # -Wthread-safety which is a Clang-only flag unsupported by GCC.
+  CC: clang
+  CXX: clang++
+
+jobs:
+  check-labels:
+    runs-on: ubuntu-latest
+    name: Check for 'skip-ci' label
+    outputs:
+      skip_ci: ${{ steps.set-output.outputs.SKIP_CI }}
+    steps:
+      - name: check for skip-ci label
+        id: set-output
+        env:
+          LABELS: ${{ toJson(github.event.pull_request.labels) }}
+        run: |
+          SKIP_CI="false"
+          if [ -z "${LABELS}" ]  || [ "${LABELS}" = "null" ]; then
+            LABELS="none";
+          else
+            LABELS=$(echo ${LABELS} | jq -r '.[].name')
+          fi
+          for label in ${LABELS}; do
+            if [ "$label" = "skip-ci" ]; then
+              SKIP_CI="true"
+              break
+            fi
+          done
+          echo "skip_ci=$SKIP_CI" >> $GITHUB_OUTPUT
+
+  zkboost-tests:
+    name: zkboost-tests
+    needs: [check-labels]
+    if: needs.check-labels.outputs.skip_ci != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install dependencies
+        run: sudo apt update && sudo apt install -y git gcc g++ make cmake pkg-config llvm-dev libclang-dev clang
+      - name: Get latest version of stable Rust
+        uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+          cache-target: release
+          bins: cargo-nextest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Clear stale leveldb-sys cmake cache
+        run: rm -rf target/release/build/leveldb-sys-*/out/build 2>/dev/null || true
+      - name: Run proof_engine_zkboost integration tests
+        run: make test-zkboost

@@ -560,6 +560,9 @@ impl<T: BeaconChainTypes> NetworkService<T> {
                     }
                 }
             }
+            NetworkEvent::PeerExecutionProofStatus { peer_id, status } => {
+                self.send_to_router(RouterMessage::PeerExecutionProofStatus { peer_id, status });
+            }
             NetworkEvent::NewListenAddr(multiaddr) => {
                 self.network_globals
                     .listen_multiaddrs

@@ -1,6 +1,7 @@
 use crate::{Error, block_hash::calculate_execution_block_hash, metrics};
 
 use crate::versioned_hashes::verify_versioned_hashes;
+use ssz_derive::Encode as SszEncode;
 use ssz_types::VariableList;
 use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
 use superstruct::superstruct;
@@ -16,7 +17,7 @@ use types::{
 
 #[superstruct(
     variants(Bellatrix, Capella, Deneb, Electra, Fulu, Gloas),
-    variant_attributes(derive(Clone, Debug, PartialEq, TreeHash),),
+    variant_attributes(derive(Clone, Debug, PartialEq, SszEncode, TreeHash),),
     map_into(ExecutionPayload),
     map_ref_into(ExecutionPayloadRef),
     cast_error(

@@ -1,7 +1,7 @@
 //! A collection of variables that are accessible outside of the network thread itself.
 use super::TopicConfig;
 use crate::peer_manager::peerdb::PeerDB;
-use crate::rpc::{MetaData, MetaDataV3};
+use crate::rpc::{MetaData, MetaDataV3, methods::ExecutionProofStatus};
 use crate::types::{BackFillState, SyncState};
 use crate::{Client, Enr, GossipTopic, Multiaddr, NetworkConfig, PeerId};
 use eth2::lighthouse::sync_state::CustodyBackFillState;
@@ -24,6 +24,13 @@ pub struct NetworkGlobals<E: EthSpec> {
     pub peers: RwLock<PeerDB<E>>,
     // The local meta data of our node.
     pub local_metadata: RwLock<MetaData<E>>,
+    /// The local execution proof status of our node.
+    ///
+    /// Updated via `set_local_execution_proof_status` whenever the beacon chain
+    /// successfully verifies an execution proof (see `verify_execution_proof` in
+    /// `beacon_chain.rs`). Sent to peers during `ExecutionProofStatus` RPC exchanges
+    /// so they can use our status for peer selection.
+    pub local_execution_proof_status: RwLock<ExecutionProofStatus>,
     /// The current gossipsub topic subscriptions.
     pub gossipsub_subscriptions: RwLock<HashSet<GossipTopic>>,
     /// The current sync status of the node.
@@ -90,6 +97,7 @@ impl<E: EthSpec> NetworkGlobals<E> {
             peer_id: RwLock::new(enr.peer_id()),
             listen_multiaddrs: RwLock::new(Vec::new()),
             local_metadata: RwLock::new(local_metadata),
+            local_execution_proof_status: RwLock::new(ExecutionProofStatus::default()),
             peers: RwLock::new(PeerDB::new(trusted_peers, disable_peer_scoring)),
             gossipsub_subscriptions: RwLock::new(HashSet::new()),
             sync_state: RwLock::new(SyncState::Stalled),
@@ -184,6 +192,16 @@ impl<E: EthSpec> NetworkGlobals<E> {
 
     pub fn trusted_peers(&self) -> Vec<PeerId> {
         self.peers.read().trusted_peers()
+    }
+
+    /// Returns the local execution proof status.
+    pub fn local_execution_proof_status(&self) -> ExecutionProofStatus {
+        *self.local_execution_proof_status.read()
+    }
+
+    /// Updates the local execution proof status.
+    pub fn set_local_execution_proof_status(&self, status: ExecutionProofStatus) {
+        *self.local_execution_proof_status.write() = status;
     }
 
     /// Updates the syncing state of the node.

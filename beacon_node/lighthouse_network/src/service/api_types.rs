@@ -1,4 +1,6 @@
-use crate::rpc::methods::{ResponseTermination, RpcResponse, RpcSuccessResponse, StatusMessage};
+use crate::rpc::methods::{
+    ExecutionProofStatus, ResponseTermination, RpcResponse, RpcSuccessResponse, StatusMessage,
+};
 use libp2p::PeerId;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
@@ -35,6 +37,8 @@ pub enum SyncRequestId {
     ExecutionProofsByRange(ExecutionProofsByRangeRequestId),
     /// Execution proofs by root request
     ExecutionProofsByRoot(ExecutionProofsByRootRequestId),
+    /// Execution proof status request
+    ExecutionProofStatus(ExecutionProofStatusRequestId),
 }
 
 /// Request ID for data_columns_by_root requests. Block lookups do not issue this request directly.
@@ -89,6 +93,12 @@ pub struct ExecutionProofsByRangeRequestId {
 /// Request ID for execution_proofs_by_root requests.
 #[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
 pub struct ExecutionProofsByRootRequestId {
+    pub id: Id,
+}
+
+/// Request ID for execution_proof_status requests.
+#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
+pub struct ExecutionProofStatusRequestId {
     pub id: Id,
 }
 
@@ -193,6 +203,8 @@ pub enum Response<E: EthSpec> {
     ExecutionProofsByRange(Option<Arc<SignedExecutionProof>>),
     /// A response to a get EXECUTION_PROOFS_BY_ROOT request. A None response signals end of batch.
     ExecutionProofsByRoot(Option<Arc<SignedExecutionProof>>),
+    /// A response to an EXECUTION_PROOF_STATUS request.
+    ExecutionProofStatus(ExecutionProofStatus),
 }
 
 impl<E: EthSpec> std::convert::From<Response<E>> for RpcResponse<E> {
@@ -240,16 +252,15 @@ impl<E: EthSpec> std::convert::From<Response<E>> for RpcResponse<E> {
             },
             Response::ExecutionProofsByRange(r) => match r {
                 Some(p) => RpcResponse::Success(RpcSuccessResponse::ExecutionProofsByRange(p)),
-                None => {
-                    RpcResponse::StreamTermination(ResponseTermination::ExecutionProofsByRange)
-                }
+                None => RpcResponse::StreamTermination(ResponseTermination::ExecutionProofsByRange),
             },
             Response::ExecutionProofsByRoot(r) => match r {
                 Some(p) => RpcResponse::Success(RpcSuccessResponse::ExecutionProofsByRoot(p)),
-                None => {
-                    RpcResponse::StreamTermination(ResponseTermination::ExecutionProofsByRoot)
-                }
+                None => RpcResponse::StreamTermination(ResponseTermination::ExecutionProofsByRoot),
             },
+            Response::ExecutionProofStatus(s) => {
+                RpcResponse::Success(RpcSuccessResponse::ExecutionProofStatus(s))
+            }
         }
     }
 }
@@ -269,6 +280,7 @@ macro_rules! impl_display {
 // not losing information
 impl_display!(ExecutionProofsByRangeRequestId, "ExecProofsByRange/{}", id);
 impl_display!(ExecutionProofsByRootRequestId, "ExecProofsByRoot/{}", id);
+impl_display!(ExecutionProofStatusRequestId, "ExecProofStatus/{}", id);
 impl_display!(BlocksByRangeRequestId, "{}/{}", id, parent_request_id);
 impl_display!(BlobsByRangeRequestId, "{}/{}", id, parent_request_id);
 impl_display!(DataColumnsByRangeRequestId, "{}/{}", id, parent_request_id);

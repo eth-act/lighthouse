@@ -10,6 +10,7 @@ alloy-primitives = { workspace = true }
 alloy-rlp = { workspace = true }
 alloy-rpc-types-eth = { workspace = true }
 arc-swap = "1.6.0"
+async-stream = { workspace = true }
 async-trait = "0.1"
 bls = { workspace = true }
 builder_client = { path = "../builder_client" }
@@ -17,8 +18,10 @@ bytes = { workspace = true }
 eth2 = { workspace = true, features = ["events", "lighthouse"] }
 ethereum_serde_utils = { workspace = true }
 ethereum_ssz = { workspace = true }
+ethereum_ssz_derive = { workspace = true }
 fixed_bytes = { workspace = true }
 fork_choice = { workspace = true }
+futures = { workspace = true }
 hash-db = "0.15.2"
 hash256-std-hasher = "0.15.2"
 hex = { workspace = true }
@@ -33,6 +36,7 @@ parking_lot = { workspace = true }
 pretty_reqwest_error = { workspace = true }
 rand = { workspace = true }
 reqwest = { workspace = true }
+reqwest-eventsource = { workspace = true }
 sensitive_url = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -40,6 +44,7 @@ sha2 = { workspace = true }
 slot_clock = { workspace = true }
 ssz_types = { workspace = true }
 state_processing = { workspace = true }
+store = { workspace = true }
 strum = { workspace = true }
 superstruct = { workspace = true }
 task_executor = { workspace = true }

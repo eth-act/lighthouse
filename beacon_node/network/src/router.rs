@@ -12,6 +12,7 @@ use crate::sync::SyncMessage;
 use beacon_chain::{BeaconChain, BeaconChainTypes};
 use beacon_processor::{BeaconProcessorSend, DuplicateCache};
 use futures::prelude::*;
+use lighthouse_network::rpc::methods::ExecutionProofStatus;
 use lighthouse_network::rpc::*;
 use lighthouse_network::{
     MessageId, NetworkGlobals, PeerId, PubsubMessage, Response,
@@ -24,8 +25,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, error, trace, warn};
-use types::{BlobSidecar, DataColumnSidecar, EthSpec, ForkContext, SignedBeaconBlock};
 use types::execution::eip8025::SignedExecutionProof;
+use types::{BlobSidecar, DataColumnSidecar, EthSpec, ForkContext, SignedBeaconBlock};
 
 /// Handles messages from the network and routes them to the appropriate service to be handled.
 pub struct Router<T: BeaconChainTypes> {
@@ -74,6 +75,11 @@ pub enum RouterMessage<E: EthSpec> {
     StatusPeer(PeerId),
     /// The peer has an updated custody group count from METADATA.
     PeerUpdatedCustodyGroupCount(PeerId),
+    /// A peer sent their `ExecutionProofStatus` as an inbound request body.
+    PeerExecutionProofStatus {
+        peer_id: PeerId,
+        status: ExecutionProofStatus,
+    },
 }
 
 impl<T: BeaconChainTypes> Router<T> {
@@ -180,6 +186,13 @@ impl<T: BeaconChainTypes> Router<T> {
             }
             RouterMessage::PubsubMessage(id, peer_id, gossip, should_process) => {
                 self.handle_gossip(id, peer_id, gossip, should_process);
+            }
+            RouterMessage::PeerExecutionProofStatus { peer_id, status } => {
+                self.send_to_sync(SyncMessage::RpcExecutionProofStatus {
+                    peer_id,
+                    request_id: None,
+                    status,
+                });
             }
         }
     }
@@ -329,10 +342,17 @@ impl<T: BeaconChainTypes> Router<T> {
                 self.on_data_columns_by_range_response(peer_id, app_request_id, data_column);
             }
             Response::ExecutionProofsByRange(execution_proof) => {
-                self.on_execution_proofs_by_range_response(peer_id, app_request_id, execution_proof);
+                self.on_execution_proofs_by_range_response(
+                    peer_id,
+                    app_request_id,
+                    execution_proof,
+                );
             }
             Response::ExecutionProofsByRoot(execution_proof) => {
                 self.on_execution_proofs_by_root_response(peer_id, app_request_id, execution_proof);
+            }
+            Response::ExecutionProofStatus(status) => {
+                self.on_execution_proof_status_response(peer_id, app_request_id, status);
             }
             // Light client responses should not be received
             Response::LightClientBootstrap(_)
@@ -799,6 +819,27 @@ impl<T: BeaconChainTypes> Router<T> {
             });
         } else {
             crit!("All execution proofs by root responses should belong to sync");
+        }
+    }
+
+    fn on_execution_proof_status_response(
+        &mut self,
+        peer_id: PeerId,
+        app_request_id: AppRequestId,
+        status: ExecutionProofStatus,
+    ) {
+        // `request_id` is `Some` here because this is an outbound response (the peer responded
+        // to our request). The `None` case is for inbound requests (the peer sent us their status
+        // unsolicited) and is handled via `RouterMessage::PeerExecutionProofStatus`.
+        if let AppRequestId::Sync(SyncRequestId::ExecutionProofStatus(request_id)) = app_request_id
+        {
+            self.send_to_sync(SyncMessage::RpcExecutionProofStatus {
+                peer_id,
+                request_id: Some(request_id),
+                status,
+            });
+        } else {
+            debug!(%peer_id, "ExecutionProofStatus response with unexpected request id");
         }
     }
 

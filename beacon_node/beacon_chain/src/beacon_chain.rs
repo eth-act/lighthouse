@@ -77,12 +77,12 @@ use crate::{
 use bls::{PublicKey, PublicKeyBytes, Signature};
 use eth2::beacon_response::ForkVersionedResponse;
 use eth2::types::{
-    EventKind, SseBlobSidecar, SseBlock, SseBlockFull, SseDataColumnSidecar,
-    SseExtendedPayloadAttributes,
+    EventKind, SseBlobSidecar, SseBlock, SseDataColumnSidecar, SseExtendedPayloadAttributes,
 };
+use execution_layer::eip8025::{PROOF_ENGINE_DB_KEY, PersistedProofEngineState};
 use execution_layer::{
     BlockProposalContents, BlockProposalContentsType, BuilderParams, ChainHealth, ExecutionLayer,
-    FailedCondition, MissingProofInfo, PayloadAttributes, PayloadStatus, eip8025::ProofEngine,
+    FailedCondition, MissingProofInfo, PayloadAttributes, PayloadStatus,
 };
 use fixed_bytes::FixedBytesExtended;
 use fork_choice::{
@@ -631,6 +631,32 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             fc_store,
             spec,
         )?))
+    }
+
+    /// Load persisted ProofEngine state from disk, returning `None` if not found or corrupt.
+    pub fn load_proof_engine_state(store: BeaconStore<T>) -> Option<PersistedProofEngineState> {
+        match store
+            .hot_db
+            .get_bytes(DBColumn::ProofEngine, PROOF_ENGINE_DB_KEY.as_slice())
+        {
+            Ok(Some(bytes)) => {
+                match PersistedProofEngineState::from_bytes(&bytes, store.get_config()) {
+                    Ok(persisted) => {
+                        tracing::info!("Loaded ProofEngine state from disk");
+                        Some(persisted)
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = ?e, "Failed to decode ProofEngine state from disk, starting fresh");
+                        None
+                    }
+                }
+            }
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(error = ?e, "Failed to read ProofEngine state from disk, starting fresh");
+                None
+            }
+        }
     }
 
     /// Persists `self.op_pool` to disk.
@@ -4316,9 +4342,6 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         payload_verification_status: PayloadVerificationStatus,
         current_slot: Slot,
     ) {
-        // TODO: Optimise this so we don't have to clone.
-        let beacon_block = Arc::unwrap_or_clone(signed_block.clone());
-        let (beacon_block, _) = beacon_block.deconstruct();
         let block = signed_block.message();
 
         // Only present some metrics for blocks from the previous epoch or later.
@@ -4360,21 +4383,6 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                     block: block_root,
                     execution_optimistic: payload_verification_status.is_optimistic(),
                 }));
-            }
-
-            // Emit BlockFull event if there are block_full subscribers
-            if event_handler.has_block_full_subscribers() {
-                let slot = block.slot();
-                // Convert BeaconBlockRef to owned BeaconBlock for the event
-                event_handler.register(EventKind::BlockFull(Box::new(ForkVersionedResponse {
-                    data: SseBlockFull {
-                        slot,
-                        block: beacon_block,
-                        execution_optimistic: payload_verification_status.is_optimistic(),
-                    },
-                    metadata: Default::default(),
-                    version: self.spec.fork_name_at_slot::<T::EthSpec>(slot),
-                })));
             }
         }
 
@@ -7502,7 +7510,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     pub async fn verify_execution_proof(
         self: &Arc<Self>,
         signed_proof: types::SignedExecutionProof,
-    ) -> Result<ProofStatus, Error> {
+    ) -> Result<(ProofStatus, Option<(Hash256, Slot)>), Error> {
         // TODO: This function clones the proof multiple times. Optimise it.
 
         // Clone for moving into closures
@@ -7567,7 +7575,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         // Step 3: Update the fork choice if the proof engine returns valid.
         // The proof engine returns valid if the proof is valid and the criteria for the associated block root to be considered valid are met.
         // The proof engine returns ACCEPTED if the proof is valid but block validity criteria are not met.
-        if verification_result.is_valid() {
+        if verification_result.is_valid() || verification_result.is_accepted() {
             let request_root = signed_proof.request_root();
 
             // Look up the beacon block root from request root
@@ -7602,19 +7610,28 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 ?request_root,
                 "Updated fork choice for verified proof"
             );
+
+            // Look up the slot so callers can update local execution proof status.
+            let slot = self
+                .store
+                .get_blinded_block(&block_root)
+                .ok()
+                .flatten()
+                .map(|b| b.slot());
+            return Ok((verification_result, slot.map(|s| (block_root, s))));
         }
 
-        Ok(verification_result)
+        Ok((verification_result, None))
     }
 }
 
 impl<T: BeaconChainTypes> Drop for BeaconChain<T> {
     fn drop(&mut self) {
         let drop = || -> Result<(), Error> {
-            // TODO: Persist the proof engine state if the BeaconChain is dropped.
             self.persist_fork_choice()?;
             self.persist_op_pool()?;
-            self.persist_custody_context()
+            self.persist_custody_context()?;
+            self.persist_proof_engine()
         };
 
         if let Err(e) = drop() {

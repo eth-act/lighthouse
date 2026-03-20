@@ -4,9 +4,9 @@ edition.workspace = true
 version.workspace = true
 
 [dependencies]
-simulator = { path = "../simulator", features = ["test-utils"] }
+anyhow = { workspace = true }
 network = { workspace = true, features = ["disable-backfill"] }
+simulator = { path = "../simulator", features = ["test-utils"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
-anyhow = { workspace = true }
 

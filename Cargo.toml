@@ -70,6 +70,7 @@ members = [
     "testing/execution_engine_integration",
     "testing/node_test_rig",
     "testing/proof_engine",
+    "testing/proof_engine_zkboost",
     "testing/simulator",
     "testing/state_transition_vectors",
     "testing/validator_test_rig",
@@ -108,6 +109,7 @@ alloy-signer-local = { version = "1", default-features = false }
 anyhow = "1"
 arbitrary = { version = "1", features = ["derive"] }
 async-channel = "1.9.0"
+async-stream = "0.3"
 axum = "0.7.7"
 beacon_chain = { path = "beacon_node/beacon_chain" }
 beacon_node = { path = "beacon_node" }
@@ -184,6 +186,7 @@ malloc_utils = { path = "common/malloc_utils" }
 maplit = "1"
 merkle_proof = { path = "consensus/merkle_proof" }
 metrics = { path = "common/metrics" }
+metrics-exporter-prometheus = "0.16"
 milhouse = { version = "0.9", default-features = false, features = ["context_deserialize"] }
 mockall = "0.13"
 mockall_double = "0.3"
@@ -214,8 +217,8 @@ reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "stream",
     "rustls-tls",
-    "native-tls-vendored",
 ] }
+reqwest-eventsource = "0.6"
 ring = "0.17"
 rpds = "0.11"
 rusqlite = { version = "0.28", features = ["bundled"] }
@@ -278,6 +281,8 @@ workspace_members = { path = "common/workspace_members" }
 xdelta3 = { git = "https://github.com/sigp/xdelta3-rs", rev = "4db64086bb02e9febb584ba93b9d16bb2ae3825a" }
 zeroize = { version = "1", features = ["zeroize_derive", "serde"] }
 zip = { version = "6.0", default-features = false, features = ["deflate"] }
+zkboost-server = { git = "https://github.com/eth-act/zkboost", branch = "master" }
+zkboost-types = { git = "https://github.com/eth-act/zkboost", branch = "master" }
 zstd = "0.13"
 
 [profile.maxperf]
@@ -292,3 +297,4 @@ debug = true
 
 [patch.crates-io]
 quick-protobuf = { git = "https://github.com/sigp/quick-protobuf.git", rev = "681f413312404ab6e51f0b46f39b0075c6f4ebfd" }
+quinn = { git = "https://github.com/sigp/quinn", rev = "59af87979c8411864c1cb68613222f54ed2930a7" }

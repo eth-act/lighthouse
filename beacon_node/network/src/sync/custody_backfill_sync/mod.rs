@@ -125,6 +125,7 @@ pub struct CustodyBackFillSync<T: BeaconChainTypes> {
     network_globals: Arc<NetworkGlobals<T::EthSpec>>,
 }
 
+#[cfg_attr(feature = "disable-backfill", allow(dead_code))]
 impl<T: BeaconChainTypes> CustodyBackFillSync<T> {
     pub fn new(
         beacon_chain: Arc<BeaconChain<T>>,
@@ -378,9 +379,7 @@ impl<T: BeaconChainTypes> CustodyBackFillSync<T> {
     /// Creates the next required batch from the chain. If there are no more batches required,
     /// `None` is returned.
     fn include_next_batch(&mut self) -> Option<BatchId> {
-        let Some(column_da_boundary) = self.beacon_chain.get_column_da_boundary() else {
-            return None;
-        };
+        let column_da_boundary = self.beacon_chain.get_column_da_boundary()?;
 
         // Skip all batches (Epochs) that don't have missing columns.
         for epoch in Epoch::range_inclusive_rev(self.to_be_downloaded, column_da_boundary) {

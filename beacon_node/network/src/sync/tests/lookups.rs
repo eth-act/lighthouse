@@ -109,6 +109,18 @@ impl TestRig {
 
         init_tracing();
 
+        let network_globals = beacon_processor.network_globals.clone();
+        let mut sync_manager = SyncManager::new(
+            chain,
+            network_tx,
+            beacon_processor.into(),
+            // Pass empty recv not tied to any tx
+            mpsc::unbounded_channel().1,
+            fork_context,
+        );
+        // In tests any non-zero gap triggers a range request, keeping slot advancement minimal.
+        sync_manager.proof_sync_mut().set_range_request_threshold(0);
+
         TestRig {
             beacon_processor_rx,
             beacon_processor_rx_queue: vec![],
@@ -117,15 +129,8 @@ impl TestRig {
             sync_rx,
             rng_08,
             rng,
-            network_globals: beacon_processor.network_globals.clone(),
-            sync_manager: SyncManager::new(
-                chain,
-                network_tx,
-                beacon_processor.into(),
-                // Pass empty recv not tied to any tx
-                mpsc::unbounded_channel().1,
-                fork_context,
-            ),
+            network_globals,
+            sync_manager,
             harness,
             fork_name,
             spec,
@@ -1979,9 +1984,7 @@ mod deneb_only {
 
     impl DenebTester {
         fn new(request_trigger: RequestTrigger) -> Option<Self> {
-            let Some(mut rig) = TestRig::test_setup_after_deneb_before_fulu() else {
-                return None;
-            };
+            let mut rig = TestRig::test_setup_after_deneb_before_fulu()?;
             let (block, blobs) = rig.rand_block_and_blobs(NumBlobs::Random);
             let mut block = Arc::new(block);
             let mut blobs = blobs.into_iter().map(Arc::new).collect::<Vec<_>>();

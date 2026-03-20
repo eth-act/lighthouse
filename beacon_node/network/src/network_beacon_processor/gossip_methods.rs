@@ -7,6 +7,7 @@ use crate::{
 use beacon_chain::blob_verification::{GossipBlobError, GossipVerifiedBlob};
 use beacon_chain::block_verification_types::AsBlock;
 use beacon_chain::data_column_verification::{GossipDataColumnError, GossipVerifiedDataColumn};
+use beacon_chain::events::{EventKind, SseExecutionProofValidated};
 use beacon_chain::store::Error;
 use beacon_chain::{
     AvailabilityProcessingStatus, BeaconChainError, BeaconChainTypes, BlockError, ForkChoiceError,
@@ -20,6 +21,7 @@ use beacon_chain::{
     validator_monitor::{get_block_delay_ms, get_slot_delay_ms},
 };
 use beacon_processor::{Work, WorkEvent};
+use lighthouse_network::rpc::methods::ExecutionProofStatus;
 use lighthouse_network::{Client, MessageAcceptance, MessageId, PeerAction, PeerId, ReportSource};
 use lighthouse_tracing::{
     SPAN_PROCESS_GOSSIP_BLOB, SPAN_PROCESS_GOSSIP_BLOCK, SPAN_PROCESS_GOSSIP_DATA_COLUMN,
@@ -1876,8 +1878,30 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         let proof_type = execution_proof.proof_type();
         let validator_index = execution_proof.validator_index();
 
+        // Extract the inner proof before moving execution_proof into verification.
+        let execution_proof_message = execution_proof.message.clone();
+
         // Verify the execution proof.
         let verification_result = self.chain.verify_execution_proof(execution_proof).await;
+
+        // If we have a execution proof subscriber we assume a validator will resign the proof and therefore we do not propagate this proof to peers.
+        // We will wait for the validator to sign and submit the proof for gossip.
+        let gossip_behaviour = if let Ok((proof_status, block)) = &verification_result
+            && (proof_status.is_valid() || proof_status.is_accepted())
+            && let Some(event_handler) = self.chain.event_handler.as_ref()
+            && event_handler.has_execution_proof_validated_subscribers()
+            && let Some((_block_root, slot)) = block
+        {
+            event_handler.register(EventKind::ExecutionProofValidated(
+                SseExecutionProofValidated {
+                    execution_proof: execution_proof_message,
+                    epoch: slot.epoch(T::EthSpec::slots_per_epoch()).as_u64(),
+                },
+            ));
+            MessageAcceptance::Ignore
+        } else {
+            MessageAcceptance::Accept
+        };
 
         match verification_result {
             // TODO: split our error types and penalize accordingly
@@ -1896,14 +1920,21 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     "invalid_execution_proof",
                 );
             }
-            Ok(ProofStatus::Valid) => {
+            Ok((ProofStatus::Valid, verified_block)) => {
                 debug!(
                     ?request_root,
                     validator_index, proof_type, "Execution proof is valid"
                 );
-                self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Accept);
+                if let Some((block_root, slot)) = verified_block {
+                    self.network_globals
+                        .set_local_execution_proof_status(ExecutionProofStatus {
+                            slot: slot.as_u64(),
+                            block_root,
+                        });
+                }
+                self.propagate_validation_result(message_id, peer_id, gossip_behaviour);
             }
-            Ok(ProofStatus::Invalid) => {
+            Ok((ProofStatus::Invalid, _)) => {
                 debug!(
                     ?request_root,
                     %peer_id,
@@ -1912,16 +1943,16 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                 self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Reject);
                 self.gossip_penalize_peer(peer_id, PeerAction::Fatal, "invalid_execution_proof");
             }
-            Ok(ProofStatus::Accepted) => {
+            Ok((ProofStatus::Accepted, _)) => {
                 debug!(
                     ?request_root,
                     validator_index,
                     proof_type,
                     "Execution proof is accepted but not fully verified"
                 );
-                self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Accept);
+                self.propagate_validation_result(message_id, peer_id, gossip_behaviour);
             }
-            Ok(ProofStatus::Syncing) => {
+            Ok((ProofStatus::Syncing, _)) => {
                 debug!(
                     ?request_root,
                     validator_index,
@@ -1931,7 +1962,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                 self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Ignore);
             }
             // TODO: Should we do this check earlier. This is a quick and cheap check, so it may be better to do it before the more expensive verification steps.
-            Ok(ProofStatus::NotSupported) => {
+            Ok((ProofStatus::NotSupported, _)) => {
                 debug!(
                     ?request_root,
                     validator_index, proof_type, "Execution proof type not supported"
@@ -1956,10 +1987,17 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
             Err(e) => {
                 debug!(%peer_id, error = ?e, "Error verifying RPC execution proof");
             }
-            Ok(ProofStatus::Valid) => {
+            Ok((ProofStatus::Valid, verified_block)) => {
                 debug!(%peer_id, "RPC execution proof valid");
+                if let Some((block_root, slot)) = verified_block {
+                    self.network_globals
+                        .set_local_execution_proof_status(ExecutionProofStatus {
+                            slot: slot.as_u64(),
+                            block_root,
+                        });
+                }
             }
-            Ok(ProofStatus::Invalid) => {
+            Ok((ProofStatus::Invalid, _)) => {
                 debug!(%peer_id, "RPC execution proof invalid, penalizing peer");
                 self.send_network_message(NetworkMessage::ReportPeer {
                     peer_id,
@@ -1968,13 +2006,13 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     msg: "invalid_rpc_execution_proof",
                 });
             }
-            Ok(ProofStatus::Accepted) => {
+            Ok((ProofStatus::Accepted, _)) => {
                 debug!(%peer_id, "RPC execution proof accepted");
             }
-            Ok(ProofStatus::NotSupported) => {
+            Ok((ProofStatus::NotSupported, _)) => {
                 debug!(%peer_id, "RPC execution proof type not supported by local engine");
             }
-            Ok(ProofStatus::Syncing) => {
+            Ok((ProofStatus::Syncing, _)) => {
                 debug!(%peer_id, "RPC execution proof received while block still syncing");
             }
         }

@@ -4,7 +4,6 @@
 //! This crate only provides useful functionality for "The Merge", it does not provide any of the
 //! deposit-contract functionality that the `beacon_node/eth1` crate already provides.
 
-use crate::eip8025::proof_engine::ProofEngine;
 use crate::json_structures::{BlobAndProofV1, BlobAndProofV2};
 use crate::payload_cache::PayloadCache;
 use arc_swap::ArcSwapOption;
@@ -70,6 +69,20 @@ pub mod payload_cache;
 mod payload_status;
 pub mod test_utils;
 pub mod versioned_hashes;
+
+/// Combine two optional results, preferring `Ok` values over `Err` values.
+///
+/// If both are `Some`, the first `Ok` is returned. If only one is `Ok`, that one wins.
+/// If both are `Err`, the first error is returned.
+fn prefer_ok<T, E>(a: Option<Result<T, E>>, b: Option<Result<T, E>>) -> Option<Result<T, E>> {
+    match (a, b) {
+        (Some(Ok(val)), _) => Some(Ok(val)),
+        (_, Some(Ok(val))) => Some(Ok(val)),
+        (some @ Some(_), _) => some,
+        (_, some @ Some(_)) => some,
+        (None, None) => None,
+    }
+}
 
 /// Indicates the default jwt authenticated execution endpoint.
 pub const DEFAULT_EXECUTION_ENDPOINT: &str = "http://localhost:8551/";
@@ -560,11 +573,28 @@ impl<E: EthSpec> ExecutionLayer<E> {
             None
         };
 
-        // Create ProofEngine if proof_engine_endpoint is provided
+        // Create ProofEngine if proof_engine_endpoint is provided.
+        // Mock URLs of the form "http://mock/{n}/" look up a pre-registered MockProofNodeClient
+        // from the global registry instead of opening a real HTTP connection — useful for tests
+        // and simulation.
         let proof_engine: Option<Arc<eip8025::HttpProofEngine>> =
             if let Some(proof_url) = proof_engine_endpoint {
-                debug!(endpoint = %proof_url, "Loaded proof engine endpoint");
-                Some(Arc::new(eip8025::HttpProofEngine::new(proof_url, None)))
+                if let Some(idx) = test_utils::parse_mock_index(proof_url.expose_full().as_str()) {
+                    let mock = test_utils::get_mock_proof_engine(idx).unwrap_or_else(|| {
+                        debug!(
+                            idx,
+                            "No pre-registered mock; creating MockProofNodeClient on the fly"
+                        );
+                        test_utils::register_mock_proof_engine(idx, 0)
+                    });
+                    debug!(idx, "Instantiating mock proof engine from registry");
+                    Some(Arc::new(eip8025::HttpProofEngine::with_proof_node(
+                        (*mock).clone(),
+                    )))
+                } else {
+                    debug!(endpoint = %proof_url, "Loaded proof engine endpoint");
+                    Some(Arc::new(eip8025::HttpProofEngine::new(proof_url, None)))
+                }
             } else {
                 None
             };
@@ -605,6 +635,15 @@ impl<E: EthSpec> ExecutionLayer<E> {
 
     pub fn proof_engine(&self) -> Option<Arc<eip8025::HttpProofEngine>> {
         self.inner.proof_engine.clone()
+    }
+
+    /// Subscribe to method-invocation events emitted by a mock proof node client.
+    ///
+    /// Returns `None` if no proof engine is configured or the client is a production HTTP client.
+    pub fn subscribe_proof_node_client_events(
+        &self,
+    ) -> Option<tokio::sync::broadcast::Receiver<test_utils::MockClientEvent>> {
+        self.inner.proof_engine.as_ref()?.subscribe_client_events()
     }
 
     pub fn builder(&self) -> Option<Arc<BuilderHttpClient>> {
@@ -1456,13 +1495,18 @@ impl<E: EthSpec> ExecutionLayer<E> {
         };
 
         let proof_engine_result = if let Some(proof_engine) = self.proof_engine() {
-            Some(Ok(proof_engine.new_payload(&new_payload_request).await?))
+            match proof_engine.new_payload(&new_payload_request).await {
+                Ok(status) => Some(Ok(status)),
+                Err(e) => {
+                    debug!(error = ?e, "Proof engine new_payload error (non-fatal)");
+                    None
+                }
+            }
         } else {
             None
         };
 
-        let result = engine_result
-            .or(proof_engine_result)
+        let result = prefer_ok(engine_result, proof_engine_result)
             .expect("at least one of engine or proof engine must be present");
 
         if let Ok(status) = &result {
@@ -1615,15 +1659,18 @@ impl<E: EthSpec> ExecutionLayer<E> {
         };
 
         let proof_engine_result = if let Some(proof_engine) = self.proof_engine() {
-            Some(Ok(proof_engine
-                .forkchoice_updated(forkchoice_state)
-                .await?))
+            match proof_engine.forkchoice_updated(forkchoice_state).await {
+                Ok(response) => Some(Ok(response)),
+                Err(e) => {
+                    debug!(error = ?e, "Proof engine forkchoice_updated error (non-fatal)");
+                    None
+                }
+            }
         } else {
             None
         };
 
-        let result = engine_result
-            .or(proof_engine_result)
+        let result = prefer_ok(engine_result, proof_engine_result)
             .expect("at least one of engine or proof engine must be present");
 
         if let Ok(status) = &result {
@@ -2344,16 +2391,14 @@ fn verify_builder_bid<E: EthSpec>(
         bid.data.message.value().to_i64(),
     );
 
-    let expected_withdrawals_root = payload_attributes
-        .withdrawals()
-        .ok()
-        .cloned()
-        .map(|withdrawals| {
+    let expected_withdrawals_root = match payload_attributes.withdrawals().ok().cloned() {
+        Some(withdrawals) => Some(
             Withdrawals::<E>::try_from(withdrawals)
                 .map_err(InvalidBuilderPayload::SszTypesError)
-                .map(|w| w.tree_hash_root())
-        })
-        .transpose()?;
+                .map(|w| w.tree_hash_root())?,
+        ),
+        None => None,
+    };
 
     let payload_withdrawals_root = header.withdrawals_root().ok();
     let expected_gas_limit = proposer_gas_limit

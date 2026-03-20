@@ -33,7 +33,9 @@
 //! needs to be searched for (i.e if an attestation references an unknown block) this manager can
 //! search for the block and subsequently search for parents if needed.
 
-use super::backfill_sync::{BackFillSync, ProcessResult, SyncStart};
+#[cfg(not(feature = "disable-backfill"))]
+use super::backfill_sync::SyncStart;
+use super::backfill_sync::{BackFillSync, ProcessResult};
 use super::block_lookups::BlockLookups;
 use super::network_context::{
     CustodyByRootResult, RangeBlockComponent, RangeRequestId, RpcEvent, SyncNetworkContext,
@@ -57,11 +59,13 @@ use beacon_chain::{
 use futures::StreamExt;
 use lighthouse_network::SyncInfo;
 use lighthouse_network::rpc::RPCError;
+use lighthouse_network::rpc::methods::ExecutionProofStatus;
 use lighthouse_network::service::api_types::{
     BlobsByRangeRequestId, BlocksByRangeRequestId, ComponentsByRangeRequestId,
     CustodyBackFillBatchRequestId, CustodyBackfillBatchId, CustodyRequester,
     DataColumnsByRangeRequestId, DataColumnsByRangeRequester, DataColumnsByRootRequestId,
-    DataColumnsByRootRequester, Id, SingleLookupReqId, SyncRequestId,
+    DataColumnsByRootRequester, ExecutionProofStatusRequestId, Id, SingleLookupReqId,
+    SyncRequestId,
 };
 use lighthouse_network::types::{NetworkGlobals, SyncState};
 use lighthouse_network::{PeerAction, PeerId};
@@ -141,6 +145,15 @@ pub enum SyncMessage<E: EthSpec> {
         execution_proof: Option<Arc<SignedExecutionProof>>,
     },
 
+    /// An ExecutionProofStatus response has been received from the RPC (outbound),
+    /// or a peer has sent us their status in an inbound request body.
+    /// `request_id` is `None` for the inbound (peer-initiated) case.
+    RpcExecutionProofStatus {
+        peer_id: PeerId,
+        request_id: Option<ExecutionProofStatusRequestId>,
+        status: ExecutionProofStatus,
+    },
+
     /// A block with an unknown parent has been received.
     UnknownParentBlock(PeerId, Arc<SignedBeaconBlock<E>>, Hash256),
 
@@ -188,6 +201,7 @@ pub enum SyncMessage<E: EthSpec> {
 
 /// The type of processing specified for a received block.
 #[derive(Debug, Clone)]
+#[allow(clippy::enum_variant_names)]
 pub enum BlockProcessType {
     SingleBlock { id: Id },
     SingleBlob { id: Id },
@@ -390,36 +404,18 @@ impl<T: BeaconChainTypes> SyncManager<T> {
     }
 
     #[cfg(test)]
-    pub(crate) fn proof_sync_state(&self) -> super::proof_sync::ProofSyncState {
-        self.proof_sync.state()
+    pub(crate) fn proof_sync(&self) -> &super::proof_sync::ProofSync<T> {
+        &self.proof_sync
     }
 
     #[cfg(test)]
-    pub(crate) fn proof_sync_in_flight_count(&self) -> usize {
-        self.proof_sync.in_flight_count()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn set_proof_sync_missing(
-        &mut self,
-        missing: Vec<execution_layer::MissingProofInfo>,
-    ) {
-        self.proof_sync.test_missing_proofs = Some(missing);
+    pub(crate) fn proof_sync_mut(&mut self) -> &mut super::proof_sync::ProofSync<T> {
+        &mut self.proof_sync
     }
 
     #[cfg(test)]
     pub(crate) fn start_proof_sync(&mut self) {
-        self.proof_sync.start();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn pause_proof_sync(&mut self) {
-        self.proof_sync.pause();
-    }
-
-    #[cfg(test)]
-    pub(crate) fn force_proof_sync_fill_mode(&mut self) {
-        self.proof_sync.enter_fill_mode_for_testing();
+        self.proof_sync.start(&mut self.network);
     }
 
     fn network_globals(&self) -> &NetworkGlobals<T::EthSpec> {
@@ -475,6 +471,10 @@ impl<T: BeaconChainTypes> SyncManager<T> {
                     }
                 }
             }
+        }
+
+        if self.network.is_proof_capable_peer(&peer_id) {
+            self.proof_sync.add_peer(peer_id, &mut self.network);
         }
 
         self.update_sync_state();
@@ -559,9 +559,15 @@ impl<T: BeaconChainTypes> SyncManager<T> {
             }
             SyncRequestId::ExecutionProofsByRange(req_id) => {
                 debug!(%peer_id, ?req_id, "Execution proofs by range request failed");
+                self.proof_sync.on_range_request_error(&req_id);
             }
             SyncRequestId::ExecutionProofsByRoot(req_id) => {
                 debug!(%peer_id, ?req_id, "Execution proofs by root request failed");
+                self.proof_sync.on_root_request_error(&req_id);
+            }
+            SyncRequestId::ExecutionProofStatus(id) => {
+                self.proof_sync
+                    .on_peer_execution_proof_status_error(peer_id, id);
             }
         }
     }
@@ -582,6 +588,7 @@ impl<T: BeaconChainTypes> SyncManager<T> {
         self.range_sync.peer_disconnect(&mut self.network, peer_id);
         let _ = self.backfill_sync.peer_disconnected(peer_id);
         self.block_lookups.peer_disconnected(peer_id);
+        self.proof_sync.on_proof_capable_peer_disconnected(peer_id);
 
         // Regardless of the outcome, we update the sync status.
         self.update_sync_state();
@@ -671,6 +678,7 @@ impl<T: BeaconChainTypes> SyncManager<T> {
                     // If we synced a peer between status messages, most likely the peer has
                     // advanced and will produce a head chain on re-status. Otherwise it will shift
                     // to being synced
+                    #[cfg_attr(feature = "disable-backfill", allow(unused_mut))]
                     let mut sync_state = {
                         let head = self.chain.best_slot();
                         let current_slot = self.chain.slot().unwrap_or_else(|_| Slot::new(0));
@@ -791,7 +799,7 @@ impl<T: BeaconChainTypes> SyncManager<T> {
             if new_state.is_synced() && !old_state.is_synced() {
                 self.network.subscribe_core_topics();
                 if self.network_globals().config.enable_execution_proof {
-                    self.proof_sync.start();
+                    self.proof_sync.start(&mut self.network);
                 }
             }
         }
@@ -906,6 +914,14 @@ impl<T: BeaconChainTypes> SyncManager<T> {
                 execution_proof,
             } => {
                 self.rpc_execution_proof_received(sync_request_id, peer_id, execution_proof);
+            }
+            SyncMessage::RpcExecutionProofStatus {
+                peer_id,
+                request_id,
+                status,
+            } => {
+                self.proof_sync
+                    .on_peer_execution_proof_status(peer_id, request_id, status);
             }
             SyncMessage::UnknownParentBlock(peer_id, block, block_root) => {
                 let block_slot = block.slot();
@@ -1270,11 +1286,9 @@ impl<T: BeaconChainTypes> SyncManager<T> {
             // Stream termination: clean up tracking map entry.
             match &sync_request_id {
                 SyncRequestId::ExecutionProofsByRange(id) => {
-                    self.network.on_execution_proofs_by_range_terminated(id);
                     self.proof_sync.on_range_request_terminated(id);
                 }
                 SyncRequestId::ExecutionProofsByRoot(id) => {
-                    self.network.on_execution_proofs_by_root_terminated(id);
                     self.proof_sync.on_request_terminated(id);
                 }
                 other => {

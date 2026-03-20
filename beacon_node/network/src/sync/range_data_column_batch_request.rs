@@ -71,9 +71,7 @@ impl<T: BeaconChainTypes> RangeDataColumnBatchRequest<T> {
         let mut column_to_peer_id: HashMap<u64, PeerId> = HashMap::new();
 
         for req in self.requests.values() {
-            let Some(columns) = req.to_finished() else {
-                return None;
-            };
+            let columns = req.to_finished()?;
 
             for column in columns {
                 received_columns_for_slot

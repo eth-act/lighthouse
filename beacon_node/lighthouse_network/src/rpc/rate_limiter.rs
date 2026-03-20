@@ -117,6 +117,8 @@ pub struct RPCRateLimiter {
     ep_by_range_rl: Limiter<PeerId>,
     /// ExecutionProofsByRoot rate limiter.
     ep_by_root_rl: Limiter<PeerId>,
+    /// ExecutionProofStatus rate limiter.
+    ep_status_rl: Limiter<PeerId>,
     fork_context: Arc<ForkContext>,
 }
 
@@ -164,6 +166,8 @@ pub struct RPCRateLimiterBuilder {
     ep_by_range_quota: Option<Quota>,
     /// Quota for the ExecutionProofsByRoot protocol.
     ep_by_root_quota: Option<Quota>,
+    /// Quota for the ExecutionProofStatus protocol.
+    ep_status_quota: Option<Quota>,
 }
 
 impl RPCRateLimiterBuilder {
@@ -187,6 +191,7 @@ impl RPCRateLimiterBuilder {
             Protocol::LightClientUpdatesByRange => self.lc_updates_by_range_quota = q,
             Protocol::ExecutionProofsByRange => self.ep_by_range_quota = q,
             Protocol::ExecutionProofsByRoot => self.ep_by_root_quota = q,
+            Protocol::ExecutionProofStatus => self.ep_status_quota = q,
         }
         self
     }
@@ -239,6 +244,10 @@ impl RPCRateLimiterBuilder {
             .ep_by_root_quota
             .ok_or("ExecutionProofsByRoot quota not specified")?;
 
+        let ep_status_quota = self
+            .ep_status_quota
+            .ok_or("ExecutionProofStatus quota not specified")?;
+
         // create the rate limiters
         let ping_rl = Limiter::from_quota(ping_quota)?;
         let metadata_rl = Limiter::from_quota(metadata_quota)?;
@@ -256,6 +265,7 @@ impl RPCRateLimiterBuilder {
         let lc_updates_by_range_rl = Limiter::from_quota(lc_updates_by_range_quota)?;
         let ep_by_range_rl = Limiter::from_quota(ep_by_range_quota)?;
         let ep_by_root_rl = Limiter::from_quota(ep_by_root_quota)?;
+        let ep_status_rl = Limiter::from_quota(ep_status_quota)?;
 
         // check for peers to prune every 30 seconds, starting in 30 seconds
         let prune_every = tokio::time::Duration::from_secs(30);
@@ -281,6 +291,7 @@ impl RPCRateLimiterBuilder {
             lc_updates_by_range_rl,
             ep_by_range_rl,
             ep_by_root_rl,
+            ep_status_rl,
             init_time: Instant::now(),
             fork_context,
         })
@@ -336,6 +347,7 @@ impl RPCRateLimiter {
             light_client_updates_by_range_quota,
             execution_proofs_by_range_quota,
             execution_proofs_by_root_quota,
+            execution_proof_status_quota,
         } = config;
 
         Self::builder()
@@ -362,8 +374,15 @@ impl RPCRateLimiter {
                 Protocol::LightClientUpdatesByRange,
                 light_client_updates_by_range_quota,
             )
-            .set_quota(Protocol::ExecutionProofsByRange, execution_proofs_by_range_quota)
-            .set_quota(Protocol::ExecutionProofsByRoot, execution_proofs_by_root_quota)
+            .set_quota(
+                Protocol::ExecutionProofsByRange,
+                execution_proofs_by_range_quota,
+            )
+            .set_quota(
+                Protocol::ExecutionProofsByRoot,
+                execution_proofs_by_root_quota,
+            )
+            .set_quota(Protocol::ExecutionProofStatus, execution_proof_status_quota)
             .build(fork_context)
     }
 
@@ -404,6 +423,7 @@ impl RPCRateLimiter {
             Protocol::LightClientUpdatesByRange => &mut self.lc_updates_by_range_rl,
             Protocol::ExecutionProofsByRange => &mut self.ep_by_range_rl,
             Protocol::ExecutionProofsByRoot => &mut self.ep_by_root_rl,
+            Protocol::ExecutionProofStatus => &mut self.ep_status_rl,
         };
         check(limiter)
     }
@@ -430,6 +450,7 @@ impl RPCRateLimiter {
             lc_updates_by_range_rl,
             ep_by_range_rl,
             ep_by_root_rl,
+            ep_status_rl,
             fork_context: _,
         } = self;
 
@@ -449,6 +470,7 @@ impl RPCRateLimiter {
         lc_updates_by_range_rl.prune(time_since_start);
         ep_by_range_rl.prune(time_since_start);
         ep_by_root_rl.prune(time_since_start);
+        ep_status_rl.prune(time_since_start);
     }
 }
 

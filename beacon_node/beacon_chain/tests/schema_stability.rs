@@ -107,7 +107,7 @@ fn check_db_columns() {
     let expected_columns = vec![
         "bma", "blk", "blb", "bdc", "bdi", "ste", "hsd", "hsn", "bsn", "bsd", "bss", "bs3", "bcs",
         "bst", "exp", "bch", "opo", "etc", "frk", "pkc", "brp", "bsx", "bsr", "bbx", "bbr", "bhr",
-        "brm", "dht", "cus", "otb", "bhs", "olc", "lcu", "scb", "scm", "dmy",
+        "brm", "dht", "cus", "otb", "bhs", "olc", "lcu", "scb", "scm", "dmy", "prf",
     ];
     assert_eq!(expected_columns, current_columns);
 }
