@@ -2109,12 +2109,11 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                 );
 
                 // Layer A: record valid proof for IGNORE-2 dedup.
-                self.chain
-                    .observed_execution_proofs
-                    .write()
-                    .observe_valid_proof(request_root, proof_type);
-
                 if let Some((block_root, slot)) = verified_block {
+                    self.chain
+                        .observed_execution_proofs
+                        .write()
+                        .observe_valid_proof(request_root, proof_type, slot);
                     self.network_globals
                         .set_local_execution_proof_status(ExecutionProofStatus {
                             slot: slot.as_u64(),
@@ -2153,7 +2152,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     "invalid_execution_proof",
                 );
             }
-            Ok((ProofStatus::Accepted, _)) => {
+            Ok((ProofStatus::Accepted, verified_block)) => {
                 debug!(
                     ?request_root,
                     validator_index,
@@ -2162,10 +2161,12 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                 );
 
                 // Layer A: record valid proof for IGNORE-2 dedup (accepted counts as valid).
-                self.chain
-                    .observed_execution_proofs
-                    .write()
-                    .observe_valid_proof(request_root, proof_type);
+                if let Some((_, slot)) = verified_block {
+                    self.chain
+                        .observed_execution_proofs
+                        .write()
+                        .observe_valid_proof(request_root, proof_type, slot);
+                }
 
                 self.propagate_validation_result(message_id, peer_id, gossip_behaviour);
             }

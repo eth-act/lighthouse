@@ -960,6 +960,13 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 .start_slot(T::EthSpec::slots_per_epoch()),
         );
 
+        self.observed_execution_proofs.write().prune(
+            new_view
+                .finalized_checkpoint
+                .epoch
+                .start_slot(T::EthSpec::slots_per_epoch()),
+        );
+
         if let Some(event_handler) = self.event_handler.as_ref()
             && event_handler.has_finalized_subscribers()
         {
