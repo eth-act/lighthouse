@@ -9,6 +9,7 @@ use crate::data_availability_checker::DataAvailabilityChecker;
 use crate::fork_choice_signal::ForkChoiceSignalTx;
 use crate::fork_revert::{reset_fork_choice_to_finalization, revert_to_fork_boundary};
 use crate::graffiti_calculator::{GraffitiCalculator, GraffitiOrigin};
+use crate::invalid_proof_tracker::InvalidProofTracker;
 use crate::kzg_utils::build_data_column_sidecars;
 use crate::light_client_server_cache::LightClientServerCache;
 use crate::migrate::{BackgroundMigrator, MigratorConfig};
@@ -1026,6 +1027,10 @@ where
             observed_proposer_slashings: <_>::default(),
             observed_attester_slashings: <_>::default(),
             observed_bls_to_execution_changes: <_>::default(),
+            observed_execution_proofs: <_>::default(),
+            invalid_proof_tracker: parking_lot::RwLock::new(InvalidProofTracker::load_from_store(
+                &store,
+            )),
             execution_layer: self.execution_layer.clone(),
             genesis_validators_root,
             genesis_time,

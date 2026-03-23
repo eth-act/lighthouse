@@ -1867,25 +1867,100 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
     }
 
     /// Process a signed execution proof received from the gossip network.
+    ///
+    /// Processing order (EIP-8025 peer scoring & validator tracking):
+    /// 1. Layer A — dedup check (IGNORE-2, IGNORE-3)
+    /// 2. Layer C — validator ban check (IGNORE if banned)
+    /// 3. BLS signature verification → Layer B error-differentiated penalties
+    /// 4. Proof engine verification → Layer B result-specific handling
+    /// 5. On `ProofStatus::Invalid` → record in Layer C, REJECT + MidTolerance
     pub async fn process_gossip_execution_proof(
         self: &Arc<Self>,
         message_id: MessageId,
         peer_id: PeerId,
         execution_proof: SignedExecutionProof,
     ) {
-        // Extract metadata for logging
+        // Extract metadata for logging and dedup checks.
         let request_root = execution_proof.request_root();
         let proof_type = execution_proof.proof_type();
         let validator_index = execution_proof.validator_index();
 
+        // Resolve the validator's public key from the pubkey cache.
+        // This is needed because tracking structures use pubkeys, not indices.
+        let Ok(Some(validator_pubkey)) =
+            self.chain.validator_pubkey_bytes(validator_index as usize)
+        else {
+            debug!(
+                validator_index,
+                "Ignoring execution proof: validator index not in pubkey cache"
+            );
+            self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Reject);
+            self.gossip_penalize_peer(
+                peer_id,
+                PeerAction::LowToleranceError,
+                "execution_proof_invalid_validator",
+            );
+            return;
+        };
+
+        // ── Layer A: Dedup check ────────────────────────────────────────────
+        {
+            use beacon_chain::observed_execution_proofs::ProofObservation;
+            let dedup = self.chain.observed_execution_proofs.read();
+            match dedup.check(request_root, proof_type, &validator_pubkey) {
+                ProofObservation::AlreadyHaveValidProof => {
+                    debug!(
+                        ?request_root,
+                        proof_type,
+                        "Ignoring execution proof: valid proof already received (IGNORE-2)"
+                    );
+                    self.propagate_validation_result(
+                        message_id,
+                        peer_id,
+                        MessageAcceptance::Ignore,
+                    );
+                    return;
+                }
+                ProofObservation::DuplicateFromValidator => {
+                    debug!(
+                        ?request_root,
+                        proof_type,
+                        validator_index,
+                        "Ignoring execution proof: duplicate from validator (IGNORE-3)"
+                    );
+                    self.propagate_validation_result(
+                        message_id,
+                        peer_id,
+                        MessageAcceptance::Ignore,
+                    );
+                    return;
+                }
+                ProofObservation::New => {} // proceed
+            }
+        }
+
+        // ── Layer C: Validator ban check ────────────────────────────────────
+        {
+            let tracker = self.chain.invalid_proof_tracker.read();
+            if tracker.is_banned(&validator_pubkey) {
+                debug!(
+                    ?request_root,
+                    validator_index, "Ignoring execution proof from banned validator"
+                );
+                self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Ignore);
+                return;
+            }
+        }
+
         // Extract the inner proof before moving execution_proof into verification.
         let execution_proof_message = execution_proof.message.clone();
 
-        // Verify the execution proof.
+        // ── Verify the execution proof (BLS + proof engine) ─────────────────
         let verification_result = self.chain.verify_execution_proof(execution_proof).await;
 
-        // If we have a execution proof subscriber we assume a validator will resign the proof and therefore we do not propagate this proof to peers.
-        // We will wait for the validator to sign and submit the proof for gossip.
+        // Determine gossip propagation behaviour for valid/accepted proofs.
+        // If we have an execution proof subscriber we assume a validator will re-sign the proof
+        // and therefore we do not propagate this proof to peers.
         let gossip_behaviour = if let Ok((proof_status, block)) = &verification_result
             && (proof_status.is_valid() || proof_status.is_accepted())
             && let Some(event_handler) = self.chain.event_handler.as_ref()
@@ -1903,28 +1978,142 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
             MessageAcceptance::Accept
         };
 
+        // ── Layer B: Error-differentiated peer scoring ──────────────────────
         match verification_result {
-            // TODO: split our error types and penalize accordingly
             Err(e) => {
-                warn!(
-                    ?request_root,
-                    validator_index,
-                    %peer_id,
-                    error = ?e,
-                    "Error verifying execution proof for gossip"
-                );
-                self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Reject);
-                self.gossip_penalize_peer(
-                    peer_id,
-                    PeerAction::HighToleranceError,
-                    "invalid_execution_proof",
-                );
+                use beacon_chain::BeaconChainError;
+                use beacon_chain::eip8025::ExecutionProofError;
+                use execution_layer::eip8025::ProofEngineError;
+
+                // Classify the error and assign appropriate peer action.
+                let (acceptance, peer_action, reason) = match &e {
+                    // Crypto failures → REJECT + LowTolerance
+                    BeaconChainError::ExecutionProofError(
+                        ExecutionProofError::InvalidSignature
+                        | ExecutionProofError::InvalidSignatureFormat
+                        | ExecutionProofError::InvalidValidatorPubkey
+                        | ExecutionProofError::EmptyProofData,
+                    ) => (
+                        MessageAcceptance::Reject,
+                        Some(PeerAction::LowToleranceError),
+                        "execution_proof_crypto_failure",
+                    ),
+
+                    // Invalid validator → REJECT + LowTolerance
+                    BeaconChainError::ExecutionProofError(
+                        ExecutionProofError::InvalidValidatorIndex,
+                    ) => (
+                        MessageAcceptance::Reject,
+                        Some(PeerAction::LowToleranceError),
+                        "execution_proof_invalid_validator",
+                    ),
+
+                    // Malformed proof (from proof engine) → REJECT + LowTolerance
+                    BeaconChainError::ExecutionProofError(
+                        ExecutionProofError::ProofEngineError(
+                            ProofEngineError::InvalidPayload(_)
+                            | ProofEngineError::InvalidHeaderFormat(_),
+                        ),
+                    ) => (
+                        MessageAcceptance::Reject,
+                        Some(PeerAction::LowToleranceError),
+                        "execution_proof_malformed",
+                    ),
+
+                    // Bad proof type → REJECT + MidTolerance
+                    BeaconChainError::ExecutionProofError(
+                        ExecutionProofError::ProofEngineError(ProofEngineError::InvalidProofType(
+                            _,
+                        )),
+                    ) => (
+                        MessageAcceptance::Reject,
+                        Some(PeerAction::MidToleranceError),
+                        "execution_proof_bad_type",
+                    ),
+
+                    // Local infra errors → IGNORE, no penalty
+                    BeaconChainError::ExecutionProofError(
+                        ExecutionProofError::ProofEngineError(
+                            ProofEngineError::Timeout
+                            | ProofEngineError::HttpClientError(_)
+                            | ProofEngineError::EngineUnavailable,
+                        )
+                        | ExecutionProofError::NoExecutionLayer
+                        | ExecutionProofError::StateError(_),
+                    ) => (
+                        MessageAcceptance::Ignore,
+                        None,
+                        "execution_proof_local_infra",
+                    ),
+
+                    // Unsupported → IGNORE, no penalty
+                    BeaconChainError::ExecutionProofError(
+                        ExecutionProofError::ProofEngineError(
+                            ProofEngineError::ProofTypeNotSupported(_)
+                            | ProofEngineError::ForkNotSupported(_),
+                        ),
+                    ) => (
+                        MessageAcceptance::Ignore,
+                        None,
+                        "execution_proof_unsupported",
+                    ),
+
+                    // Unknown state → IGNORE, no penalty
+                    BeaconChainError::ExecutionProofError(
+                        ExecutionProofError::UnknownRequestRoot(_)
+                        | ExecutionProofError::ProofEngineError(ProofEngineError::StateError(_)),
+                    ) => (
+                        MessageAcceptance::Ignore,
+                        None,
+                        "execution_proof_unknown_state",
+                    ),
+
+                    // Catch-all for non-ExecutionProofError beacon chain errors
+                    // (e.g. RuntimeShutdown, TokioJoin). No penalty.
+                    _ => (
+                        MessageAcceptance::Ignore,
+                        None,
+                        "execution_proof_internal_error",
+                    ),
+                };
+
+                if peer_action.is_some() {
+                    warn!(
+                        ?request_root,
+                        validator_index,
+                        %peer_id,
+                        error = ?e,
+                        reason,
+                        "Error verifying execution proof for gossip"
+                    );
+                } else {
+                    debug!(
+                        ?request_root,
+                        validator_index,
+                        %peer_id,
+                        error = ?e,
+                        reason,
+                        "Execution proof verification failed (local/infra)"
+                    );
+                }
+
+                self.propagate_validation_result(message_id, peer_id, acceptance);
+                if let Some(action) = peer_action {
+                    self.gossip_penalize_peer(peer_id, action, reason);
+                }
             }
             Ok((ProofStatus::Valid, verified_block)) => {
                 debug!(
                     ?request_root,
                     validator_index, proof_type, "Execution proof is valid"
                 );
+
+                // Layer A: record valid proof for IGNORE-2 dedup.
+                self.chain
+                    .observed_execution_proofs
+                    .write()
+                    .observe_valid_proof(request_root, proof_type);
+
                 if let Some((block_root, slot)) = verified_block {
                     self.network_globals
                         .set_local_execution_proof_status(ExecutionProofStatus {
@@ -1935,13 +2124,34 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                 self.propagate_validation_result(message_id, peer_id, gossip_behaviour);
             }
             Ok((ProofStatus::Invalid, _)) => {
-                debug!(
+                warn!(
                     ?request_root,
                     %peer_id,
-                    validator_index, proof_type, "Execution proof is invalid banning peer"
+                    validator_index,
+                    proof_type,
+                    "Execution proof is invalid — banning validator, penalizing relay peer"
                 );
+
+                // Layer C: record invalid proof and ban the signing validator.
+                {
+                    use beacon_chain::invalid_proof_tracker::InvalidProofRecord;
+                    self.chain
+                        .invalid_proof_tracker
+                        .write()
+                        .record_invalid_proof(InvalidProofRecord {
+                            validator_pubkey,
+                            request_root,
+                            proof_type,
+                        });
+                }
+
                 self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Reject);
-                self.gossip_penalize_peer(peer_id, PeerAction::Fatal, "invalid_execution_proof");
+                // MidTolerance instead of Fatal — relay peers don't choose what they forward.
+                self.gossip_penalize_peer(
+                    peer_id,
+                    PeerAction::LowToleranceError,
+                    "invalid_execution_proof",
+                );
             }
             Ok((ProofStatus::Accepted, _)) => {
                 debug!(
@@ -1950,6 +2160,13 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     proof_type,
                     "Execution proof is accepted but not fully verified"
                 );
+
+                // Layer A: record valid proof for IGNORE-2 dedup (accepted counts as valid).
+                self.chain
+                    .observed_execution_proofs
+                    .write()
+                    .observe_valid_proof(request_root, proof_type);
+
                 self.propagate_validation_result(message_id, peer_id, gossip_behaviour);
             }
             Ok((ProofStatus::Syncing, _)) => {
@@ -1961,7 +2178,6 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                 );
                 self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Ignore);
             }
-            // TODO: Should we do this check earlier. This is a quick and cheap check, so it may be better to do it before the more expensive verification steps.
             Ok((ProofStatus::NotSupported, _)) => {
                 debug!(
                     ?request_root,
@@ -1975,12 +2191,24 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
     /// Process an execution proof received via RPC.
     ///
     /// Runs the same BLS + proof engine verification as the gossip path, but without gossip
-    /// propagation. Penalizes the serving peer if the proof is invalid.
+    /// propagation or dedup checks (IGNORE rules are gossip-specific per spec).
+    /// Invalid proofs still feed the validator tracker (decision H5).
     pub async fn process_rpc_execution_proof(
         self: &Arc<Self>,
         peer_id: PeerId,
         execution_proof: SignedExecutionProof,
     ) {
+        let request_root = execution_proof.request_root();
+        let proof_type = execution_proof.proof_type();
+        let validator_index = execution_proof.validator_index();
+
+        // Resolve the validator's public key from the pubkey cache.
+        let validator_pubkey = self
+            .chain
+            .validator_pubkey_bytes(validator_index as usize)
+            .ok()
+            .flatten();
+
         let verification_result = self.chain.verify_execution_proof(execution_proof).await;
 
         match verification_result {
@@ -1998,10 +2226,33 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                 }
             }
             Ok((ProofStatus::Invalid, _)) => {
-                debug!(%peer_id, "RPC execution proof invalid, penalizing peer");
+                warn!(
+                    %peer_id,
+                    validator_index,
+                    ?request_root,
+                    proof_type,
+                    "RPC execution proof invalid — banning validator, penalizing peer"
+                );
+                // Layer C: record invalid proof from the validator (decision H5).
+                if let Some(validator_pubkey) = validator_pubkey {
+                    use beacon_chain::invalid_proof_tracker::InvalidProofRecord;
+                    self.chain
+                        .invalid_proof_tracker
+                        .write()
+                        .record_invalid_proof(InvalidProofRecord {
+                            validator_pubkey,
+                            request_root,
+                            proof_type,
+                        });
+                } else {
+                    warn!(
+                        validator_index,
+                        "Cannot ban validator: index not found in pubkey cache"
+                    );
+                }
                 self.send_network_message(NetworkMessage::ReportPeer {
                     peer_id,
-                    action: PeerAction::HighToleranceError,
+                    action: PeerAction::LowToleranceError,
                     source: ReportSource::SyncService,
                     msg: "invalid_rpc_execution_proof",
                 });

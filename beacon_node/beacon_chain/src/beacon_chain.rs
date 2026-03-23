@@ -34,6 +34,7 @@ use crate::execution_payload::{NotifyExecutionLayer, PreparePayloadHandle, get_e
 use crate::fetch_blobs::EngineGetBlobsOutput;
 use crate::fork_choice_signal::{ForkChoiceSignalRx, ForkChoiceSignalTx, ForkChoiceWaitResult};
 use crate::graffiti_calculator::{GraffitiCalculator, GraffitiSettings};
+use crate::invalid_proof_tracker::InvalidProofTracker;
 use crate::kzg_utils::reconstruct_blobs;
 use crate::light_client_finality_update_verification::{
     Error as LightClientFinalityUpdateError, VerifiedLightClientFinalityUpdate,
@@ -55,6 +56,7 @@ use crate::observed_attesters::{
 };
 use crate::observed_block_producers::ObservedBlockProducers;
 use crate::observed_data_sidecars::ObservedDataSidecars;
+use crate::observed_execution_proofs::ObservedExecutionProofs;
 use crate::observed_operations::{ObservationOutcome, ObservedOperations};
 use crate::observed_slashable::ObservedSlashable;
 use crate::persisted_beacon_chain::PersistedBeaconChain;
@@ -431,6 +433,10 @@ pub struct BeaconChain<T: BeaconChainTypes> {
     /// Maintains a record of which validators we've seen BLS to execution changes for.
     pub observed_bls_to_execution_changes:
         Mutex<ObservedOperations<SignedBlsToExecutionChange, T::EthSpec>>,
+    /// Deduplication cache for execution proofs.
+    pub observed_execution_proofs: RwLock<ObservedExecutionProofs>,
+    /// Persistent tracker of validators that signed invalid execution proofs.
+    pub invalid_proof_tracker: RwLock<InvalidProofTracker>,
     /// Interfaces with the execution client.
     pub execution_layer: Option<ExecutionLayer<T::EthSpec>>,
     /// Stores information about the canonical head and finalized/justified checkpoints of the
@@ -677,6 +683,13 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     }
 
     /// Persists the custody information to disk.
+    pub fn persist_invalid_proof_tracker(&self) -> Result<(), Error> {
+        self.invalid_proof_tracker
+            .read()
+            .persist_to_store(&self.store)
+            .map_err(Error::DBError)
+    }
+
     pub fn persist_custody_context(&self) -> Result<(), Error> {
         if !self.spec.is_peer_das_scheduled() {
             return Ok(());
@@ -7518,31 +7531,43 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         let signed_proof_for_bls = signed_proof.clone();
 
         // Use spawn_blocking_handle because BLS verification is cpu-bound.
-        self.spawn_blocking_handle(
-            move || {
-                let head = chain.canonical_head.cached_head();
-                let fork_name = chain.spec.fork_name_at_slot::<T::EthSpec>(head.head_slot());
+        // Returns the resolved validator_pubkey so it can be used for IGNORE-3 dedup below.
+        let validator_pubkey = self
+            .spawn_blocking_handle(
+                move || {
+                    let head = chain.canonical_head.cached_head();
+                    let fork_name = chain.spec.fork_name_at_slot::<T::EthSpec>(head.head_slot());
 
-                let validator_index = signed_proof_for_bls.validator_index as usize;
-                let head_state = &head.snapshot.beacon_state;
+                    let validator_index = signed_proof_for_bls.validator_index as usize;
+                    let head_state = &head.snapshot.beacon_state;
 
-                let validator_pubkey = head_state
-                    .validators()
-                    .get(validator_index)
-                    .map(|v| v.pubkey)
-                    .ok_or(ExecutionProofError::InvalidValidatorIndex)?;
+                    let validator_pubkey = head_state
+                        .validators()
+                        .get(validator_index)
+                        .map(|v| v.pubkey)
+                        .ok_or(ExecutionProofError::InvalidValidatorIndex)?;
 
-                verify_signed_execution_proof_signature::<T::EthSpec>(
-                    &signed_proof_for_bls,
-                    &validator_pubkey,
-                    fork_name,
-                    chain.genesis_validators_root,
-                    &chain.spec,
-                )
-            },
-            "verify_execution_proof_bls",
-        )
-        .await??;
+                    verify_signed_execution_proof_signature::<T::EthSpec>(
+                        &signed_proof_for_bls,
+                        &validator_pubkey,
+                        fork_name,
+                        chain.genesis_validators_root,
+                        &chain.spec,
+                    )?;
+                    Ok::<PublicKeyBytes, Error>(validator_pubkey)
+                },
+                "verify_execution_proof_bls",
+            )
+            .await??;
+
+        // Record IGNORE-3 dedup only after confirming the signature is valid.
+        self.observed_execution_proofs
+            .write()
+            .observe_verification_attempt(
+                signed_proof.request_root(),
+                signed_proof.message.proof_type,
+                validator_pubkey,
+            );
 
         // Step 2: ProofEngine verification
         // The proof engine must be configured if we are receiving execution proofs, so if it's not available then that's an error.
@@ -7631,7 +7656,8 @@ impl<T: BeaconChainTypes> Drop for BeaconChain<T> {
             self.persist_fork_choice()?;
             self.persist_op_pool()?;
             self.persist_custody_context()?;
-            self.persist_proof_engine()
+            self.persist_proof_engine()?;
+            self.persist_invalid_proof_tracker()
         };
 
         if let Err(e) = drop() {

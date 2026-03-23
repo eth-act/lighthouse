@@ -7,8 +7,6 @@ use types::{ExecutionBlockHash, Hash256};
 /// Errors that can occur during proof engine operations.
 #[derive(Debug)]
 pub enum ProofEngineError {
-    /// The proof format is invalid.
-    InvalidProofFormat(String),
     /// The proof type is invalid.
     InvalidProofType(String),
     /// The header format is invalid.
@@ -75,8 +73,6 @@ impl ProofEngineError {
 
 // JSON-RPC error codes for EIP-8025
 pub mod error_codes {
-    /// Invalid proof format - The execution proof structure is malformed
-    pub const INVALID_PROOF_FORMAT: i64 = -39001;
     /// Invalid header format - The new payload request header structure is malformed
     pub const INVALID_HEADER_FORMAT: i64 = -39002;
     /// Invalid payload - The execution payload is invalid
@@ -88,9 +84,6 @@ pub mod error_codes {
 impl fmt::Display for ProofEngineError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ProofEngineError::InvalidProofFormat(msg) => {
-                write!(f, "Invalid proof format: {}", msg)
-            }
             ProofEngineError::InvalidProofType(msg) => {
                 write!(f, "Invalid proof type: {}", msg)
             }
