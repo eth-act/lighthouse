@@ -21,6 +21,7 @@ impl Default for TestNetworkFixtureBuilder {
                 proof_generator_nodes: 0,
                 proof_verifier_nodes: 0,
                 extra_nodes: 0,
+                delayed_nodes: 0,
                 genesis_delay: 38,
             },
             logger_config: LoggerConfig::default(),

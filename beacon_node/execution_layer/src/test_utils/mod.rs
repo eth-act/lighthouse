@@ -77,7 +77,7 @@ mod handle_rpc;
 mod hook;
 mod mock_builder;
 mod mock_execution_layer;
-mod mock_proof_node_client;
+pub(crate) mod mock_proof_node_client;
 
 /// Configuration for the MockExecutionLayer.
 #[derive(Clone)]

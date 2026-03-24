@@ -30,7 +30,7 @@ pub const SYNC_COMMITTEE_BITFIELD_ENR_KEY: &str = "syncnets";
 /// The ENR field specifying the peerdas custody group count.
 pub const PEERDAS_CUSTODY_GROUP_COUNT_ENR_KEY: &str = "cgc";
 /// The ENR field indicating execution proof engine support.
-pub const EXECUTION_PROOF_ENR_KEY: &str = "ep";
+pub const EXECUTION_PROOF_ENR_KEY: &str = "eproof";
 
 /// Extension trait for ENR's within Eth2.
 pub trait Eth2Enr {

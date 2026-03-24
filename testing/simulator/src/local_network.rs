@@ -2,6 +2,7 @@ use crate::checks::epoch_delay;
 use beacon_chain::custody_context::NodeCustodyType;
 use kzg::trusted_setup::get_trusted_setup;
 use lighthouse_network::types::Enr;
+use network_utils::listen_addr::ListenAddress;
 use node_test_rig::{
     ClientConfig, ClientGenesis, LocalBeaconNode, LocalExecutionNode, LocalValidatorClient,
     MockExecutionConfig, ValidatorConfig, ValidatorFiles,
@@ -70,6 +71,7 @@ pub struct LocalNetworkParams {
     pub proof_generator_nodes: usize,
     pub proof_verifier_nodes: usize,
     pub extra_nodes: usize,
+    pub delayed_nodes: usize,
     pub genesis_delay: u64,
 }
 
@@ -106,6 +108,7 @@ fn default_client_config(network_params: LocalNetworkParams, genesis_time: u64) 
         + network_params.proof_generator_nodes
         + network_params.proof_verifier_nodes
         + network_params.extra_nodes
+        + network_params.delayed_nodes
         - 1;
     beacon_config.network.enr_address = (Some(Ipv4Addr::LOCALHOST), None);
     beacon_config.network.enable_light_client_server = true;
@@ -253,15 +256,21 @@ impl<E: EthSpec> LocalNetwork<E> {
         mut beacon_config: ClientConfig,
         mock_execution_config: MockExecutionConfig,
     ) -> Result<(LocalBeaconNode<E>, LocalExecutionNode<E>), String> {
+        let listen = ListenAddress::unused_v4_ports();
+        let v4 = listen.v4().expect("unused_v4_ports always returns V4");
+        beacon_config.network.set_ipv4_listening_address(
+            Ipv4Addr::UNSPECIFIED,
+            v4.tcp_port,
+            v4.disc_port,
+            v4.quic_port,
+        );
         beacon_config.network.discv5_config.table_filter = |_| true;
+        beacon_config.network.enr_udp4_port = std::num::NonZeroU16::new(v4.disc_port);
+        beacon_config.network.enr_tcp4_port = std::num::NonZeroU16::new(v4.tcp_port);
+        beacon_config.network.enr_quic4_port = std::num::NonZeroU16::new(v4.quic_port);
 
         // The boot node is a full data-availability node and should custody all columns from
-        // genesis. Setting Supernode ensures cgc = number_of_custody_groups from startup so
-        // no validator-registration-triggered cgc jump occurs. Without this, the first proposer
-        // preparation call from the validator client causes cgc to increase from
-        // spec.custody_requirement → number_of_custody_groups, which stamps
-        // earliest_available_slot = current_slot and prevents late-joining nodes from syncing
-        // from epoch 0.
+        // genesis. This ensures we have sufficient peers on each custody group.
         beacon_config.chain.node_custody_type = NodeCustodyType::Supernode;
 
         let execution_node = LocalExecutionNode::new(self.context.clone(), mock_execution_config);
@@ -284,7 +293,18 @@ impl<E: EthSpec> LocalNetwork<E> {
         mock_execution_config: MockExecutionConfig,
         node_type: NodeType,
     ) -> Result<(LocalBeaconNode<E>, Option<LocalExecutionNode<E>>), String> {
+        let listen = ListenAddress::unused_v4_ports();
+        let v4 = listen.v4().expect("unused_v4_ports always returns V4");
+        beacon_config.network.set_ipv4_listening_address(
+            Ipv4Addr::UNSPECIFIED,
+            v4.tcp_port,
+            v4.disc_port,
+            v4.quic_port,
+        );
         beacon_config.network.discv5_config.table_filter = |_| true;
+        beacon_config.network.enr_udp4_port = std::num::NonZeroU16::new(v4.disc_port);
+        beacon_config.network.enr_tcp4_port = std::num::NonZeroU16::new(v4.tcp_port);
+        beacon_config.network.enr_quic4_port = std::num::NonZeroU16::new(v4.quic_port);
         beacon_config.network.proposer_only = node_type.is_proposer();
 
         let execution_node = if node_type.requires_execution_node() {
@@ -307,11 +327,10 @@ impl<E: EthSpec> LocalNetwork<E> {
         };
 
         if node_type.requires_proof_node() {
-            // Subscribe to the execution_proof gossip topic and wire up the mock proof engine.
             beacon_config.network.enable_execution_proof = true;
-            // Index = current length of beacon_nodes (this node's future position in the list).
             let bn_idx = self.beacon_nodes.read().len();
-            execution_layer::test_utils::register_mock_proof_engine(bn_idx, 0);
+            let _: execution_layer::test_utils::MockProofNodeClient<E> =
+                execution_layer::test_utils::register_mock_proof_engine(bn_idx, 0);
             let mock_url =
                 SensitiveUrl::parse(&execution_layer::test_utils::mock_proof_engine_url(bn_idx))
                     .expect("mock URL is valid");
@@ -327,22 +346,12 @@ impl<E: EthSpec> LocalNetwork<E> {
 
         if node_type.is_proof_verifier() {
             beacon_config.chain.optimistic_finalized_sync = true;
-            beacon_config.network.boot_nodes_enr.push(self.proof_generator_enr().ok_or_else(|| {
-                "Proof verifier node requires a proof generator node to connect to, but no proof generator node found in the network".to_string()
-            })?);
         }
 
         // Construct beacon node using the config,
         let beacon_node = LocalBeaconNode::production(self.context.clone(), beacon_config).await?;
 
         Ok((beacon_node, execution_node))
-    }
-
-    pub fn proof_generator_enr(&self) -> Option<Enr> {
-        self.beacon_nodes
-            .read()
-            .last()
-            .and_then(|bn| bn.client.enr())
     }
 
     /// Returns the boot node's ENR once it has a valid (non-zero) TCP port, or an error if
@@ -359,13 +368,13 @@ impl<E: EthSpec> LocalNetwork<E> {
                 .read()
                 .first()
                 .and_then(|bn| bn.client.enr())
-                .filter(|e| e.tcp4().is_some_and(|p| p != 0))
+                .filter(|e| e.tcp4().is_some_and(|p| p != 0) && e.udp4().is_some_and(|p| p != 0))
             {
                 return Ok(Some(enr));
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        Err("Boot node ENR did not get a valid TCP port within 10 seconds".to_string())
+        Err("Boot node ENR did not get valid TCP and UDP ports within 10 seconds".to_string())
     }
 
     /// Adds a beacon node to the network, connecting to the 0'th beacon node via ENR.

@@ -36,6 +36,7 @@ mod test {
                 extra_nodes: 0,
                 proof_generator_nodes: 1,
                 proof_verifier_nodes: 1,
+                delayed_nodes: 0,
                 genesis_delay: 120,
             })
     }
@@ -57,15 +58,20 @@ mod test {
             .proof_generator_subscribe_client_events()
             .expect("proof generator node should expose a mock client event stream");
 
-        tokio::time::sleep(Duration::from_secs(60)).await;
-
-        // Drain and count ProofRequested events.
-        let mut proof_requests = 0usize;
-        while let Ok(event) = event_rx.try_recv() {
-            if matches!(event, MockClientEvent::ProofRequested { .. }) {
-                proof_requests += 1;
+        let proof_requests = tokio::time::timeout(Duration::from_secs(30), async {
+            let mut proof_request_count: u64 = 0;
+            loop {
+                if let Ok(MockClientEvent::ProofRequested { .. }) = event_rx.recv().await {
+                    proof_request_count += 1
+                }
+                if proof_request_count > 0 {
+                    break;
+                }
             }
-        }
+            proof_request_count
+        })
+        .await?;
+
         assert!(
             proof_requests > 0,
             "expected at least one proof request after 60s"
@@ -97,6 +103,7 @@ mod test {
             })
             .map_network_params(|params| {
                 params.proof_verifier_nodes = 0;
+                params.delayed_nodes = 1;
             })
             .with_log_level(LevelFilter::DEBUG)
             .with_log_dir("proof-engine-sync".into())
@@ -105,7 +112,7 @@ mod test {
         fixture.payloads_valid();
         fixture.wait_for_genesis().await?;
 
-        tokio::time::sleep(Duration::from_secs(60)).await;
+        tokio::time::sleep(Duration::from_secs(30)).await;
 
         // Now lets add a new proof verifier node and observe the sync behaviour.
         let net = fixture.network.clone();

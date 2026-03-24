@@ -212,6 +212,7 @@ pub fn run_basic_sim(matches: &ArgMatches) -> Result<(), String> {
                     genesis_delay,
                     proof_generator_nodes: 0,
                     proof_verifier_nodes: 0,
+                    delayed_nodes: 0,
                 },
                 context.clone(),
             ))
