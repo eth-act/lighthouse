@@ -1023,7 +1023,7 @@ fn test_proof_sync_fill_mode_no_peer_breaks() {
     );
 }
 
-/// Test 12: `on_request_terminated` removes the entry from `in_flight`.
+/// Test 12: `on_root_request_terminated` removes the entry from `in_flight`.
 #[test]
 fn test_proof_sync_on_request_terminated_clears_in_flight() {
     let mut rig = TestRig::test_setup();

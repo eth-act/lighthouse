@@ -1300,7 +1300,7 @@ impl<T: BeaconChainTypes> SyncManager<T> {
                     self.proof_sync.on_range_request_terminated(id);
                 }
                 SyncRequestId::ExecutionProofsByRoot(id) => {
-                    self.proof_sync.on_request_terminated(id);
+                    self.proof_sync.on_root_request_terminated(id);
                 }
                 other => {
                     debug!(%peer_id, ?other, "Unexpected sync_request_id for execution proof stream termination");

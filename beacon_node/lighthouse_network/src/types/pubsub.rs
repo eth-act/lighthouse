@@ -47,7 +47,7 @@ pub enum PubsubMessage<E: EthSpec> {
     /// Gossipsub message providing notification of a light client optimistic update.
     LightClientOptimisticUpdate(Box<LightClientOptimisticUpdate<E>>),
     /// EIP-8025: Gossipsub message providing notification of a signed execution proof.
-    ExecutionProof(Box<SignedExecutionProof>),
+    ExecutionProof(Arc<SignedExecutionProof>),
 }
 
 // Implements the `DataTransform` trait of gossipsub to employ snappy compression
@@ -396,7 +396,7 @@ impl<E: EthSpec> PubsubMessage<E> {
                         // itself is the gate.
                         let execution_proof = SignedExecutionProof::from_ssz_bytes(data)
                             .map_err(|e| format!("{:?}", e))?;
-                        Ok(PubsubMessage::ExecutionProof(Box::new(execution_proof)))
+                        Ok(PubsubMessage::ExecutionProof(Arc::new(execution_proof)))
                     }
                 }
             }

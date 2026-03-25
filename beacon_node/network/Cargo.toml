@@ -18,6 +18,7 @@ anyhow = { workspace = true }
 async-channel = { workspace = true }
 beacon_chain = { workspace = true }
 beacon_processor = { workspace = true }
+bls = { workspace = true }
 delay_map = { workspace = true }
 educe = { workspace = true }
 ethereum_ssz = { workspace = true }
@@ -50,7 +51,6 @@ typenum = { workspace = true }
 types = { workspace = true }
 
 [dev-dependencies]
-bls = { workspace = true }
 eth2 = { workspace = true }
 eth2_network_config = { workspace = true }
 genesis = { workspace = true }

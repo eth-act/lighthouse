@@ -1,11 +1,9 @@
-//! ProofSync: catch-up mechanism for EIP-8025 execution proofs.
+//! Catch-up mechanism for EIP-8025 execution proofs.
 //!
-//! Operates in three states: `Idle` (range sync active, no proof work), `Waiting(n)`
-//! (counting down n slot ticks after range sync completes before activating), and
-//! `Syncing` (proof catchup active). In `Syncing`, each poll computes the slot gap
-//! between the finalized epoch and the current head and chooses the most efficient
-//! strategy: a bulk `ExecutionProofsByRange` request for large gaps, or targeted
-//! `ExecutionProofsByRoot` requests when the gap is small.
+//! Defines [`ProofSync`], the subsystem responsible for requesting execution proofs
+//! that are missing from the local proof engine after block sync completes. It manages
+//! peer status tracking, decides between bulk range requests and targeted by-root
+//! requests, and coordinates the cooldown period between request batches.
 
 use super::network_context::{CachedExecutionProofStatus, SyncNetworkContext};
 use beacon_chain::{BeaconChain, BeaconChainTypes, WhenSlotSkipped};
@@ -19,7 +17,7 @@ use lighthouse_network::service::api_types::{
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::debug;
+use tracing::{debug, info};
 use types::{EthSpec, Hash256, Slot};
 
 /// Default slot gap above which a bulk `ExecutionProofsByRange` request is preferred over
@@ -61,9 +59,7 @@ pub enum ProofSyncState {
 /// responses are always processed regardless of state transitions — the proofs are valid
 /// independent of sync progress.
 pub struct ProofSync<T: BeaconChainTypes> {
-    /// The beacon chain.
     chain: Arc<BeaconChain<T>>,
-    /// The current state of the proof sync subsystem.
     state: ProofSyncState,
     /// Tracks the single in-flight `ExecutionProofsByRange` request (ID + serving peer).
     range_request: Option<RangeRequest>,
@@ -80,12 +76,19 @@ pub struct ProofSync<T: BeaconChainTypes> {
     /// Number of slot ticks to wait after `start()` or a range response before issuing
     /// the next `ExecutionProofsByRange` request.
     activation_slots: u64,
+    /// Suppresses repeated "no proof-capable peer" logs: set when the message is first
+    /// emitted, cleared when a peer becomes available.
+    logged_no_peer: bool,
     /// Injected missing-proof list for unit testing by-root behaviour.
     #[cfg(test)]
     pub test_missing_proofs: Option<Vec<MissingProofInfo>>,
 }
 
 impl<T: BeaconChainTypes> ProofSync<T> {
+    /// Creates a new `ProofSync` instance in the `Idle` state.
+    ///
+    /// `activation_slots` controls how many slot ticks to wait after `start()` or a
+    /// completed range response before issuing the next request batch.
     pub fn new(chain: Arc<BeaconChain<T>>, activation_slots: u64) -> Self {
         Self {
             state: ProofSyncState::Idle,
@@ -97,6 +100,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
             peer_statuses: HashMap::default(),
             status_in_flight: HashMap::default(),
             activation_slots,
+            logged_no_peer: false,
             #[cfg(test)]
             test_missing_proofs: None,
         }
@@ -139,7 +143,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
     /// slot ticks before activating. This delay allows the beacon processor to finish
     /// importing range sync blocks before proof requests go out.
     pub fn start(&mut self, cx: &mut SyncNetworkContext<T>) {
-        debug!(
+        info!(
             activation_slots = self.activation_slots,
             "ProofSync: starting, waiting before activation"
         );
@@ -159,14 +163,15 @@ impl<T: BeaconChainTypes> ProofSync<T> {
     /// Drive one polling cycle.
     ///
     /// In `Waiting`, counts down the activation delay. In `Syncing`, computes the slot
-    /// gap and dispatches either a range request (gap > `RANGE_REQUEST_THRESHOLD`) or
-    /// by-root fill requests (gap ≤ threshold). Waits if a range request is already
-    /// in-flight or peer status polls are pending.
+    /// gap and dispatches either a range request (gap > `range_request_threshold`) or
+    /// by-root fill requests (gap ≤ threshold). Does nothing if a range request is
+    /// already in-flight. Peer status refreshes run in the background and do not block
+    /// request dispatch.
     pub fn poll(&mut self, cx: &mut SyncNetworkContext<T>) {
         match self.state {
             ProofSyncState::Idle => return,
             ProofSyncState::Waiting(0) => {
-                debug!("ProofSync: activation delay elapsed, transitioning to Syncing");
+                info!("ProofSync: activation delay elapsed, transitioning to Syncing");
                 self.state = ProofSyncState::Syncing;
             }
             ProofSyncState::Waiting(ref mut n) => {
@@ -261,13 +266,15 @@ impl<T: BeaconChainTypes> ProofSync<T> {
     /// received proofs before the next request is issued.
     pub fn on_range_request_terminated(&mut self, id: &ExecutionProofsByRangeRequestId) {
         if self.range_request.as_ref().map(|r| &r.id) == Some(id) {
-            debug!("ProofSync: range stream complete, cooling down before next request");
+            info!("ProofSync: range stream complete, cooling down before next request");
             self.range_request = None;
             self.state = ProofSyncState::Waiting(self.activation_slots);
         }
     }
 
     /// Called when an `ExecutionProofsByRange` RPC request errors.
+    ///
+    /// Clears the in-flight range request so the next `poll()` can retry.
     pub fn on_range_request_error(&mut self, id: &ExecutionProofsByRangeRequestId) {
         if self.range_request.as_ref().map(|r| &r.id) == Some(id) {
             debug!("ProofSync: range request failed, will retry next poll");
@@ -276,12 +283,19 @@ impl<T: BeaconChainTypes> ProofSync<T> {
     }
 
     /// Called when an `ExecutionProofsByRoot` RPC request errors.
+    ///
+    /// Removes the entry from the in-flight map so the slot is eligible for retry on
+    /// the next `poll()`.
     pub fn on_root_request_error(&mut self, id: &ExecutionProofsByRootRequestId) {
         self.in_flight.remove(id);
     }
 
     /// Called when an `ExecutionProofsByRoot` RPC stream terminates (response `None`).
-    pub fn on_request_terminated(&mut self, id: &ExecutionProofsByRootRequestId) {
+    ///
+    /// Removes the entry from the in-flight map. The proof engine is responsible for
+    /// deciding whether the received proofs satisfy the request; this just frees the
+    /// concurrency slot.
+    pub fn on_root_request_terminated(&mut self, id: &ExecutionProofsByRootRequestId) {
         self.in_flight.remove(id);
     }
 
@@ -302,6 +316,10 @@ impl<T: BeaconChainTypes> ProofSync<T> {
     }
 
     /// Called when a proof-capable peer disconnects.
+    ///
+    /// Removes the peer's cached status and any in-flight status request. If this peer
+    /// was serving the active range request, that request is also cleared so the next
+    /// `poll()` can retry with a different peer.
     pub fn on_proof_capable_peer_disconnected(&mut self, peer_id: &PeerId) {
         self.peer_statuses.remove(peer_id);
         self.status_in_flight.remove(peer_id);
@@ -319,8 +337,14 @@ impl<T: BeaconChainTypes> ProofSync<T> {
 
     /// Called when an `ExecutionProofStatus` arrives from a peer.
     ///
-    /// `request_id` is `Some` for outbound (we initiated) responses and `None` for inbound
-    /// (peer-initiated) requests.
+    /// `request_id` is `Some` for responses to our outbound requests and `None` for
+    /// peer-initiated status announcements.
+    ///
+    /// The status is stored with a `verified` flag: `true` if the peer's announced
+    /// `(slot, block_root)` pair matches our canonical chain at that slot, `false` if
+    /// the slot is ahead of our head (and therefore unverifiable locally). A mismatch —
+    /// where the slot is within our chain but the root differs — causes the status to be
+    /// discarded and the peer's re-poll timer to be reset.
     pub fn on_peer_execution_proof_status(
         &mut self,
         peer_id: PeerId,
@@ -345,6 +369,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
                     debug!(
                         %peer_id,
                         slot = status.slot,
+                        claimed_root = %status.block_root,
                         "ProofSync: peer block root mismatch, ignoring status"
                     );
                     self.on_peer_status_failed(peer_id);
@@ -366,7 +391,10 @@ impl<T: BeaconChainTypes> ProofSync<T> {
         );
     }
 
-    /// Called when an `ExecutionProofStatus` request errors.
+    /// Called when an outbound `ExecutionProofStatus` request errors.
+    ///
+    /// Delegates to `on_peer_status_failed`, which resets the peer's re-poll timer to
+    /// defer the next refresh attempt.
     pub fn on_peer_execution_proof_status_error(
         &mut self,
         peer_id: PeerId,
@@ -379,6 +407,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
     /// Clears the in-flight status entry and resets the peer's timestamp to defer re-polling.
     /// Inserts a zero-slot placeholder if no prior entry exists.
     fn on_peer_status_failed(&mut self, peer_id: PeerId) {
+        debug!(%peer_id, "ProofSync: peer status failed, deferring re-poll");
         self.status_in_flight.remove(&peer_id);
         self.peer_statuses
             .entry(peer_id)
@@ -424,8 +453,15 @@ impl<T: BeaconChainTypes> ProofSync<T> {
             .max_by_key(|(_, c)| (c.verified, c.status.slot))
             .map(|(peer_id, c)| (*peer_id, Slot::new(c.status.slot)));
 
-        if result.is_none() {
-            debug!("ProofSync: no proof-capable peer, will retry next poll");
+        match result {
+            None if !self.logged_no_peer => {
+                debug!("ProofSync: no proof-capable peer, will retry next poll");
+                self.logged_no_peer = true;
+            }
+            Some(_) => {
+                self.logged_no_peer = false;
+            }
+            _ => {}
         }
 
         result

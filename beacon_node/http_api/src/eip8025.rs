@@ -110,6 +110,7 @@ pub async fn submit_execution_proofs<T: BeaconChainTypes>(
 
     // Process each signed proof
     for signed_proof in request.proofs {
+        let signed_proof = Arc::new(signed_proof);
         let request_root = signed_proof.request_root();
         let proof_type = signed_proof.proof_type();
         let validator_index = signed_proof.validator_index();
@@ -119,9 +120,14 @@ pub async fn submit_execution_proofs<T: BeaconChainTypes>(
             proof_type, validator_index, "Processing submitted signed execution proof"
         );
 
+        let validator_pubkey = chain
+            .validator_pubkey_bytes(validator_index as usize)
+            .map_err(|e| custom_bad_request(format!("Pubkey lookup failed: {e:?}")))?
+            .ok_or_else(|| custom_bad_request("Unknown validator index".to_string()))?;
+
         // Verify proof (BLS signature + execution engine + fork choice update)
         let (status, verified_block) = chain
-            .verify_execution_proof(signed_proof.clone())
+            .verify_execution_proof(signed_proof.clone(), validator_pubkey)
             .await
             .map_err(|e| {
                 warn!(
@@ -149,7 +155,7 @@ pub async fn submit_execution_proofs<T: BeaconChainTypes>(
         match status {
             ProofStatus::Valid | ProofStatus::Accepted => {
                 if let Err(e) = network_send.send(NetworkMessage::Publish {
-                    messages: vec![PubsubMessage::ExecutionProof(Box::new(signed_proof))],
+                    messages: vec![PubsubMessage::ExecutionProof(signed_proof)],
                 }) {
                     warn!(
                         error = ?e,
