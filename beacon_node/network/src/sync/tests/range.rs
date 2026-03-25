@@ -862,9 +862,14 @@ fn test_proof_sync_range_termination_enters_fill_mode() {
     assert!(rig.sync_manager.proof_sync().range_request().is_some());
 
     rig.terminate_execution_proofs_by_range(req_id, peer_id);
-    assert_eq!(
-        rig.sync_manager.proof_sync().state(),
-        ProofSyncState::Syncing
+    // Termination transitions to Waiting to give the proof engine time to process
+    // received proofs before the next range request is issued.
+    assert!(
+        matches!(
+            rig.sync_manager.proof_sync().state(),
+            ProofSyncState::Waiting(_)
+        ),
+        "Range termination should enter Waiting state"
     );
     assert!(
         rig.sync_manager.proof_sync().range_request().is_none(),

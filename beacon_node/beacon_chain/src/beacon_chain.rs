@@ -7514,7 +7514,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     ///
     /// This method:
     /// 1. Verifies the BLS signature over the proof message
-    /// 2. Verifies the proof via the ProofEngine (execution engine RPC)
+    /// 2. Verifies the proof via the ProofEngine
     /// 3. If the proof is valid, updates fork choice to mark the corresponding block as valid.
     ///
     /// # Returns
@@ -7619,24 +7619,42 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
 
             // Update fork choice using spawn_blocking_handle to avoid lock contention.
             let chain = self.clone();
-            self.spawn_blocking_handle(
-                move || {
-                    chain
-                        .canonical_head
-                        .fork_choice_write_lock()
-                        .on_valid_execution_payload(block_root)
-                },
-                "verify_execution_proof_fork_choice_update",
-            )
-            .await??;
+            let fc_result: Result<(), ForkChoiceError> = self
+                .spawn_blocking_handle(
+                    move || {
+                        chain
+                            .canonical_head
+                            .fork_choice_write_lock()
+                            .on_valid_execution_payload(block_root)
+                    },
+                    "verify_execution_proof_fork_choice_update",
+                )
+                .await?;
 
-            info!(
-                ?block_root,
-                ?request_root,
-                "Updated fork choice for verified proof"
-            );
+            match fc_result {
+                Ok(()) => {
+                    info!(
+                        ?block_root,
+                        ?request_root,
+                        "Updated fork choice for verified proof"
+                    );
+                }
+                // There is a chance that a race condition occurs where the block has not been
+                // imported into fork choice yet. This is a benign condition that can be ignored
+                // caused by proof verification time < block execution time.
+                Err(ForkChoiceError::FailedToProcessValidExecutionPayload(ref msg))
+                    if msg.contains("NodeUnknown") =>
+                {
+                    warn!(
+                        ?block_root,
+                        ?request_root,
+                        "Proof valid but block not yet in fork choice, skipping fc update"
+                    );
+                }
+                Err(e) => return Err(Error::ForkChoiceError(e)),
+            }
 
-            // Look up the slot so callers can update local execution proof status.
+            // Look up the slot so caller can update local execution proof status.
             let slot = self
                 .store
                 .get_blinded_block(&block_root)

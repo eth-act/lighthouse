@@ -119,7 +119,7 @@ pub fn register_mock_proof_engine<E: EthSpec>(
         requests: stored.requests.clone(),
         event_tx: stored.event_tx.clone(),
         call_tx: stored.call_tx.clone(),
-        callback_delay_ms: stored.callback_delay_ms,
+        proof_generation_delay: stored.proof_generation_delay,
         _phantom: PhantomData,
     };
     MOCK_REGISTRY.lock().insert(index, stored);
@@ -138,7 +138,7 @@ pub fn get_mock_proof_engine<E: EthSpec>(index: usize) -> Option<MockProofNodeCl
             requests: stored.requests.clone(),
             event_tx: stored.event_tx.clone(),
             call_tx: stored.call_tx.clone(),
-            callback_delay_ms: stored.callback_delay_ms,
+            proof_generation_delay: stored.proof_generation_delay,
             _phantom: PhantomData,
         })
 }
@@ -193,7 +193,7 @@ pub struct MockProofNodeClient<E: EthSpec> {
     /// Broadcast channel for method-invocation events.
     call_tx: broadcast::Sender<MockClientEvent>,
     /// Delay in milliseconds before broadcasting proof complete events.
-    callback_delay_ms: u64,
+    proof_generation_delay: u64,
     _phantom: PhantomData<E>,
 }
 
@@ -203,7 +203,7 @@ impl<E: EthSpec> Clone for MockProofNodeClient<E> {
             requests: self.requests.clone(),
             event_tx: self.event_tx.clone(),
             call_tx: self.call_tx.clone(),
-            callback_delay_ms: self.callback_delay_ms,
+            proof_generation_delay: self.proof_generation_delay,
             _phantom: PhantomData,
         }
     }
@@ -221,7 +221,7 @@ impl<E: EthSpec> MockProofNodeClient<E> {
             requests: Arc::new(Mutex::new(Vec::new())),
             event_tx,
             call_tx,
-            callback_delay_ms,
+            proof_generation_delay: callback_delay_ms,
             _phantom: PhantomData,
         }
     }
@@ -266,7 +266,7 @@ impl<E: EthSpec> ProofNodeClient for MockProofNodeClient<E> {
         });
 
         let event_tx = self.event_tx.clone();
-        let delay = self.callback_delay_ms;
+        let delay = self.proof_generation_delay;
         let proof_types = proof_attributes.proof_types.clone();
 
         tokio::spawn(async move {

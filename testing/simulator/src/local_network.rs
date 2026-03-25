@@ -330,7 +330,7 @@ impl<E: EthSpec> LocalNetwork<E> {
             beacon_config.network.enable_execution_proof = true;
             let bn_idx = self.beacon_nodes.read().len();
             let _: execution_layer::test_utils::MockProofNodeClient<E> =
-                execution_layer::test_utils::register_mock_proof_engine(bn_idx, 0);
+                execution_layer::test_utils::register_mock_proof_engine(bn_idx, 400);
             let mock_url =
                 SensitiveUrl::parse(&execution_layer::test_utils::mock_proof_engine_url(bn_idx))
                     .expect("mock URL is valid");

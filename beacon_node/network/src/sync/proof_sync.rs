@@ -1,9 +1,10 @@
 //! ProofSync: catch-up mechanism for EIP-8025 execution proofs.
 //!
-//! Operates in two states: `Idle` (range sync active, no proof work) and `Syncing`
-//! (proof catchup active). In `Syncing`, each poll computes the slot gap between the
-//! finalized epoch and the current head and chooses the most efficient strategy:
-//! a bulk `ExecutionProofsByRange` request for large gaps, or targeted
+//! Operates in three states: `Idle` (range sync active, no proof work), `Waiting(n)`
+//! (counting down n slot ticks after range sync completes before activating), and
+//! `Syncing` (proof catchup active). In `Syncing`, each poll computes the slot gap
+//! between the finalized epoch and the current head and chooses the most efficient
+//! strategy: a bulk `ExecutionProofsByRange` request for large gaps, or targeted
 //! `ExecutionProofsByRoot` requests when the gap is small.
 
 use super::network_context::{CachedExecutionProofStatus, SyncNetworkContext};
@@ -42,6 +43,9 @@ const DEFAULT_MAX_CONCURRENT: usize = 4;
 pub enum ProofSyncState {
     /// Range sync is active; proof sync is paused.
     Idle,
+    /// Waiting for the beacon processor to finish importing range sync blocks.
+    /// The inner value counts down remaining slot ticks before activation.
+    Waiting(u64),
     /// Proof sync is active. Each poll chooses between a range request (large slot gap)
     /// or by-root fill requests (small gap) based on current chain state.
     Syncing,
@@ -49,11 +53,13 @@ pub enum ProofSyncState {
 
 /// Proof sync subsystem for EIP-8025.
 ///
-/// Operates as a two-state machine: `Idle` while range sync is active, `Syncing`
-/// otherwise. In `Syncing`, each poll computes the slot gap between the max(finalized
-/// epoch, local verified head) - peer verified head to determine the most efficient request strategy.
-/// In-flight by-root and range responses are always processed regardless of state
-/// transitions — the proofs are valid independent of sync progress.
+/// Operates as a three-state machine: `Idle` while range sync is active, `Waiting(n)`
+/// after range sync completes (counting down n slot ticks to let the beacon processor
+/// finish importing blocks), and `Syncing` once active. In `Syncing`, each poll computes
+/// the slot gap between the max(finalized epoch, local verified head) and peer verified
+/// head to determine the most efficient request strategy. In-flight by-root and range
+/// responses are always processed regardless of state transitions — the proofs are valid
+/// independent of sync progress.
 pub struct ProofSync<T: BeaconChainTypes> {
     /// The beacon chain.
     chain: Arc<BeaconChain<T>>,
@@ -71,13 +77,16 @@ pub struct ProofSync<T: BeaconChainTypes> {
     peer_statuses: HashMap<PeerId, CachedExecutionProofStatus>,
     /// In-flight `ExecutionProofStatus` request IDs, keyed by peer.
     status_in_flight: HashMap<PeerId, ExecutionProofStatusRequestId>,
+    /// Number of slot ticks to wait after `start()` or a range response before issuing
+    /// the next `ExecutionProofsByRange` request.
+    activation_slots: u64,
     /// Injected missing-proof list for unit testing by-root behaviour.
     #[cfg(test)]
     pub test_missing_proofs: Option<Vec<MissingProofInfo>>,
 }
 
 impl<T: BeaconChainTypes> ProofSync<T> {
-    pub fn new(chain: Arc<BeaconChain<T>>) -> Self {
+    pub fn new(chain: Arc<BeaconChain<T>>, activation_slots: u64) -> Self {
         Self {
             state: ProofSyncState::Idle,
             range_request: None,
@@ -87,6 +96,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
             max_concurrent: DEFAULT_MAX_CONCURRENT,
             peer_statuses: HashMap::default(),
             status_in_flight: HashMap::default(),
+            activation_slots,
             #[cfg(test)]
             test_missing_proofs: None,
         }
@@ -125,11 +135,16 @@ impl<T: BeaconChainTypes> ProofSync<T> {
 
     /// Called by `SyncManager` when range sync completes.
     ///
-    /// Kicks off peer status refreshes and transitions to `Syncing`.
+    /// Kicks off peer status refreshes and transitions to `Waiting`, which counts down
+    /// slot ticks before activating. This delay allows the beacon processor to finish
+    /// importing range sync blocks before proof requests go out.
     pub fn start(&mut self, cx: &mut SyncNetworkContext<T>) {
-        debug!("ProofSync: starting");
+        debug!(
+            activation_slots = self.activation_slots,
+            "ProofSync: starting, waiting before activation"
+        );
         self.refresh_peer_statuses(cx);
-        self.state = ProofSyncState::Syncing;
+        self.state = ProofSyncState::Waiting(self.activation_slots);
     }
 
     /// Called by `SyncManager` when range sync re-enters.
@@ -143,12 +158,22 @@ impl<T: BeaconChainTypes> ProofSync<T> {
 
     /// Drive one polling cycle.
     ///
-    /// In `Syncing`, computes the slot gap and dispatches either a range request
-    /// (gap > `RANGE_REQUEST_THRESHOLD`) or by-root fill requests (gap ≤ threshold).
-    /// Waits if a range request is already in-flight or peer status polls are pending.
+    /// In `Waiting`, counts down the activation delay. In `Syncing`, computes the slot
+    /// gap and dispatches either a range request (gap > `RANGE_REQUEST_THRESHOLD`) or
+    /// by-root fill requests (gap ≤ threshold). Waits if a range request is already
+    /// in-flight or peer status polls are pending.
     pub fn poll(&mut self, cx: &mut SyncNetworkContext<T>) {
-        if matches!(self.state, ProofSyncState::Idle) {
-            return;
+        match self.state {
+            ProofSyncState::Idle => return,
+            ProofSyncState::Waiting(0) => {
+                debug!("ProofSync: activation delay elapsed, transitioning to Syncing");
+                self.state = ProofSyncState::Syncing;
+            }
+            ProofSyncState::Waiting(ref mut n) => {
+                *n -= 1;
+                return;
+            }
+            ProofSyncState::Syncing => {}
         }
 
         // If a range request is already in-flight, wait for it to drain.
@@ -222,10 +247,14 @@ impl<T: BeaconChainTypes> ProofSync<T> {
     }
 
     /// Called when an `ExecutionProofsByRange` RPC stream terminates (response `None`).
+    ///
+    /// Transitions back to `Waiting` to give the proof engine time to process the
+    /// received proofs before the next request is issued.
     pub fn on_range_request_terminated(&mut self, id: &ExecutionProofsByRangeRequestId) {
         if self.range_request.as_ref().map(|r| &r.id) == Some(id) {
-            debug!("ProofSync: range stream complete");
+            debug!("ProofSync: range stream complete, cooling down before next request");
             self.range_request = None;
+            self.state = ProofSyncState::Waiting(self.activation_slots);
         }
     }
 
