@@ -55,7 +55,7 @@ use types::{
 #[derive(SszEncode, SszDecode, TreeHashDerive)]
 #[ssz(enum_behaviour = "transparent")]
 #[tree_hash(enum_behaviour = "transparent")]
-pub(crate) struct OwnedNewPayloadRequest<E: EthSpec> {
+pub struct OwnedNewPayloadRequest<E: EthSpec> {
     #[superstruct(
         only(Bellatrix),
         partial_getter(rename = "execution_payload_bellatrix")

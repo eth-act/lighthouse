@@ -763,6 +763,7 @@ fn missing_proof(root: Hash256) -> MissingProofInfo {
     MissingProofInfo {
         root,
         existing_proof_types: vec![],
+        slot: Default::default(),
     }
 }
 

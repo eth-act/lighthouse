@@ -230,6 +230,15 @@ impl<T: BeaconChainTypes> ProofSync<T> {
             .filter(|info| !in_flight_roots.contains(&info.root))
             .take(available)
         {
+            if peer_slot < info.slot {
+                debug!(
+                    block_root = %info.root,
+                    slot = %info.slot,
+                    %peer_slot,
+                    "ProofSync: best peer slot behind missing block, skipping"
+                );
+                continue;
+            }
             match cx.request_execution_proofs_by_root(peer_id, info.root) {
                 Ok(id) => {
                     debug!(

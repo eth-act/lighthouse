@@ -165,7 +165,7 @@ impl HttpProofEngine {
     }
 
     /// Notify the proof engine of a forkchoice update.
-    pub async fn forkchoice_updated(
+    pub fn forkchoice_updated(
         &self,
         forkchoice_state: ForkchoiceState,
     ) -> Result<ForkchoiceUpdatedResponse, ProofEngineError> {

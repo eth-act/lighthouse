@@ -84,7 +84,7 @@ pub struct HotColdDB<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> {
     /// Kept separate from `block_cache` so it is always available regardless of whether the
     /// block cache is enabled. Required for proof verification to look up the beacon block root
     /// associated with an execution payload.
-    request_root_to_block_root: Mutex<LruCache<Hash256, Hash256>>,
+    request_root_to_block_root: Mutex<LruCache<Hash256, (Hash256, Slot)>>,
     /// EIP-8025: always-on cache mapping block_root -> request_root.
     ///
     /// Used by the HTTP API to retrieve the request root for a given block root.
@@ -1054,17 +1054,20 @@ impl<E: EthSpec, Hot: ItemStore<E>, Cold: ItemStore<E>> HotColdDB<E, Hot, Cold> 
     /// Store bidirectional mapping between request_root and block_root (EIP-8025).
     ///
     /// This is in-memory only and not persisted to database in the initial implementation.
-    pub fn put_request_root_mapping(&self, request_root: Hash256, block_root: Hash256) {
+    pub fn put_request_root_mapping(&self, request_root: Hash256, block_root: Hash256, slot: Slot) {
         self.request_root_to_block_root
             .lock()
-            .put(request_root, block_root);
+            .put(request_root, (block_root, slot));
         self.block_root_to_request_root
             .lock()
             .put(block_root, request_root);
     }
 
-    /// Look up block_root by request_root (EIP-8025, cache-only, no database).
-    pub fn get_block_root_by_request_root(&self, request_root: &Hash256) -> Option<Hash256> {
+    /// Look up block_root and slot by request_root (EIP-8025, cache-only, no database).
+    pub fn get_block_root_by_request_root(
+        &self,
+        request_root: &Hash256,
+    ) -> Option<(Hash256, Slot)> {
         self.request_root_to_block_root
             .lock()
             .get(request_root)

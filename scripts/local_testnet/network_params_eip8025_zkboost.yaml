@@ -1,0 +1,64 @@
+# EIP-8025 testnet with real zkboost-server backends.
+#
+# This config is consumed by the kurtosis_zkboost wrapper package, which starts
+# the ethereum-package first and then adds zkboost-server sidecar services.
+#
+# The `zkboost` section is stripped from args before forwarding to
+# ethereum-package.  CL/VC nodes point --proof-engine-endpoint at the zkboost
+# service running inside the same Kurtosis enclave.
+#
+# For the mock-only path, use network_params_eip8025.yaml instead.
+
+# ── Ethereum package participants ────────────────────────────────────────────
+participants:
+  # Supernode participants — proof engine endpoint points to zkboost-1
+  - cl_type: lighthouse
+    cl_image: lighthouse:local
+    el_type: reth
+    el_image: ghcr.io/paradigmxyz/reth
+    supernode: true
+    cl_extra_params:
+      - --target-peers=3
+      - --proof-engine-endpoint=http://zkboost-1:3000
+    vc_extra_params:
+      - --proof-engine-endpoint=http://zkboost-1:3000
+      - --proof-types=6
+    count: 2
+  # Non-supernode participants — proof engine endpoint points to zkboost-2
+  - cl_type: lighthouse
+    cl_image: lighthouse:local
+    el_type: reth
+    el_image: ghcr.io/paradigmxyz/reth
+    supernode: false
+    cl_extra_params:
+      - --target-peers=3
+      - --proof-engine-endpoint=http://zkboost-2:3000
+    vc_extra_params:
+      - --proof-engine-endpoint=http://zkboost-2:3000
+      - --proof-types=6
+    count: 2
+
+network_params:
+  fulu_fork_epoch: 0
+  seconds_per_slot: 6
+
+snooper_enabled: false
+global_log_level: debug
+
+additional_services:
+  - dora
+  - prometheus_grafana
+
+# ── zkboost-server sidecar configuration ─────────────────────────────────────
+# Processed by kurtosis_zkboost/main.star; NOT forwarded to ethereum-package.
+zkboost:
+  image: ghcr.io/eth-act/zkboost/zkboost-server:0.3.0
+  # Each instance connects to one EL node's JSON-RPC endpoint for witness data.
+  instances:
+    - name: zkboost-1
+      el_service: el-1-reth-lighthouse
+    - name: zkboost-2
+      el_service: el-2-reth-lighthouse
+  # Mock zkVM settings (real zkVM backends need external ere-server instances).
+  mock_proving_time_ms: 300
+  mock_proof_size: 1024

@@ -2,7 +2,7 @@
 //! transition.
 
 use crate::{BeaconChain, BeaconChainError as Error, BeaconChainTypes};
-use execution_layer::{BlockByNumberQuery, ForkchoiceState};
+use execution_layer::BlockByNumberQuery;
 use serde::{Deserialize, Serialize, Serializer};
 use std::fmt;
 use std::fmt::Write;
@@ -204,16 +204,6 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             .as_ref()
             .ok_or(Error::ExecutionLayerMissing)?;
         let exec_block_hash = latest_execution_payload_header.block_hash();
-
-        if let Some(proof_engine) = execution_layer.proof_engine() {
-            proof_engine
-                .forkchoice_updated(ForkchoiceState {
-                    head_block_hash: exec_block_hash,
-                    safe_block_hash: exec_block_hash,
-                    finalized_block_hash: exec_block_hash,
-                })
-                .await?;
-        }
 
         // Use getBlockByNumber(0) to check that the block hash matches.
         // At present, Geth does not respond to engine_getPayloadBodiesByRange before genesis.

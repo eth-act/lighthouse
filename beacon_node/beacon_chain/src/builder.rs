@@ -23,7 +23,7 @@ use crate::{
     BeaconChain, BeaconChainTypes, BeaconForkChoiceStore, BeaconSnapshot, ServerSentEventHandler,
 };
 use bls::Signature;
-use execution_layer::ExecutionLayer;
+use execution_layer::{ExecutionLayer, ForkchoiceState};
 use fixed_bytes::FixedBytesExtended;
 use fork_choice::{ForkChoice, ResetPayloadStatuses};
 use futures::channel::mpsc::Sender;
@@ -42,7 +42,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use store::{Error as StoreError, HotColdDB, ItemStore, KeyValueStoreOp};
 use task_executor::{ShutdownReason, TaskExecutor};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use types::data::CustodyIndex;
 use types::{
     BeaconBlock, BeaconState, BlobSidecarList, ChainSpec, ColumnIndex, DataColumnSidecarList,
@@ -917,6 +917,15 @@ where
 
         let genesis_validators_root = head_snapshot.beacon_state.genesis_validators_root();
         let genesis_time = head_snapshot.beacon_state.genesis_time();
+        let genesis_execution_block_hash = (head_snapshot.beacon_state.slot() == 0)
+            .then(|| {
+                head_snapshot
+                    .beacon_state
+                    .latest_execution_payload_header()
+                    .ok()
+                    .map(|header| header.block_hash())
+            })
+            .flatten();
         let canonical_head = CanonicalHead::new(fork_choice, Arc::new(head_snapshot));
         let shuffling_cache_size = self.chain_config.shuffling_cache_size;
         let complete_blob_backfill = self.chain_config.complete_blob_backfill;
@@ -976,18 +985,32 @@ where
         };
         debug!(?custody_context, "Loaded persisted custody context");
 
-        // Restore ProofEngine state from disk if available.
+        // Restore ProofEngine state from disk if available, or seed from genesis on fresh start.
         if let Some(proof_engine) = self
             .execution_layer
             .as_ref()
             .and_then(|el| el.proof_engine())
             && let Some(store) = self.store
-            && let Some(persisted) =
-                crate::BeaconChain::<Witness<TSlotClock, _, _, _>>::load_proof_engine_state(
-                    store.clone(),
-                )
         {
-            proof_engine.restore_from_persisted(persisted);
+            match crate::BeaconChain::<Witness<TSlotClock, _, _, _>>::load_proof_engine_state(
+                store.clone(),
+            ) {
+                Some(persisted) => proof_engine.restore_from_persisted(persisted),
+                None if genesis_execution_block_hash.is_some() => {
+                    proof_engine
+                        .forkchoice_updated(ForkchoiceState::new_genesis(
+                            genesis_execution_block_hash.expect("is Some"),
+                        ))
+                        .map_err(|err| {
+                            format!("failed to seed proof engine with genesis hash: {err:?}")
+                        })?;
+                }
+                _ => {
+                    warn!(
+                        "No persisted ProofEngine state and head is not at genesis. ProofEngine may be out of sync until next fork choice update."
+                    );
+                }
+            }
         }
 
         let beacon_chain = BeaconChain {

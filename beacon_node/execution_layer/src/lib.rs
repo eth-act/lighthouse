@@ -1657,7 +1657,7 @@ impl<E: EthSpec> ExecutionLayer<E> {
         };
 
         let proof_engine_result = if let Some(proof_engine) = self.proof_engine() {
-            match proof_engine.forkchoice_updated(forkchoice_state).await {
+            match proof_engine.forkchoice_updated(forkchoice_state) {
                 Ok(response) => Some(Ok(response)),
                 Err(e) => {
                     debug!(error = ?e, "Proof engine forkchoice_updated error (non-fatal)");

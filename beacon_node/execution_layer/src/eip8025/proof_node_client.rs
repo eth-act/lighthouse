@@ -117,17 +117,21 @@ enum ProofVerificationStatus {
 pub struct HttpProofNodeClient {
     client: Client,
     url: SensitiveUrl,
+    timeout: Duration,
 }
 
 impl HttpProofNodeClient {
     /// Create a new HTTP proof node client.
     pub fn new(url: SensitiveUrl, timeout: Option<Duration>) -> Self {
         let client = Client::builder()
-            .timeout(timeout.unwrap_or(PROOF_ENGINE_TIMEOUT))
             .build()
             .expect("Failed to build HTTP client");
 
-        Self { client, url }
+        Self {
+            client,
+            url,
+            timeout: timeout.unwrap_or(PROOF_ENGINE_TIMEOUT),
+        }
     }
 
     /// Build a URL from the base URL and a path.
@@ -164,6 +168,7 @@ impl ProofNodeClient for HttpProofNodeClient {
             .query(&[(QUERY_PROOF_TYPES, &proof_types_csv)])
             .header(HEADER_CONTENT_TYPE, HEADER_VALUE_SSZ)
             .body(ssz_body)
+            .timeout(self.timeout)
             .send()
             .await?
             .error_for_status()?
@@ -192,6 +197,7 @@ impl ProofNodeClient for HttpProofNodeClient {
             ])
             .header(HEADER_CONTENT_TYPE, HEADER_VALUE_SSZ)
             .body(proof_data.to_vec())
+            .timeout(self.timeout)
             .send()
             .await?
             .error_for_status()?
@@ -212,6 +218,7 @@ impl ProofNodeClient for HttpProofNodeClient {
         Ok(self
             .client
             .get(self.url(&format!("{PATH_PROOFS}/{root}/{proof_type_str}")))
+            .timeout(self.timeout)
             .send()
             .await?
             .error_for_status()?

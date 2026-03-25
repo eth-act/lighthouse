@@ -7482,7 +7482,9 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         pe.missing_proofs()
             .into_iter()
             .filter_map(|mut info| {
-                info.root = self.store.get_block_root_by_request_root(&info.root)?;
+                let (block_root, slot) = self.store.get_block_root_by_request_root(&info.root)?;
+                info.root = block_root;
+                info.slot = slot;
                 Some(info)
             })
             .collect()
@@ -7604,7 +7606,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             let request_root = signed_proof.request_root();
 
             // Look up the beacon block root from request root
-            let block_root = self
+            let (block_root, slot) = self
                 .store
                 .get_block_root_by_request_root(&request_root)
                 .ok_or_else(|| ExecutionProofError::UnknownRequestRoot(request_root))?;
@@ -7654,14 +7656,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
                 Err(e) => return Err(Error::ForkChoiceError(e)),
             }
 
-            // Look up the slot so caller can update local execution proof status.
-            let slot = self
-                .store
-                .get_blinded_block(&block_root)
-                .ok()
-                .flatten()
-                .map(|b| b.slot());
-            return Ok((verification_result, slot.map(|s| (block_root, s))));
+            return Ok((verification_result, Some((block_root, slot))));
         }
 
         Ok((verification_result, None))
