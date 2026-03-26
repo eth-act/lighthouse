@@ -595,6 +595,22 @@ impl<E: EthSpec> LocalNetwork<E> {
         })
     }
 
+    /// Subscribe to the internal event bus for a beacon node at a specific index.
+    ///
+    /// Returns `None` if the index is out of range or the beacon chain is unavailable.
+    pub fn node_subscribe_internal_events(
+        &self,
+        index: usize,
+    ) -> Option<
+        tokio::sync::broadcast::Receiver<beacon_chain::internal_events::InternalBeaconNodeEvent>,
+    > {
+        self.beacon_nodes.read().get(index).and_then(|bn| {
+            bn.client
+                .beacon_chain()
+                .map(|chain| chain.subscribe_internal_events())
+        })
+    }
+
     pub async fn duration_to_genesis(&self) -> Result<Duration, &'static str> {
         let nodes = self.remote_nodes().expect("Failed to get remote nodes");
         let bootnode = nodes.first().expect("Should contain bootnode");

@@ -5,8 +5,8 @@
 
 use anyhow::anyhow;
 use simulator::test_utils::{
-    BeaconNodeHttpClient, Epoch, LocalNetworkParams, NodeType, TestNetworkFixture,
-    TestNetworkFixtureBuilder,
+    BeaconNodeHttpClient, Epoch, EventStream, InternalBeaconNodeEvent, LocalNetworkParams,
+    NodeType, TestNetworkFixture, TestNetworkFixtureBuilder,
 };
 use task_executor::TaskExecutor;
 use types::MinimalEthSpec;
@@ -85,6 +85,45 @@ impl ProofEngineTestRig {
             .ok_or_else(|| anyhow!("no proof verifier at index {n}"))
     }
 
+    /// Subscribe to the internal event bus for the nth default node (0-indexed).
+    pub fn default_node_chain_events(
+        &self,
+        n: usize,
+    ) -> anyhow::Result<EventStream<InternalBeaconNodeEvent>> {
+        self.fixture
+            .network
+            .node_subscribe_internal_events(n)
+            .map(EventStream::from)
+            .ok_or_else(|| anyhow!("no default node at index {n}"))
+    }
+
+    /// Subscribe to the internal event bus for the nth proof generator node (0-indexed).
+    pub fn proof_generator_chain_events(
+        &self,
+        n: usize,
+    ) -> anyhow::Result<EventStream<InternalBeaconNodeEvent>> {
+        let idx = self.fixture.config.network_params.node_count + n;
+        self.fixture
+            .network
+            .node_subscribe_internal_events(idx)
+            .map(EventStream::from)
+            .ok_or_else(|| anyhow!("no proof generator at index {n}"))
+    }
+
+    /// Subscribe to the internal event bus for the nth proof verifier node (0-indexed).
+    pub fn proof_verifier_chain_events(
+        &self,
+        n: usize,
+    ) -> anyhow::Result<EventStream<InternalBeaconNodeEvent>> {
+        let params = &self.fixture.config.network_params;
+        let idx = params.node_count + params.proof_generator_nodes + n;
+        self.fixture
+            .network
+            .node_subscribe_internal_events(idx)
+            .map(EventStream::from)
+            .ok_or_else(|| anyhow!("no proof verifier at index {n}"))
+    }
+
     /// Return HTTP clients for all beacon nodes in the network.
     pub fn remote_nodes(&self) -> anyhow::Result<Vec<BeaconNodeHttpClient>> {
         self.fixture
@@ -121,8 +160,10 @@ impl ProofEngineTestRig {
             .ok_or_else(|| anyhow!("no proof verifier node at index {n}"))
     }
 
-    /// Add a proof verifier node dynamically and return its event stream.
-    pub async fn add_proof_verifier_and_subscribe(&self) -> anyhow::Result<MockEventStream> {
+    /// Add a proof verifier node dynamically and return its mock and internal event streams.
+    pub async fn add_proof_verifier_and_subscribe(
+        &self,
+    ) -> anyhow::Result<(MockEventStream, EventStream<InternalBeaconNodeEvent>)> {
         let net = self.fixture.network.clone();
         let client_config = self.fixture.config.client.clone();
         let exec_config = self.fixture.config.execution.clone();
@@ -140,13 +181,27 @@ impl ProofEngineTestRig {
         // Give the node a moment to register its mock before subscribing.
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-        // The new verifier is the last beacon node; subscribe to its events.
-        let node_count = self.fixture.network.beacon_nodes.read().len();
-        self.fixture
+        // The new verifier is the last beacon node; subscribe to both event streams.
+        let idx = self
+            .fixture
             .network
-            .node_subscribe_client_events(node_count.saturating_sub(1))
+            .beacon_nodes
+            .read()
+            .len()
+            .saturating_sub(1);
+        let mock = self
+            .fixture
+            .network
+            .node_subscribe_client_events(idx)
             .map(MockEventStream::from)
-            .ok_or_else(|| anyhow!("newly added verifier node has no mock event stream"))
+            .ok_or_else(|| anyhow!("newly added verifier node has no mock event stream"))?;
+        let chain = self
+            .fixture
+            .network
+            .node_subscribe_internal_events(idx)
+            .map(EventStream::from)
+            .ok_or_else(|| anyhow!("newly added verifier node has no beacon chain"))?;
+        Ok((mock, chain))
     }
 
     pub fn executor(&self) -> TaskExecutor {

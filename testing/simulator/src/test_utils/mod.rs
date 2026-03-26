@@ -6,10 +6,13 @@
 
 pub use crate::basic_sim::SUGGESTED_FEE_RECIPIENT;
 pub use crate::local_network::{LocalNetwork, LocalNetworkParams, NodeType};
+pub use beacon_chain::internal_events::InternalBeaconNodeEvent;
 pub use environment::LoggerConfig;
 pub use environment::test_utils::TestEnvironment;
 pub use eth2::{BeaconNodeHttpClient, types::StateId};
 pub use execution_layer::test_utils::{MockClientEvent, MockEventStream};
+mod event_stream;
+pub use event_stream::EventStream;
 pub use logging::build_workspace_filter;
 pub use node_test_rig::ApiTopic;
 pub use node_test_rig::{
@@ -56,9 +59,8 @@ impl TestNetworkFixture {
     /// Wait for the network to reach genesis by sleeping until the genesis time.
     /// If genesis has already passed (late-joining node), returns immediately.
     pub async fn wait_for_genesis(&self) -> anyhow::Result<()> {
-        match self.network.duration_to_genesis().await {
-            Ok(d) => tokio::time::sleep(d).await,
-            Err(_) => {} // genesis already passed; late nodes will sync from peers
+        if let Ok(duration) = self.network.duration_to_genesis().await {
+            tokio::time::sleep(duration).await;
         }
         Ok(())
     }

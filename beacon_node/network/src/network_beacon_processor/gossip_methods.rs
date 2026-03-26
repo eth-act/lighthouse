@@ -8,6 +8,7 @@ use beacon_chain::blob_verification::{GossipBlobError, GossipVerifiedBlob};
 use beacon_chain::block_verification_types::AsBlock;
 use beacon_chain::data_column_verification::{GossipDataColumnError, GossipVerifiedDataColumn};
 use beacon_chain::events::{EventKind, SseExecutionProofValidated};
+use beacon_chain::internal_events::InternalBeaconNodeEvent;
 use beacon_chain::store::Error;
 use beacon_chain::{
     AvailabilityProcessingStatus, BeaconChainError, BeaconChainTypes, BlockError, ForkChoiceError,
@@ -1889,6 +1890,13 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         let proof_type = execution_proof.proof_type();
         let validator_index = execution_proof.validator_index();
 
+        if self.chain.internal_event_sender().is_some() {
+            self.chain
+                .emit_internal_event(InternalBeaconNodeEvent::GossipExecutionProof(
+                    execution_proof.clone(),
+                ));
+        }
+
         // Resolve the validator's public key from the pubkey cache.
         // This is needed because tracking structures use pubkeys, not indices.
         let Ok(Some(validator_pubkey)) =
@@ -1927,6 +1935,20 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
             .chain
             .verify_execution_proof(execution_proof, validator_pubkey)
             .await;
+
+        if self.chain.internal_event_sender().is_some() {
+            self.chain.emit_internal_event(match &verification_result {
+                Ok((status, block)) => InternalBeaconNodeEvent::ExecutionProofVerified {
+                    request_root,
+                    status: *status,
+                    block: *block,
+                },
+                Err(e) => InternalBeaconNodeEvent::ExecutionProofVerificationFailed {
+                    request_root,
+                    error: format!("{e:?}"),
+                },
+            });
+        }
 
         // Determine gossip propagation behaviour for valid/accepted proofs.
         // If we have an execution proof subscriber we assume a validator will re-sign the proof
@@ -2065,6 +2087,13 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         let proof_type = execution_proof.proof_type();
         let validator_index = execution_proof.validator_index();
 
+        if self.chain.internal_event_sender().is_some() {
+            self.chain
+                .emit_internal_event(InternalBeaconNodeEvent::RpcExecutionProof(
+                    execution_proof.clone(),
+                ));
+        }
+
         let Ok(Some(validator_pubkey)) =
             self.chain.validator_pubkey_bytes(validator_index as usize)
         else {
@@ -2088,6 +2117,20 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
             .chain
             .verify_execution_proof(execution_proof, validator_pubkey)
             .await;
+
+        if self.chain.internal_event_sender().is_some() {
+            self.chain.emit_internal_event(match &verification_result {
+                Ok((status, block)) => InternalBeaconNodeEvent::ExecutionProofVerified {
+                    request_root,
+                    status: *status,
+                    block: *block,
+                },
+                Err(e) => InternalBeaconNodeEvent::ExecutionProofVerificationFailed {
+                    request_root,
+                    error: format!("{e:?}"),
+                },
+            });
+        }
 
         match verification_result {
             Err(e) => {
