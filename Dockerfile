@@ -11,8 +11,10 @@ ENV CARGO_INCREMENTAL=1
 WORKDIR /lighthouse
 COPY . .
 # Persist the registry and target file across builds. See: https://docs.docker.com/build/cache/optimize/#use-cache-mounts
+# Clear stale leveldb-sys cmake cache before building to avoid failures on cached runners.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/lighthouse/target \
+    rm -rf /lighthouse/target/release/build/leveldb-sys-*/out/build 2>/dev/null || true && \
     make
 
 FROM ubuntu:22.04

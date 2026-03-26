@@ -18,9 +18,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Clear stale leveldb-sys cmake cache
-        run: docker builder prune --filter type=exec.cachemount -f 2>/dev/null || true
-
       - name: Build Docker image
         run: |
           docker build --build-arg FEATURES=portable,spec-minimal -t lighthouse:local .
