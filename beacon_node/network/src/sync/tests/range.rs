@@ -763,6 +763,7 @@ fn missing_proof(root: Hash256) -> MissingProofInfo {
     MissingProofInfo {
         root,
         existing_proof_types: vec![],
+        slot: Default::default(),
     }
 }
 
@@ -862,9 +863,14 @@ fn test_proof_sync_range_termination_enters_fill_mode() {
     assert!(rig.sync_manager.proof_sync().range_request().is_some());
 
     rig.terminate_execution_proofs_by_range(req_id, peer_id);
-    assert_eq!(
-        rig.sync_manager.proof_sync().state(),
-        ProofSyncState::Syncing
+    // Termination transitions to Waiting to give the proof engine time to process
+    // received proofs before the next range request is issued.
+    assert!(
+        matches!(
+            rig.sync_manager.proof_sync().state(),
+            ProofSyncState::Waiting(_)
+        ),
+        "Range termination should enter Waiting state"
     );
     assert!(
         rig.sync_manager.proof_sync().range_request().is_none(),
@@ -1017,7 +1023,7 @@ fn test_proof_sync_fill_mode_no_peer_breaks() {
     );
 }
 
-/// Test 12: `on_request_terminated` removes the entry from `in_flight`.
+/// Test 12: `on_root_request_terminated` removes the entry from `in_flight`.
 #[test]
 fn test_proof_sync_on_request_terminated_clears_in_flight() {
     let mut rig = TestRig::test_setup();

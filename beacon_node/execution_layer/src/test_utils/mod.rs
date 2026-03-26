@@ -35,8 +35,8 @@ pub use hook::Hook;
 pub use mock_builder::{MockBuilder, Operation, mock_builder_extra_data};
 pub use mock_execution_layer::MockExecutionLayer;
 pub use mock_proof_node_client::{
-    MockClientEvent, MockProofNodeClient, get_mock_proof_engine, make_test_fulu_ssz,
-    mock_proof_engine_url, parse_mock_index, register_mock_proof_engine,
+    MockClientEvent, MockProofNodeClient, OwnedNewPayloadRequest, get_mock_proof_engine,
+    make_test_fulu_ssz, mock_proof_engine_url, parse_mock_index, register_mock_proof_engine,
 };
 
 pub const DEFAULT_TERMINAL_DIFFICULTY: u64 = 6400;
@@ -77,7 +77,7 @@ mod handle_rpc;
 mod hook;
 mod mock_builder;
 mod mock_execution_layer;
-mod mock_proof_node_client;
+pub(crate) mod mock_proof_node_client;
 
 /// Configuration for the MockExecutionLayer.
 #[derive(Clone)]

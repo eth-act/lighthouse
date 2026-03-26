@@ -580,17 +580,15 @@ impl<E: EthSpec> ExecutionLayer<E> {
         let proof_engine: Option<Arc<eip8025::HttpProofEngine>> =
             if let Some(proof_url) = proof_engine_endpoint {
                 if let Some(idx) = test_utils::parse_mock_index(proof_url.expose_full().as_str()) {
-                    let mock = test_utils::get_mock_proof_engine(idx).unwrap_or_else(|| {
+                    let mock = test_utils::get_mock_proof_engine::<E>(idx).unwrap_or_else(|| {
                         debug!(
                             idx,
                             "No pre-registered mock; creating MockProofNodeClient on the fly"
                         );
-                        test_utils::register_mock_proof_engine(idx, 0)
+                        test_utils::register_mock_proof_engine::<E>(idx, 0)
                     });
                     debug!(idx, "Instantiating mock proof engine from registry");
-                    Some(Arc::new(eip8025::HttpProofEngine::with_proof_node(
-                        (*mock).clone(),
-                    )))
+                    Some(Arc::new(eip8025::HttpProofEngine::with_proof_node(mock)))
                 } else {
                     debug!(endpoint = %proof_url, "Loaded proof engine endpoint");
                     Some(Arc::new(eip8025::HttpProofEngine::new(proof_url, None)))
@@ -1659,7 +1657,7 @@ impl<E: EthSpec> ExecutionLayer<E> {
         };
 
         let proof_engine_result = if let Some(proof_engine) = self.proof_engine() {
-            match proof_engine.forkchoice_updated(forkchoice_state).await {
+            match proof_engine.forkchoice_updated(forkchoice_state) {
                 Ok(response) => Some(Ok(response)),
                 Err(e) => {
                     debug!(error = ?e, "Proof engine forkchoice_updated error (non-fatal)");

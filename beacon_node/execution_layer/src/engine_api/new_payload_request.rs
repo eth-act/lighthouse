@@ -29,8 +29,9 @@ use types::{
         expr = "BeaconStateError::IncorrectStateVariant"
     )
 )]
-#[derive(Clone, Debug, PartialEq, TreeHash)]
+#[derive(Clone, Debug, PartialEq, SszEncode, TreeHash)]
 #[tree_hash(enum_behaviour = "transparent")]
+#[ssz(enum_behaviour = "transparent")]
 pub struct NewPayloadRequest<'block, E: EthSpec> {
     #[superstruct(
         only(Bellatrix),

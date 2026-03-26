@@ -21,6 +21,7 @@ use beacon_chain::block_verification_types::RpcBlock;
 use beacon_chain::{BeaconChain, BeaconChainTypes, BlockProcessStatus, EngineState};
 use custody::CustodyRequestResult;
 use fnv::FnvHashMap;
+use lighthouse_network::Eth2Enr;
 use lighthouse_network::rpc::methods::{
     BlobsByRangeRequest, DataColumnsByRangeRequest, ExecutionProofStatus,
     ExecutionProofsByRangeRequest, ExecutionProofsByRootRequest,
@@ -34,7 +35,6 @@ use lighthouse_network::service::api_types::{
     DataColumnsByRootRequester, ExecutionProofStatusRequestId, ExecutionProofsByRangeRequestId,
     ExecutionProofsByRootRequestId, Id, SingleLookupReqId, SyncRequestId,
 };
-use lighthouse_network::types::Subnet;
 use lighthouse_network::{Client, NetworkGlobals, PeerAction, PeerId, ReportSource};
 use lighthouse_tracing::{SPAN_OUTGOING_BLOCK_BY_ROOT_REQUEST, SPAN_OUTGOING_RANGE_REQUEST};
 use parking_lot::RwLock;
@@ -508,7 +508,11 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             .peers
             .read()
             .peer_info(peer_id)
-            .is_some_and(|info| info.on_subnet_metadata(&Subnet::ExecutionProof))
+            .is_some_and(|info| {
+                info.enr()
+                    .map(|enr| enr.execution_proof_enabled())
+                    .unwrap_or(false)
+            })
     }
 
     /// Returns the Client type of the peer if known

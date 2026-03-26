@@ -22,6 +22,7 @@ pub const DEFAULT_TCP_PORT: u16 = 9000u16;
 pub const DEFAULT_DISC_PORT: u16 = 9000u16;
 pub const DEFAULT_QUIC_PORT: u16 = 9001u16;
 pub const DEFAULT_IDONTWANT_MESSAGE_SIZE_THRESHOLD: usize = 1000usize;
+pub const DEFAULT_PROOF_SYNC_ACTIVATION_SLOTS: u64 = 10;
 
 pub struct GossipsubConfigParams {
     pub message_domain_valid_snappy: [u8; 4],
@@ -128,6 +129,11 @@ pub struct Config {
     /// Whether to subscribe to the EIP-8025 execution proof gossip topic.
     /// Set to `true` only when `--proof-engine-endpoint` is configured.
     pub enable_execution_proof: bool,
+
+    /// Number of slot ticks to wait after range sync completes before issuing
+    /// `ExecutionProofsByRange` requests. Gives the beacon processor time to finish
+    /// calling `notify_new_payload` for all imported blocks before proofs are requested.
+    pub proof_sync_activation_slots: u64,
 
     /// Configuration for the outbound rate limiter (requests made by this node).
     pub outbound_rate_limiter_config: Option<OutboundRateLimiterConfig>,
@@ -364,6 +370,7 @@ impl Default for Config {
             metrics_enabled: false,
             enable_light_client_server: true,
             enable_execution_proof: false,
+            proof_sync_activation_slots: DEFAULT_PROOF_SYNC_ACTIVATION_SLOTS,
             outbound_rate_limiter_config: None,
             invalid_block_storage: None,
             inbound_rate_limiter_config: None,

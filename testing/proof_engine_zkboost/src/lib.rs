@@ -23,17 +23,21 @@ pub mod zkboost_harness;
 mod tests {
     use crate::zkboost_harness::{FIXTURE_NEW_PAYLOAD_REQUEST, ZkboostTestHarness};
     use execution_layer::eip8025::{HttpProofNodeClient, ProofNodeClient, ProofType};
+    use execution_layer::test_utils::OwnedNewPayloadRequest;
     use futures::StreamExt;
     use sensitive_url::SensitiveUrl;
+    use ssz::Decode;
     use std::time::Duration;
     use tokio::time::timeout;
+    use tree_hash::TreeHash;
+    use types::MainnetEthSpec;
     use types::execution::eip8025::ProofAttributes;
     use zkboost_types::ProofType as ZkBoostProofType;
 
     /// Helper: create an `HttpProofNodeClient` pointing at the test server.
     fn client_for(url: &str) -> HttpProofNodeClient {
         let sensitive_url = SensitiveUrl::parse(url).expect("server URL should be valid");
-        HttpProofNodeClient::new(sensitive_url, Some(Duration::from_secs(30)))
+        HttpProofNodeClient::new(sensitive_url, None)
     }
 
     /// The u8 value for `EthrexZisk` (our default test proof type).
@@ -60,8 +64,15 @@ mod tests {
             .await
             .expect("request_proofs should succeed against real server");
 
-        // The root should be non-zero (the server computes tree_hash_root of the SSZ).
-        assert!(!root.is_zero(), "returned root should be non-zero");
+        let expected_root =
+            OwnedNewPayloadRequest::<MainnetEthSpec>::from_ssz_bytes(FIXTURE_NEW_PAYLOAD_REQUEST)
+                .expect("fixture SSZ should decode to a valid NewPayloadRequest")
+                .tree_hash_root();
+
+        assert_eq!(
+            root, expected_root,
+            "server root should match tree_hash_root of fixture payload"
+        );
     }
 
     // ─── Test 2: SSE events from real server are parsed correctly ────────────

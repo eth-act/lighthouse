@@ -428,12 +428,12 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         self: &Arc<Self>,
         message_id: MessageId,
         peer_id: PeerId,
-        execution_proof: Box<SignedExecutionProof>,
+        execution_proof: Arc<SignedExecutionProof>,
     ) -> Result<(), Error<T::EthSpec>> {
         let processor = self.clone();
         let process_fn = async move {
             processor
-                .process_gossip_execution_proof(message_id, peer_id, *execution_proof)
+                .process_gossip_execution_proof(message_id, peer_id, execution_proof)
                 .await
         };
 
@@ -455,7 +455,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         let processor = self.clone();
         let process_fn = async move {
             processor
-                .process_rpc_execution_proof(peer_id, (*execution_proof).clone())
+                .process_rpc_execution_proof(peer_id, execution_proof)
                 .await
         };
         self.try_send(BeaconWorkEvent {

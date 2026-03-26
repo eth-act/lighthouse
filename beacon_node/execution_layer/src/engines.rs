@@ -108,6 +108,17 @@ pub struct ForkchoiceState {
     pub finalized_block_hash: ExecutionBlockHash,
 }
 
+impl ForkchoiceState {
+    /// Creates a `ForkchoiceState` with all block hashes set to the genesis hash.
+    pub fn new_genesis(genesis_hash: ExecutionBlockHash) -> Self {
+        Self {
+            head_block_hash: genesis_hash,
+            safe_block_hash: genesis_hash,
+            finalized_block_hash: genesis_hash,
+        }
+    }
+}
+
 #[derive(Hash, PartialEq, std::cmp::Eq)]
 struct PayloadIdCacheKey {
     pub head_block_hash: ExecutionBlockHash,

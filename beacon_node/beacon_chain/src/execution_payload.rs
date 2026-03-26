@@ -155,7 +155,7 @@ async fn notify_new_payload<T: BeaconChainTypes>(
     );
     chain
         .store
-        .put_request_root_mapping(new_payload_request_root, block_root);
+        .put_request_root_mapping(new_payload_request_root, block_root, block.slot());
 
     match new_payload_response {
         Ok(status) => match status {

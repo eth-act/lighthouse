@@ -26,7 +26,7 @@ pub use types::{
 use types::{
     ExecutionPayloadBellatrix, ExecutionPayloadCapella, ExecutionPayloadDeneb,
     ExecutionPayloadElectra, ExecutionPayloadFulu, ExecutionPayloadGloas, ExecutionRequests,
-    KzgProofs,
+    KzgProofs, Slot,
 };
 use types::{GRAFFITI_BYTES_LEN, Graffiti};
 
@@ -269,6 +269,8 @@ pub struct MissingProofInfo {
     pub root: Hash256,
     /// Proof types already received for this request root (to avoid redundant requests).
     pub existing_proof_types: Vec<u8>,
+    /// Beacon slot of the block whose proofs are missing.
+    pub slot: Slot,
 }
 
 #[derive(Clone, Debug, PartialEq)]

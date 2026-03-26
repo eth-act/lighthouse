@@ -6,10 +6,10 @@ use crate::test_utils::{MockClientEvent, MockProofNodeClient, make_test_fulu_ssz
 use bls::{FixedBytesExtended, SignatureBytes};
 use futures::StreamExt;
 use tokio::time::{Duration, timeout};
-use types::Hash256;
 use types::execution::eip8025::{
     ExecutionProof, ProofAttributes, PublicInput, SignedExecutionProof,
 };
+use types::{Hash256, MainnetEthSpec};
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -40,10 +40,10 @@ async fn next_event(rx: &mut tokio::sync::broadcast::Receiver<MockClientEvent>) 
 /// `request_proofs` decodes SSZ, records the body, and emits `ProofRequested`.
 #[tokio::test]
 async fn mock_client_request_proofs_emits_event() {
-    let mock = MockProofNodeClient::new(0);
+    let mock = MockProofNodeClient::<MainnetEthSpec>::new(0);
     let mut rx = mock.subscribe_client_events();
 
-    let (body, expected_root) = make_test_fulu_ssz(Hash256::repeat_byte(0xAA));
+    let (body, expected_root) = make_test_fulu_ssz::<MainnetEthSpec>(Hash256::repeat_byte(0xAA));
     let attrs = ProofAttributes {
         proof_types: vec![1, 2],
     };
@@ -67,7 +67,7 @@ async fn mock_client_request_proofs_emits_event() {
 /// `verify_proof` emits `ProofVerified`.
 #[tokio::test]
 async fn mock_client_verify_proof_emits_event() {
-    let mock = MockProofNodeClient::new(0);
+    let mock = MockProofNodeClient::<MainnetEthSpec>::new(0);
     let mut rx = mock.subscribe_client_events();
 
     let root = Hash256::repeat_byte(0xBB);
@@ -83,7 +83,7 @@ async fn mock_client_verify_proof_emits_event() {
 /// `get_proof` emits `ProofFetched`.
 #[tokio::test]
 async fn mock_client_get_proof_emits_event() {
-    let mock = MockProofNodeClient::new(0);
+    let mock = MockProofNodeClient::<MainnetEthSpec>::new(0);
     let mut rx = mock.subscribe_client_events();
 
     let root = Hash256::repeat_byte(0xCC);
@@ -99,13 +99,13 @@ async fn mock_client_get_proof_emits_event() {
 /// `request_proofs` broadcasts a `ProofComplete` SSE event for each proof type.
 #[tokio::test]
 async fn mock_client_request_proofs_broadcasts_sse_events() {
-    let mock = MockProofNodeClient::new(0);
+    let mock = MockProofNodeClient::<MainnetEthSpec>::new(0);
     let mut sse = mock.subscribe_proof_events(None);
 
     let attrs = ProofAttributes {
         proof_types: vec![0, 1],
     };
-    let (body, expected_root) = make_test_fulu_ssz(Hash256::repeat_byte(0x42));
+    let (body, expected_root) = make_test_fulu_ssz::<MainnetEthSpec>(Hash256::repeat_byte(0x42));
     let root = mock
         .request_proofs(body, attrs)
         .await
@@ -127,11 +127,11 @@ async fn mock_client_request_proofs_broadcasts_sse_events() {
 /// Multiple subscribers each receive every event independently.
 #[tokio::test]
 async fn mock_client_multiple_subscribers_each_get_events() {
-    let mock = MockProofNodeClient::new(0);
+    let mock = MockProofNodeClient::<MainnetEthSpec>::new(0);
     let mut rx1 = mock.subscribe_client_events();
     let mut rx2 = mock.subscribe_client_events();
 
-    let (body, _) = make_test_fulu_ssz(Hash256::repeat_byte(0x01));
+    let (body, _) = make_test_fulu_ssz::<MainnetEthSpec>(Hash256::repeat_byte(0x01));
     let _ = mock
         .request_proofs(
             body,
@@ -155,14 +155,14 @@ async fn mock_client_multiple_subscribers_each_get_events() {
 /// Different SSZ bodies produce different roots (computed via tree-hash).
 #[tokio::test]
 async fn mock_client_computes_distinct_roots_from_ssz() {
-    let mock = MockProofNodeClient::new(0);
+    let mock = MockProofNodeClient::<MainnetEthSpec>::new(0);
     let attrs = ProofAttributes {
         proof_types: vec![],
     };
 
-    let (body1, expected1) = make_test_fulu_ssz(Hash256::repeat_byte(0x01));
-    let (body2, expected2) = make_test_fulu_ssz(Hash256::repeat_byte(0x02));
-    let (body3, expected3) = make_test_fulu_ssz(Hash256::repeat_byte(0x03));
+    let (body1, expected1) = make_test_fulu_ssz::<MainnetEthSpec>(Hash256::repeat_byte(0x01));
+    let (body2, expected2) = make_test_fulu_ssz::<MainnetEthSpec>(Hash256::repeat_byte(0x02));
+    let (body3, expected3) = make_test_fulu_ssz::<MainnetEthSpec>(Hash256::repeat_byte(0x03));
 
     let root1 = mock.request_proofs(body1, attrs.clone()).await.unwrap();
     let root2 = mock.request_proofs(body2, attrs.clone()).await.unwrap();
@@ -182,7 +182,7 @@ async fn mock_client_computes_distinct_roots_from_ssz() {
 /// call `verify_proof` on the underlying client.
 #[tokio::test]
 async fn engine_verify_proof_unknown_root_returns_syncing() {
-    let mock = MockProofNodeClient::new(0);
+    let mock = MockProofNodeClient::<MainnetEthSpec>::new(0);
     let mut rx = mock.subscribe_client_events();
     let engine = HttpProofEngine::with_proof_node(mock);
 
@@ -207,7 +207,7 @@ async fn engine_verify_proof_unknown_root_returns_syncing() {
 /// `get_proof` delegates to the underlying client and emits `ProofFetched`.
 #[tokio::test]
 async fn engine_get_proof_delegates_to_client() {
-    let mock = MockProofNodeClient::new(0);
+    let mock = MockProofNodeClient::<MainnetEthSpec>::new(0);
     let mut rx = mock.subscribe_client_events();
     let engine = HttpProofEngine::with_proof_node(mock);
 
@@ -230,7 +230,7 @@ async fn engine_get_proof_delegates_to_client() {
 /// the buffer grows while no `ProofVerified` event is emitted.
 #[tokio::test]
 async fn engine_unknown_root_proof_is_buffered() {
-    let mock = MockProofNodeClient::new(0);
+    let mock = MockProofNodeClient::<MainnetEthSpec>::new(0);
     let mut rx = mock.subscribe_client_events();
     let engine = HttpProofEngine::with_proof_node(mock);
 
@@ -254,13 +254,13 @@ async fn engine_unknown_root_proof_is_buffered() {
 /// `subscribe_proof_events` with a root filter only forwards matching events.
 #[tokio::test]
 async fn engine_subscribe_proof_events_filters_by_root() {
-    let mock = MockProofNodeClient::new(0);
+    let mock = MockProofNodeClient::<MainnetEthSpec>::new(0);
     let attrs = ProofAttributes {
         proof_types: vec![0],
     };
 
-    let (body1, root1) = make_test_fulu_ssz(Hash256::from_low_u64_be(1));
-    let (body2, _root2) = make_test_fulu_ssz(Hash256::from_low_u64_be(2));
+    let (body1, root1) = make_test_fulu_ssz::<MainnetEthSpec>(Hash256::from_low_u64_be(1));
+    let (body2, _root2) = make_test_fulu_ssz::<MainnetEthSpec>(Hash256::from_low_u64_be(2));
 
     // Subscribe before making requests.
     let mut filtered = mock.subscribe_proof_events(Some(root1));

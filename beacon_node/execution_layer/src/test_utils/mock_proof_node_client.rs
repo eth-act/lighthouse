@@ -10,24 +10,74 @@
 use crate::eip8025::errors::ProofEngineError;
 use crate::eip8025::proof_node_client::ProofNodeClient;
 use crate::eip8025::types::{ProofComplete, ProofEvent};
-use crate::engine_api::NewPayloadRequestFulu;
 use bytes::Bytes;
 use futures::stream::Stream;
 use parking_lot::Mutex;
-use ssz::{Encode, SszDecoderBuilder};
+use ssz::{Decode, Encode};
+use ssz_derive::{Decode as SszDecode, Encode as SszEncode};
 use ssz_types::VariableList;
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
+use superstruct::superstruct;
 use tokio::sync::broadcast;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 use tree_hash::TreeHash;
+use tree_hash_derive::TreeHash as TreeHashDerive;
 use types::execution::eip8025::{ProofAttributes, ProofStatus};
 use types::{
-    EthSpec, ExecutionPayloadFulu, ExecutionRequests, Hash256, MainnetEthSpec, VersionedHash,
+    BeaconStateError, EthSpec, ExecutionPayloadBellatrix, ExecutionPayloadCapella,
+    ExecutionPayloadDeneb, ExecutionPayloadElectra, ExecutionPayloadFulu, ExecutionPayloadGloas,
+    ExecutionRequests, Hash256, MainnetEthSpec, VersionedHash,
 };
+
+/// Owned version of `NewPayloadRequest` used only for SSZ decoding inside the mock.
+///
+/// The production `NewPayloadRequest<'block, E>` holds `&'block` references (zero-copy
+/// during block processing), which prevents deriving `ssz::Decode`. This local owned
+/// superstruct enum mirrors all fork variants with owned fields and is used exclusively
+/// to decode the SSZ bytes sent to `request_proofs` and compute `tree_hash_root`.
+#[superstruct(
+    variants(Bellatrix, Capella, Deneb, Electra, Fulu, Gloas),
+    variant_attributes(derive(SszEncode, SszDecode, TreeHashDerive)),
+    cast_error(
+        ty = "BeaconStateError",
+        expr = "BeaconStateError::IncorrectStateVariant"
+    ),
+    partial_getter_error(
+        ty = "BeaconStateError",
+        expr = "BeaconStateError::IncorrectStateVariant"
+    )
+)]
+#[derive(SszEncode, SszDecode, TreeHashDerive)]
+#[ssz(enum_behaviour = "transparent")]
+#[tree_hash(enum_behaviour = "transparent")]
+pub struct OwnedNewPayloadRequest<E: EthSpec> {
+    #[superstruct(
+        only(Bellatrix),
+        partial_getter(rename = "execution_payload_bellatrix")
+    )]
+    pub execution_payload: ExecutionPayloadBellatrix<E>,
+    #[superstruct(only(Capella), partial_getter(rename = "execution_payload_capella"))]
+    pub execution_payload: ExecutionPayloadCapella<E>,
+    #[superstruct(only(Deneb), partial_getter(rename = "execution_payload_deneb"))]
+    pub execution_payload: ExecutionPayloadDeneb<E>,
+    #[superstruct(only(Electra), partial_getter(rename = "execution_payload_electra"))]
+    pub execution_payload: ExecutionPayloadElectra<E>,
+    #[superstruct(only(Fulu), partial_getter(rename = "execution_payload_fulu"))]
+    pub execution_payload: ExecutionPayloadFulu<E>,
+    #[superstruct(only(Gloas), partial_getter(rename = "execution_payload_gloas"))]
+    pub execution_payload: ExecutionPayloadGloas<E>,
+    #[superstruct(only(Deneb, Electra, Fulu, Gloas))]
+    pub versioned_hashes: VariableList<VersionedHash, E::MaxBlobCommitmentsPerBlock>,
+    #[superstruct(only(Deneb, Electra, Fulu, Gloas))]
+    pub parent_beacon_block_root: Hash256,
+    #[superstruct(only(Electra, Fulu, Gloas))]
+    pub execution_requests: ExecutionRequests<E>,
+}
 
 /// Events emitted by [`MockProofNodeClient`] for each method invocation.
 ///
@@ -47,22 +97,50 @@ pub enum MockClientEvent {
     ProofFetched { root: Hash256, proof_type: u8 },
 }
 
-static MOCK_REGISTRY: LazyLock<parking_lot::Mutex<HashMap<usize, Arc<MockProofNodeClient>>>> =
-    LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
+/// The registry stores a concrete `MockProofNodeClient<MainnetEthSpec>` as a
+/// non-generic stand-in. All fields are Arc-wrapped, so `get_mock_proof_engine`
+/// can construct a `MockProofNodeClient<E>` for any `E` by sharing those Arcs.
+static MOCK_REGISTRY: LazyLock<
+    parking_lot::Mutex<HashMap<usize, Arc<MockProofNodeClient<MainnetEthSpec>>>>,
+> = LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
 
 /// Register a mock at `index`. Must be called before `ExecutionLayer::from_config`.
-pub fn register_mock_proof_engine(
+///
+/// Stores the mock as `MainnetEthSpec` internally and returns a `MockProofNodeClient<E>`
+/// that shares the same Arc-backed state but decodes SSZ using `E`.
+pub fn register_mock_proof_engine<E: EthSpec>(
     index: usize,
     callback_delay_ms: u64,
-) -> Arc<MockProofNodeClient> {
-    let client = Arc::new(MockProofNodeClient::new(callback_delay_ms));
-    MOCK_REGISTRY.lock().insert(index, client.clone());
-    client
+) -> MockProofNodeClient<E> {
+    let stored = Arc::new(MockProofNodeClient::<MainnetEthSpec>::new(
+        callback_delay_ms,
+    ));
+    let typed = MockProofNodeClient::<E> {
+        requests: stored.requests.clone(),
+        event_tx: stored.event_tx.clone(),
+        call_tx: stored.call_tx.clone(),
+        proof_generation_delay: stored.proof_generation_delay,
+        _phantom: PhantomData,
+    };
+    MOCK_REGISTRY.lock().insert(index, stored);
+    typed
 }
 
-/// Fetch a registered mock by index (returns a clone sharing internal state).
-pub fn get_mock_proof_engine(index: usize) -> Option<Arc<MockProofNodeClient>> {
-    MOCK_REGISTRY.lock().get(&index).cloned()
+/// Fetch a registered mock by index as a `MockProofNodeClient<E>`.
+///
+/// Constructs the typed client by sharing the Arc fields of the stored
+/// `MockProofNodeClient<MainnetEthSpec>`, so all state (requests, events) is shared.
+pub fn get_mock_proof_engine<E: EthSpec>(index: usize) -> Option<MockProofNodeClient<E>> {
+    MOCK_REGISTRY
+        .lock()
+        .get(&index)
+        .map(|stored| MockProofNodeClient::<E> {
+            requests: stored.requests.clone(),
+            event_tx: stored.event_tx.clone(),
+            call_tx: stored.call_tx.clone(),
+            proof_generation_delay: stored.proof_generation_delay,
+            _phantom: PhantomData,
+        })
 }
 
 /// URL encoding an index: `"http://mock/{n}/"`.
@@ -82,61 +160,24 @@ pub fn parse_mock_index(url: &str) -> Option<usize> {
     })
 }
 
-/// Decode SSZ bytes as a `NewPayloadRequestFulu<MainnetEthSpec>` and compute
-/// the tree-hash root.
-///
-/// Decodes each field individually via `SszDecoderBuilder`, constructs a
-/// `NewPayloadRequestFulu` borrowing the owned fields, and returns the
-/// tree-hash root of the real superstruct type.
-fn decode_fulu_tree_hash_root(ssz_body: &[u8]) -> Result<Hash256, ssz::DecodeError> {
-    let mut builder = SszDecoderBuilder::new(ssz_body);
-    builder.register_type::<ExecutionPayloadFulu<MainnetEthSpec>>()?;
-    builder.register_type::<VariableList<VersionedHash, <MainnetEthSpec as EthSpec>::MaxBlobCommitmentsPerBlock>>()?;
-    builder.register_type::<Hash256>()?;
-    builder.register_type::<ExecutionRequests<MainnetEthSpec>>()?;
-    let mut decoder = builder.build()?;
-
-    let execution_payload: ExecutionPayloadFulu<MainnetEthSpec> = decoder.decode_next()?;
-    let versioned_hashes: VariableList<
-        VersionedHash,
-        <MainnetEthSpec as EthSpec>::MaxBlobCommitmentsPerBlock,
-    > = decoder.decode_next()?;
-    let parent_beacon_block_root: Hash256 = decoder.decode_next()?;
-    let execution_requests: ExecutionRequests<MainnetEthSpec> = decoder.decode_next()?;
-
-    let request = NewPayloadRequestFulu {
-        execution_payload: &execution_payload,
-        versioned_hashes,
-        parent_beacon_block_root,
-        execution_requests: &execution_requests,
-    };
-    Ok(request.tree_hash_root())
-}
-
-/// Build a test SSZ body encoding a `NewPayloadRequestFulu` with the given
+/// Build a test SSZ body encoding a `NewPayloadRequestFulu<E>` with the given
 /// parent beacon block root. Returns `(ssz_bytes, expected_tree_hash_root)`.
-pub fn make_test_fulu_ssz(parent_root: Hash256) -> (Vec<u8>, Hash256) {
-    let execution_payload = ExecutionPayloadFulu::<MainnetEthSpec>::default();
-    let versioned_hashes = VariableList::<
-        VersionedHash,
-        <MainnetEthSpec as EthSpec>::MaxBlobCommitmentsPerBlock,
-    >::default();
-    let execution_requests = ExecutionRequests::<MainnetEthSpec>::default();
-    let request = NewPayloadRequestFulu {
-        execution_payload: &execution_payload,
-        versioned_hashes,
+pub fn make_test_fulu_ssz<E: EthSpec>(parent_root: Hash256) -> (Vec<u8>, Hash256) {
+    let request = OwnedNewPayloadRequestFulu::<E> {
+        execution_payload: ExecutionPayloadFulu::default(),
+        versioned_hashes: VariableList::default(),
         parent_beacon_block_root: parent_root,
-        execution_requests: &execution_requests,
+        execution_requests: ExecutionRequests::default(),
     };
+    let request = OwnedNewPayloadRequest::Fulu(request);
     (request.as_ssz_bytes(), request.tree_hash_root())
 }
 
-/// In-memory proof node client for testing.
+/// In-memory proof node client for testing, generic over [`EthSpec`].
 ///
-/// Each call to [`request_proofs`] decodes the SSZ body as a Fulu
-/// `NewPayloadRequest`, computes the tree-hash root, records the raw SSZ body,
-/// and schedules a [`ProofEvent::ProofComplete`] event for each requested
-/// proof type after `callback_delay_ms` milliseconds.
+/// Each call to [`request_proofs`] decodes the SSZ body using `E`, records the
+/// raw SSZ body, and schedules a [`ProofEvent::ProofComplete`] event for each
+/// requested proof type after `callback_delay_ms` milliseconds.
 ///
 /// Call [`subscribe_client_events`] to receive a [`MockClientEvent`] stream
 /// that fires once per method invocation — useful for asserting that the proof
@@ -144,8 +185,7 @@ pub fn make_test_fulu_ssz(parent_root: Hash256) -> (Vec<u8>, Hash256) {
 ///
 /// [`request_proofs`]: MockProofNodeClient::request_proofs
 /// [`subscribe_client_events`]: MockProofNodeClient::subscribe_client_events
-#[derive(Clone)]
-pub struct MockProofNodeClient {
+pub struct MockProofNodeClient<E: EthSpec> {
     /// Received SSZ request bodies in order of arrival.
     requests: Arc<Mutex<Vec<Vec<u8>>>>,
     /// Broadcast channel for in-memory SSE events.
@@ -153,11 +193,24 @@ pub struct MockProofNodeClient {
     /// Broadcast channel for method-invocation events.
     call_tx: broadcast::Sender<MockClientEvent>,
     /// Delay in milliseconds before broadcasting proof complete events.
-    callback_delay_ms: u64,
+    proof_generation_delay: u64,
+    _phantom: PhantomData<E>,
 }
 
-impl MockProofNodeClient {
-    /// Create a new mock client.
+impl<E: EthSpec> Clone for MockProofNodeClient<E> {
+    fn clone(&self) -> Self {
+        Self {
+            requests: self.requests.clone(),
+            event_tx: self.event_tx.clone(),
+            call_tx: self.call_tx.clone(),
+            proof_generation_delay: self.proof_generation_delay,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<E: EthSpec> MockProofNodeClient<E> {
+    /// Create a new unregistered mock client.
     ///
     /// `callback_delay_ms` controls how long after `request_proofs` the
     /// proof complete events are broadcast.
@@ -168,7 +221,8 @@ impl MockProofNodeClient {
             requests: Arc::new(Mutex::new(Vec::new())),
             event_tx,
             call_tx,
-            callback_delay_ms,
+            proof_generation_delay: callback_delay_ms,
+            _phantom: PhantomData,
         }
     }
 
@@ -193,14 +247,15 @@ impl MockProofNodeClient {
 }
 
 #[async_trait::async_trait]
-impl ProofNodeClient for MockProofNodeClient {
+impl<E: EthSpec> ProofNodeClient for MockProofNodeClient<E> {
     async fn request_proofs(
         &self,
         ssz_body: Vec<u8>,
         proof_attributes: ProofAttributes,
     ) -> Result<Hash256, ProofEngineError> {
-        let root = decode_fulu_tree_hash_root(&ssz_body)
-            .map_err(|e| ProofEngineError::InvalidPayload(format!("SSZ decode failed: {e:?}")))?;
+        let root = OwnedNewPayloadRequest::<E>::from_ssz_bytes(&ssz_body)
+            .map_err(|e| ProofEngineError::InvalidPayload(format!("SSZ decode failed: {e:?}")))?
+            .tree_hash_root();
 
         self.requests.lock().push(ssz_body.clone());
 
@@ -211,7 +266,7 @@ impl ProofNodeClient for MockProofNodeClient {
         });
 
         let event_tx = self.event_tx.clone();
-        let delay = self.callback_delay_ms;
+        let delay = self.proof_generation_delay;
         let proof_types = proof_attributes.proof_types.clone();
 
         tokio::spawn(async move {

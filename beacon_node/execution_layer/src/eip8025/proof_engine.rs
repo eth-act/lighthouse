@@ -165,7 +165,7 @@ impl HttpProofEngine {
     }
 
     /// Notify the proof engine of a forkchoice update.
-    pub async fn forkchoice_updated(
+    pub fn forkchoice_updated(
         &self,
         forkchoice_state: ForkchoiceState,
     ) -> Result<ForkchoiceUpdatedResponse, ProofEngineError> {
@@ -182,28 +182,9 @@ impl HttpProofEngine {
         new_payload_request: NewPayloadRequest<'_, E>,
         proof_attributes: ProofAttributes,
     ) -> Result<Hash256, ProofEngineError> {
-        match new_payload_request {
-            NewPayloadRequest::Bellatrix(_) => {
-                Err(ProofEngineError::ForkNotSupported("Bellatrix".to_string()))
-            }
-            NewPayloadRequest::Capella(_) => {
-                Err(ProofEngineError::ForkNotSupported("Capella".to_string()))
-            }
-            NewPayloadRequest::Deneb(_) => {
-                Err(ProofEngineError::ForkNotSupported("Deneb".to_string()))
-            }
-            NewPayloadRequest::Electra(_) => {
-                Err(ProofEngineError::ForkNotSupported("Electra".to_string()))
-            }
-            NewPayloadRequest::Fulu(fulu) => {
-                self.proof_node
-                    .request_proofs(fulu.as_ssz_bytes(), proof_attributes)
-                    .await
-            }
-            NewPayloadRequest::Gloas(_) => {
-                Err(ProofEngineError::ForkNotSupported("Gloas".to_string()))
-            }
-        }
+        self.proof_node
+            .request_proofs(new_payload_request.as_ssz_bytes(), proof_attributes)
+            .await
     }
 
     /// Snapshot the current state into a persisted form for serialization.

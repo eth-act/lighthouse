@@ -51,23 +51,46 @@ impl State {
         Self::default()
     }
 
-    /// Return all buffer entries that do not yet have sufficient proofs for promotion.
+    /// Return buffer entries that do not yet have sufficient proofs for promotion,
+    /// restricted to those on the ancestor path required to satisfy `latest_fcs`.
     ///
-    /// Only the `buffer` is scanned: by design, every entry in the buffer has not been
-    /// promoted to the tree, meaning it lacks sufficient proofs. Tree entries are already done.
+    /// If `latest_fcs` is unset there is no pending fork-choice update to satisfy, so
+    /// nothing is returned. Otherwise the buffer is walked backwards from
+    /// `latest_fcs.head_block_hash`; entries that lack sufficient proofs are collected
+    /// until a block is not found in the buffer (reached the tree or an unseen block).
     pub fn missing_proofs(&self) -> Vec<MissingProofInfo> {
-        self.buffer
+        let Some(latest_fcs) = &self.latest_fcs else {
+            return vec![];
+        };
+
+        // Build block_hash → &PayloadRequest for O(1) lookup during the walk.
+        let buffer_by_block_hash: HashMap<ExecutionBlockHash, &PayloadRequest> = self
+            .buffer
             .proofs
-            .iter()
-            .map(|(request_root, payload_request)| MissingProofInfo {
-                root: *request_root,
-                existing_proof_types: payload_request
-                    .proofs
-                    .iter()
-                    .map(|p| p.message.proof_type)
-                    .collect(),
-            })
-            .collect()
+            .values()
+            .map(|p| (p.metadata.block_hash, p))
+            .collect();
+
+        // Walk backwards from the FCS head through buffer entries, collecting
+        // those that still lack sufficient proofs. Stop when a block is not in
+        // the buffer (reached the tree or an unseen block).
+        let mut result = Vec::new();
+        let mut current = latest_fcs.head_block_hash;
+        loop {
+            let Some(req) = buffer_by_block_hash.get(&current) else {
+                break;
+            };
+            if req.proofs.len() < self.min_required_proofs {
+                result.push(MissingProofInfo {
+                    root: req.metadata.request_root,
+                    existing_proof_types: req.proofs.iter().map(|p| p.message.proof_type).collect(),
+                    slot: Default::default(), // populated by BeaconChain::missing_execution_proofs()
+                });
+            }
+            current = req.metadata.parent_hash;
+        }
+
+        result
     }
 
     /// Check if the state contains any proofs associated with the given new payload request root.
@@ -121,6 +144,21 @@ impl State {
             self.tree.current_canonical_head = finalized;
 
             tracing::info!(target: "execution_layer", ?finalized, "Updated last_valid_fcs to finalized block (tree empty)");
+
+            // Check if any buffered requests can be promoted based on the new last_valid_fcs.
+            let mut promote_requests = Vec::new();
+            for request in self.buffer.proofs.keys() {
+                if self.can_promote(request)? {
+                    promote_requests.push(*request);
+                }
+            }
+            // Promote any buffered requests that can now be associated with the tree state.
+            for request_root in promote_requests {
+                if let Some(latest_canonical_head) = self.promote_buffered_requests(request_root)? {
+                    tracing::info!(target: "execution_layer", ?latest_canonical_head, "Updated canonical head after promoting buffered proofs");
+                }
+            }
+
             return Ok(self.forkchoice_response_syncing());
         }
 
@@ -654,10 +692,18 @@ pub mod test_utils {
         request_root: Hash256,
         validator_index: u64,
     ) -> SignedExecutionProof {
+        create_signed_proof_with_type(request_root, validator_index, 1)
+    }
+
+    pub fn create_signed_proof_with_type(
+        request_root: Hash256,
+        validator_index: u64,
+        proof_type: u8,
+    ) -> SignedExecutionProof {
         SignedExecutionProof {
             message: ExecutionProof {
                 proof_data: VariableList::new(vec![0xaa, 0xbb, 0xcc]).unwrap(),
-                proof_type: 1,
+                proof_type,
                 public_input: PublicInput {
                     new_payload_request_root: request_root,
                 },
@@ -936,12 +982,13 @@ pub mod test_utils {
             let metadata =
                 create_request_metadata(request_root, block_hash, parent_hash, block_number);
 
-            // Generate proofs
+            // Generate proofs with distinct proof types to avoid deduplication.
             let mut proofs = Vec::new();
             for i in 0..proof_count {
-                proofs.push(create_signed_proof(
+                proofs.push(create_signed_proof_with_type(
                     request_root,
                     request_root.0[0] as u64 + i as u64,
+                    (i as u8).wrapping_add(1), // types 1, 2, 3, ... (avoid 0)
                 ));
             }
 

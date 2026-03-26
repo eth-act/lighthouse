@@ -15,7 +15,7 @@ use lighthouse_network::Enr;
 use lighthouse_network::identity::Keypair;
 use lighthouse_network::rpc::InboundRequestId;
 use lighthouse_network::rpc::RequestType;
-use lighthouse_network::rpc::methods::RpcResponse;
+use lighthouse_network::rpc::methods::{ExecutionProofStatus, RpcResponse};
 use lighthouse_network::service::Network;
 use lighthouse_network::types::GossipKind;
 use lighthouse_network::{
@@ -290,6 +290,11 @@ impl<T: BeaconChainTypes> NetworkService<T> {
             local_keypair,
         )
         .await?;
+
+        network_globals.set_local_execution_proof_status(ExecutionProofStatus {
+            slot: 0,
+            block_root: beacon_chain.genesis_block_root,
+        });
 
         // Repopulate the DHT with stored ENR's if discovery is not disabled.
         if !config.disable_discovery {
