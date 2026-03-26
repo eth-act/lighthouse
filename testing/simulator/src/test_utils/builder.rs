@@ -195,7 +195,10 @@ impl<E: EthSpec> TestNetworkFixtureBuilder<E> {
         let node_types = [
             (NodeType::Default, network_params.node_count),
             (NodeType::Proposer, network_params.proposer_nodes),
-            (NodeType::ProofGenerator, network_params.proof_generator_nodes),
+            (
+                NodeType::ProofGenerator,
+                network_params.proof_generator_nodes,
+            ),
             (NodeType::ProofVerifier, network_params.proof_verifier_nodes),
         ];
 

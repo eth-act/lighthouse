@@ -587,15 +587,12 @@ impl<E: EthSpec> LocalNetwork<E> {
         index: usize,
     ) -> Option<tokio::sync::broadcast::Receiver<execution_layer::test_utils::MockClientEvent>>
     {
-        self.beacon_nodes
-            .read()
-            .get(index)
-            .and_then(|bn| {
-                bn.client
-                    .beacon_chain()
-                    .and_then(|chain| chain.execution_layer.as_ref().cloned())
-                    .and_then(|el| el.subscribe_proof_node_client_events())
-            })
+        self.beacon_nodes.read().get(index).and_then(|bn| {
+            bn.client
+                .beacon_chain()
+                .and_then(|chain| chain.execution_layer.as_ref().cloned())
+                .and_then(|el| el.subscribe_proof_node_client_events())
+        })
     }
 
     pub async fn duration_to_genesis(&self) -> Result<Duration, &'static str> {

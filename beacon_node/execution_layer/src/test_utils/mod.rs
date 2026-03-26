@@ -33,8 +33,8 @@ pub use execution_block_generator::{
 };
 pub use hook::Hook;
 pub use mock_builder::{MockBuilder, Operation, mock_builder_extra_data};
-pub use mock_execution_layer::MockExecutionLayer;
 pub use mock_event_stream::{MockEventStream, MockStreamError};
+pub use mock_execution_layer::MockExecutionLayer;
 pub use mock_proof_node_client::{
     MockClientEvent, MockProofNodeClient, OwnedNewPayloadRequest, get_mock_proof_engine,
     make_test_fulu_ssz, mock_proof_engine_url, parse_mock_index, register_mock_proof_engine,
