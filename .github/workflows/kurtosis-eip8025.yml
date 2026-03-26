@@ -19,6 +19,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Clear stale leveldb-sys cmake cache
+        run: docker builder prune --filter type=exec.cachemount -f 2>/dev/null || true
+
       - name: Install Kurtosis
         run: |
           echo "deb [trusted=yes] https://apt.fury.io/kurtosis-tech/ /" | sudo tee /etc/apt/sources.list.d/kurtosis.list
