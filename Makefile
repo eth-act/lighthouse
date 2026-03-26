@@ -177,19 +177,18 @@ build-release-tarballs:
 test-release:
 	cargo nextest run --workspace --release --features "$(TEST_FEATURES)" \
 		--exclude ef_tests --exclude beacon_chain --exclude slasher --exclude network \
-		--exclude http_api --exclude proof_engine_zkboost_test
+		--exclude http_api
 
 
 # Runs the full workspace tests in **debug**, without downloading any additional test
 # vectors.
 test-debug:
 	cargo nextest run --workspace --features "$(TEST_FEATURES)" \
-		--exclude ef_tests --exclude beacon_chain --exclude network --exclude http_api \
-		--exclude proof_engine_zkboost_test
+		--exclude ef_tests --exclude beacon_chain --exclude network --exclude http_api
 
 # Runs the proof_engine_zkboost integration tests against a real (mock-backend) zkBoost server.
 test-zkboost:
-	cargo nextest run -p proof_engine_zkboost_test --release --features "$(TEST_FEATURES)"
+	cargo nextest run --manifest-path testing/proof_engine_zkboost/Cargo.toml --release
 
 # Runs cargo-fmt (linter).
 cargo-fmt:

@@ -1,5 +1,5 @@
-FROM rust:1.91.0-bullseye AS builder
-RUN apt-get update && apt-get -y upgrade && apt-get install -y cmake libclang-dev clang
+FROM rust:1.88.0-bullseye AS builder
+RUN apt-get update && apt-get -y upgrade && apt-get install -y cmake libclang-dev
 ARG FEATURES
 ARG PROFILE=release
 ARG CARGO_USE_GIT_CLI=true
@@ -7,9 +7,6 @@ ENV FEATURES=$FEATURES
 ENV PROFILE=$PROFILE
 ENV CARGO_NET_GIT_FETCH_WITH_CLI=$CARGO_USE_GIT_CLI
 ENV CARGO_INCREMENTAL=1
-# Use Clang for C/C++ compilation (leveldb-sys requires -Wthread-safety, a Clang-only flag)
-ENV CC=clang
-ENV CXX=clang++
 
 WORKDIR /lighthouse
 COPY . .
