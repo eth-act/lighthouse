@@ -1,137 +1,117 @@
-//! A test suite for the proof engine, using a local test network fixture.
+//! Integration tests for the EIP-8025 proof engine, using [`ProofEngineTestRig`].
+
+mod rig;
+pub use rig::ProofEngineTestRig;
 
 #[cfg(test)]
 mod test {
     use std::time::Duration;
 
-    use simulator::test_utils::*;
+    use futures::try_join;
+    use simulator::test_utils::{Epoch, StateId};
 
-    /// A base test network fixture builder for eip-8025 testing.
-    ///
-    /// This fixture has:
-    /// - all forks up to and including fulu activate at genesis
-    /// - all nodes configured with 1 second slots to speed up tests
-    /// - a minimal genesis time to allow tests to start quickly
-    ///
-    /// - 1 vanilla beacon node
-    /// - 1 proof generator node
-    /// - 1 proof verifier node
-    fn test_fixture_builder_base() -> TestNetworkFixtureBuilder {
-        TestNetworkFixture::builder()
-            .map_spec(|spec| {
-                spec.seconds_per_slot = 1;
-                spec.slot_duration_ms = 1000;
-                spec.min_genesis_time = 0;
-                spec.altair_fork_epoch = Some(Epoch::new(0));
-                spec.bellatrix_fork_epoch = Some(Epoch::new(0));
-                spec.capella_fork_epoch = Some(Epoch::new(0));
-                spec.deneb_fork_epoch = Some(Epoch::new(0));
-                spec.electra_fork_epoch = Some(Epoch::new(0));
-                spec.fulu_fork_epoch = Some(Epoch::new(0));
-            })
-            .with_network_params(LocalNetworkParams {
-                validator_count: 4,
-                node_count: 1,
-                proposer_nodes: 0,
-                extra_nodes: 0,
-                proof_generator_nodes: 1,
-                proof_verifier_nodes: 1,
-                delayed_nodes: 0,
-                genesis_delay: 120,
-            })
-    }
+    use super::ProofEngineTestRig;
 
     #[tokio::test]
     #[cfg_attr(debug_assertions, ignore = "too slow in debug mode")]
     async fn test_proof_engine_basic() -> anyhow::Result<()> {
-        let mut fixture = test_fixture_builder_base()
-            .with_log_level(LevelFilter::DEBUG)
-            .with_log_dir("proof-engine".into())
-            .build()
+        let mut rig = ProofEngineTestRig::standard().await?;
+        rig.fixture.payloads_valid();
+        rig.fixture.wait_for_genesis().await?;
+
+        let mut events = rig.proof_generator_events(0)?;
+        events
+            .expect_proof_requests(1, Duration::from_secs(30))
             .await?;
-        fixture.payloads_valid();
-        fixture.wait_for_genesis().await?;
-
-        // Subscribe before the run so events accumulate in the broadcast buffer.
-        let mut event_rx = fixture
-            .network
-            .proof_generator_subscribe_client_events()
-            .expect("proof generator node should expose a mock client event stream");
-
-        let proof_requests = tokio::time::timeout(Duration::from_secs(30), async {
-            let mut proof_request_count: u64 = 0;
-            loop {
-                if let Ok(MockClientEvent::ProofRequested { .. }) = event_rx.recv().await {
-                    proof_request_count += 1
-                }
-                if proof_request_count > 0 {
-                    break;
-                }
-            }
-            proof_request_count
-        })
-        .await?;
-
-        assert!(
-            proof_requests > 0,
-            "expected at least one proof request after 60s"
-        );
-
         Ok(())
     }
 
     #[tokio::test]
     #[cfg_attr(debug_assertions, ignore = "too slow in debug mode")]
     async fn test_proof_engine_sync() -> anyhow::Result<()> {
-        let mut fixture = test_fixture_builder_base()
-            .map_spec(|spec| {
-                // Collapse all columns onto a single subnet and reduce the total number of
-                // custody groups so the small 2-node network can fully cover them.
-                //
-                // - data_column_sidecar_subnet_count = 1: all custody groups map to subnet 0,
-                //   so any connected peer satisfies `good_peers_on_sampling_subnets()`.
-                //
-                // - number_of_custody_groups = 8: with validator_custody_requirement = 8 (the
-                //   spec default), nodes with validators always get cgc = min(max(units, 8), 8)
-                //   = 8 = full custody of all groups. This avoids the "too many columns, not
-                //   enough peers" problem that occurs with the default 128 groups across 2 nodes.
-                //   Note: do NOT also set custody_requirement = 128; that shrinks the valid cgc
-                //   range to 128..=128 and causes the joining node to ban existing peers whose
-                //   validator-derived cgc is 8.
-                spec.data_column_sidecar_subnet_count = 1;
-                spec.number_of_custody_groups = 8;
-            })
-            .map_network_params(|params| {
-                params.proof_verifier_nodes = 0;
-                params.delayed_nodes = 1;
-            })
-            .with_log_level(LevelFilter::DEBUG)
-            .with_log_dir("proof-engine-sync".into())
-            .build()
-            .await?;
-        fixture.payloads_valid();
-        fixture.wait_for_genesis().await?;
+        let mut rig = ProofEngineTestRig::sync_topology().await?;
+        rig.fixture.payloads_valid();
+        rig.fixture.wait_for_genesis().await?;
 
+        // Let the proof generator accumulate some proofs before the verifier joins.
         tokio::time::sleep(Duration::from_secs(30)).await;
 
-        // Now lets add a new proof verifier node and observe the sync behaviour.
-        let net = fixture.network.clone();
-        info!(target: "simulator", "Adding 1 proof verifier beacon nodes to the network");
-        fixture.network.executor().spawn(
-            async move {
-                net.add_beacon_node(
-                    fixture.config.client.clone(),
-                    fixture.config.execution.clone(),
-                    NodeType::ProofVerifier,
-                )
-                .await
-                .map_err(anyhow::Error::msg)
-                .expect("should not error");
-            },
-            "add_proof_verifier",
-        );
+        // Add a proof verifier and subscribe to its events.
+        let mut events = rig.add_proof_verifier_and_subscribe().await?;
 
-        tokio::time::sleep(Duration::from_secs(60)).await;
+        // The verifier should sync historical proofs and issue verification calls.
+        events
+            .expect_proof_verified(1, Duration::from_secs(60))
+            .await?;
+
+        Ok(())
+    }
+
+    /// Assert that the proof verifier actually receives and validates gossip proofs from the
+    /// generator — not just that the generator issued a request.
+    #[tokio::test]
+    #[cfg_attr(debug_assertions, ignore = "too slow in debug mode")]
+    async fn test_proof_verifier_receives_proofs() -> anyhow::Result<()> {
+        let mut rig = ProofEngineTestRig::standard().await?;
+        rig.fixture.payloads_valid();
+        rig.fixture.wait_for_genesis().await?;
+
+        let mut verifier_events = rig.proof_verifier_events(0)?;
+        verifier_events
+            .expect_proof_verified(1, Duration::from_secs(60))
+            .await?;
+
+        Ok(())
+    }
+
+    /// Assert that two independent proof generators each receive proof requests, validating that
+    /// mock registration and event wiring is per-node and not shared.
+    #[tokio::test]
+    #[cfg_attr(debug_assertions, ignore = "too slow in debug mode")]
+    async fn test_multi_generator_proof_requests() -> anyhow::Result<()> {
+        let mut rig = ProofEngineTestRig::multi_generator().await?;
+        rig.fixture.payloads_valid();
+        rig.fixture.wait_for_genesis().await?;
+
+        let mut gen0 = rig.proof_generator_events(0)?;
+        let mut gen1 = rig.proof_generator_events(1)?;
+
+        // Both generators should receive proof requests independently.
+        try_join!(
+            gen0.expect_proof_requests(1, Duration::from_secs(30)),
+            gen1.expect_proof_requests(1, Duration::from_secs(30)),
+        )?;
+
+        Ok(())
+    }
+
+    /// Assert that the network reaches finality (epoch ≥ 2) while the proof engine is running.
+    #[tokio::test]
+    #[cfg_attr(debug_assertions, ignore = "too slow in debug mode")]
+    async fn test_network_finalizes_with_proofs() -> anyhow::Result<()> {
+        let mut rig = ProofEngineTestRig::standard().await?;
+        rig.fixture.payloads_valid();
+        rig.fixture.wait_for_genesis().await?;
+
+        // MinimalEthSpec: 8 slots/epoch. Finality of epoch 2 requires epochs 3-4 to elapse.
+        // 4 epochs * 8 slots * 1s = 32s minimum; use 45s for margin.
+        tokio::time::sleep(Duration::from_secs(45)).await;
+
+        // Check finality on the default node and the proof generator independently.
+        for node in [rig.default_node(0)?, rig.proof_generator_node(0)?] {
+            let checkpoint = node
+                .get_beacon_states_finality_checkpoints(StateId::Head)
+                .await
+                .map_err(|e| anyhow::anyhow!("{e:?}"))?
+                .ok_or_else(|| anyhow::anyhow!("no finality checkpoint response"))?
+                .data
+                .finalized;
+            assert!(
+                checkpoint.epoch >= Epoch::new(2),
+                "expected finality at epoch ≥ 2, got {}",
+                checkpoint.epoch
+            );
+        }
 
         Ok(())
     }
