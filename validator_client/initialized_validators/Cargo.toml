@@ -12,9 +12,11 @@ eth2_keystore = { workspace = true }
 filesystem = { workspace = true }
 lockfile = { workspace = true }
 metrics = { workspace = true }
+p12-keystore = "0.2"
 parking_lot = { workspace = true }
+pem = "3"
 rand = { workspace = true }
-reqwest = { workspace = true, features = ["native-tls-vendored"] }
+reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 signing_method = { workspace = true }
