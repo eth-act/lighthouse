@@ -70,7 +70,6 @@ members = [
     "testing/execution_engine_integration",
     "testing/node_test_rig",
     "testing/proof_engine",
-    "testing/proof_engine_zkboost",
     "testing/simulator",
     "testing/state_transition_vectors",
     "testing/validator_test_rig",
@@ -93,7 +92,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2024"
-version = "8.0.1"
+version = "8.1.2"
 
 [workspace.dependencies]
 account_utils = { path = "common/account_utils" }
@@ -102,7 +101,7 @@ alloy-dyn-abi = { version = "1", default-features = false }
 alloy-json-abi = { version = "1", default-features = false }
 alloy-network = { version = "1", default-features = false }
 alloy-primitives = { version = "1", default-features = false, features = ["rlp", "getrandom"] }
-alloy-provider = { version = "1", default-features = false, features = ["reqwest"] }
+alloy-provider = { version = "1", default-features = false, features = ["reqwest", "reqwest-rustls-tls"] }
 alloy-rlp = { version = "0.3", default-features = false }
 alloy-rpc-types-eth = { version = "1", default-features = false, features = ["serde"] }
 alloy-signer-local = { version = "1", default-features = false }
@@ -129,7 +128,7 @@ clap_utils = { path = "common/clap_utils" }
 compare_fields = "0.1"
 console-subscriber = "0.4"
 context_deserialize = "0.2"
-criterion = "0.5"
+criterion = "0.8"
 delay_map = "0.4"
 deposit_contract = { path = "common/deposit_contract" }
 directory = { path = "common/directory" }
@@ -169,7 +168,7 @@ http_api = { path = "beacon_node/http_api" }
 hyper = "1"
 initialized_validators = { path = "validator_client/initialized_validators" }
 int_to_bytes = { path = "consensus/int_to_bytes" }
-itertools = "0.10"
+itertools = "0.14"
 kzg = { path = "crypto/kzg" }
 libsecp256k1 = "0.7"
 lighthouse_network = { path = "beacon_node/lighthouse_network" }
@@ -180,13 +179,13 @@ lockfile = { path = "common/lockfile" }
 log = "0.4"
 logging = { path = "common/logging" }
 logroller = "0.1.8"
-lru = "0.12"
+lru = "0.16"
 lru_cache = { path = "common/lru_cache" }
 malloc_utils = { path = "common/malloc_utils" }
 maplit = "1"
 merkle_proof = { path = "consensus/merkle_proof" }
 metrics = { path = "common/metrics" }
-metrics-exporter-prometheus = "0.16"
+
 milhouse = { version = "0.9", default-features = false, features = ["context_deserialize"] }
 mockall = "0.13"
 mockall_double = "0.3"
@@ -198,7 +197,7 @@ node_test_rig = { path = "testing/node_test_rig" }
 num_cpus = "1"
 once_cell = "1.17.1"
 opentelemetry = "0.30.0"
-opentelemetry-otlp = { version = "0.30.0", features = ["grpc-tonic", "tls-roots"] }
+opentelemetry-otlp = { version = "0.30.0", default-features = false, features = ["grpc-tonic", "tls-roots", "trace"] }
 opentelemetry_sdk = "0.30.0"
 operation_pool = { path = "beacon_node/operation_pool" }
 parking_lot = "0.12"
@@ -221,7 +220,7 @@ reqwest = { version = "0.12", default-features = false, features = [
 reqwest-eventsource = "0.6"
 ring = "0.17"
 rpds = "0.11"
-rusqlite = { version = "0.28", features = ["bundled"] }
+rusqlite = { version = "0.38", features = ["bundled"] }
 rust_eth_kzg = "0.9"
 safe_arith = "0.1"
 sensitive_url = { version = "0.1", features = ["serde"] }
@@ -234,7 +233,7 @@ signing_method = { path = "validator_client/signing_method" }
 slasher = { path = "slasher", default-features = false }
 slashing_protection = { path = "validator_client/slashing_protection" }
 slot_clock = { path = "common/slot_clock" }
-smallvec = { version = "1.11.2", features = ["arbitrary"] }
+smallvec = { version = "1", features = ["arbitrary"] }
 snap = "1"
 ssz_types = { version = "0.14.0", features = ["context_deserialize", "runtime_types"] }
 state_processing = { path = "consensus/state_processing" }
@@ -266,7 +265,7 @@ tree_hash_derive = "0.12.0"
 typenum = "1"
 types = { path = "consensus/types" }
 url = "2"
-uuid = { version = "0.8", features = ["serde", "v4"] }
+uuid = { version = "1", features = ["serde", "v4"] }
 validator_client = { path = "validator_client" }
 validator_dir = { path = "common/validator_dir" }
 validator_http_api = { path = "validator_client/http_api" }
@@ -281,8 +280,7 @@ workspace_members = { path = "common/workspace_members" }
 xdelta3 = { git = "https://github.com/sigp/xdelta3-rs", rev = "4db64086bb02e9febb584ba93b9d16bb2ae3825a" }
 zeroize = { version = "1", features = ["zeroize_derive", "serde"] }
 zip = { version = "6.0", default-features = false, features = ["deflate"] }
-zkboost-server = { git = "https://github.com/eth-act/zkboost", branch = "master" }
-zkboost-types = { git = "https://github.com/eth-act/zkboost", branch = "master" }
+
 zstd = "0.13"
 
 [profile.maxperf]

@@ -33,6 +33,7 @@ pub use execution_block_generator::{
 };
 pub use hook::Hook;
 pub use mock_builder::{MockBuilder, Operation, mock_builder_extra_data};
+pub use mock_event_stream::{MockEventStream, MockStreamError};
 pub use mock_execution_layer::MockExecutionLayer;
 pub use mock_proof_node_client::{
     MockClientEvent, MockProofNodeClient, OwnedNewPayloadRequest, get_mock_proof_engine,
@@ -76,6 +77,7 @@ mod execution_block_generator;
 mod handle_rpc;
 mod hook;
 mod mock_builder;
+mod mock_event_stream;
 mod mock_execution_layer;
 pub(crate) mod mock_proof_node_client;
 

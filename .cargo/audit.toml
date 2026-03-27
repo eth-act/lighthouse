@@ -2,4 +2,9 @@
 # protobuf 2.28.0 (via prometheus 0.13.4) - crash due to uncontrolled recursion.
 # Not exploitable in our context: protobuf is only used for Prometheus metrics
 # serialization with trusted internal data, not for parsing untrusted input.
-ignore = ["RUSTSEC-2024-0437"]
+#
+# rustls-webpki 0.102.x (via rustls 0.22 → tokio-rustls 0.25 → warp 0.3) - CRL matching bug.
+# Not exploitable in our context: warp is used for the internal REST API and does not
+# perform CRL-based certificate validation. Fixing requires upgrading warp to 0.4 which
+# removed TLS as a built-in feature and requires significant rework.
+ignore = ["RUSTSEC-2024-0437", "RUSTSEC-2026-0049"]

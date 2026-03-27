@@ -18,6 +18,7 @@ use crate::sync::block_sidecar_coupling::CouplingError;
 use crate::sync::network_context::requests::BlobsByRootSingleBlockRequest;
 use crate::sync::range_data_column_batch_request::RangeDataColumnBatchRequest;
 use beacon_chain::block_verification_types::RpcBlock;
+use beacon_chain::internal_events::InternalBeaconNodeEvent;
 use beacon_chain::{BeaconChain, BeaconChainTypes, BlockProcessStatus, EngineState};
 use custody::CustodyRequestResult;
 use fnv::FnvHashMap;
@@ -425,6 +426,11 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
                 app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofsByRange(id)),
             })
             .map_err(|_| RpcRequestSendError::InternalError("network send error".to_owned()))?;
+        if self.chain.internal_event_sender().is_some() {
+            self.chain.emit_internal_event(
+                InternalBeaconNodeEvent::OutboundExecutionProofsByRange { start_slot, count },
+            );
+        }
         debug!(
             method = "ExecutionProofsByRange",
             %start_slot,
@@ -458,6 +464,11 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
                 app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofsByRoot(id)),
             })
             .map_err(|_| RpcRequestSendError::InternalError("network send error".to_owned()))?;
+        if self.chain.internal_event_sender().is_some() {
+            self.chain.emit_internal_event(
+                InternalBeaconNodeEvent::OutboundExecutionProofsByRoot { block_root },
+            );
+        }
         debug!(
             method = "ExecutionProofsByRoot",
             block_root = %block_root,

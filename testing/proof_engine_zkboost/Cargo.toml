@@ -1,30 +1,38 @@
+[workspace]
+members = ["."]
+resolver = "2"
+
+[workspace.dependencies]
+zkboost-server = { git = "https://github.com/eth-act/zkboost", branch = "master" }
+zkboost-types = { git = "https://github.com/eth-act/zkboost", branch = "master" }
+
 [package]
 name = "proof_engine_zkboost_test"
 version = "0.1.0"
-edition.workspace = true
+edition = "2024"
 
 [features]
 portable = ["types/portable"]
 
 [dependencies]
-anyhow = { workspace = true }
-axum = { workspace = true }
-bytes = { workspace = true }
-ethereum_ssz = { workspace = true }
-execution_layer = { workspace = true }
-futures = { workspace = true }
-metrics-exporter-prometheus = { workspace = true }
-reqwest = { workspace = true }
-sensitive_url = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
-strum = { workspace = true }
-tokio = { workspace = true }
-tokio-stream = { workspace = true }
-tokio-util = { workspace = true }
-tracing = { workspace = true }
-tree_hash = { workspace = true }
-types = { workspace = true }
-url = { workspace = true }
+anyhow = "1"
+axum = "0.7"
+bytes = "1"
+ethereum_ssz = { version = "0.10.0", features = ["context_deserialize"] }
+execution_layer = { path = "../../beacon_node/execution_layer" }
+futures = "0.3"
+metrics-exporter-prometheus = "0.16"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "stream", "rustls-tls"] }
+sensitive_url = { version = "0.1", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+strum = { version = "0.27", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "signal", "macros"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-util = { version = "0.7", features = ["codec", "compat", "time"] }
+tracing = "0.1"
+tree_hash = "0.12.0"
+types = { path = "../../consensus/types" }
+url = "2"
 zkboost-server = { workspace = true }
 zkboost-types = { workspace = true }

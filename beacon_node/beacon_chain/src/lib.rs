@@ -30,6 +30,7 @@ pub mod fork_revert;
 pub mod graffiti_calculator;
 pub mod historical_blocks;
 pub mod historical_data_columns;
+pub mod internal_events;
 pub mod invalid_proof_tracker;
 pub mod kzg_utils;
 pub mod light_client_finality_update_verification;

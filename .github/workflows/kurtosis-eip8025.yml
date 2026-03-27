@@ -1,0 +1,135 @@
+# Test that the EIP-8025 Kurtosis testnet starts and the proof engine integrates
+# correctly with real zkboost-server backends.
+name: kurtosis eip8025
+
+on:
+  push:
+    branches:
+      - unstable
+  pull_request:
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  run-eip8025-testnet:
+    runs-on: ${{ github.repository == 'sigp/lighthouse' && 'warp-ubuntu-latest-x64-8x' || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install Kurtosis
+        run: |
+          echo "deb [trusted=yes] https://apt.fury.io/kurtosis-tech/ /" | sudo tee /etc/apt/sources.list.d/kurtosis.list
+          sudo apt update
+          sudo apt install -y kurtosis-cli
+          kurtosis analytics disable
+
+      - name: Install yq
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Start EIP-8025 zkboost testnet
+        run: ./start_eip8025_zkboost_testnet.sh
+        working-directory: scripts/local_testnet
+
+      - name: Wait for chain liveness
+        run: |
+          BEACON_URL=$(kurtosis port print eip8025-zkboost cl-1-lighthouse-reth http)
+          echo "Polling $BEACON_URL for head slot > 10..."
+          for i in $(seq 1 20); do
+            SLOT=$(curl -sf "$BEACON_URL/eth/v1/beacon/headers/head" \
+              | jq -r '.data.header.message.slot' 2>/dev/null || echo 0)
+            echo "  attempt $i: head slot = $SLOT"
+            if [ "$SLOT" -gt 10 ]; then
+              echo "Chain is live at slot $SLOT"
+              break
+            fi
+            if [ "$i" -eq 20 ]; then
+              echo "Timed out waiting for head slot > 10"
+              exit 1
+            fi
+            sleep 30
+          done
+
+      - name: Inspect beacon node state
+        run: |
+          set -euo pipefail
+          ENCLAVE=eip8025-zkboost
+          SERVICES=(cl-1-lighthouse-reth cl-2-lighthouse-reth cl-3-lighthouse-reth cl-4-lighthouse-reth)
+          FAILED=0
+
+          for SVC in "${SERVICES[@]}"; do
+            URL=$(kurtosis port print "$ENCLAVE" "$SVC" http)
+            echo "=== $SVC ($URL) ==="
+
+            # Syncing status — must not be syncing
+            SYNCING=$(curl -sf "$URL/eth/v1/node/syncing" | jq -r '.data.is_syncing')
+            echo "  is_syncing: $SYNCING"
+            if [ "$SYNCING" != "false" ]; then
+              echo "  FAIL: $SVC is still syncing"
+              FAILED=1
+            fi
+
+            # Peer count — must have at least one connected peer
+            PEERS=$(curl -sf "$URL/eth/v1/node/peer_count" | jq -r '.data.connected')
+            echo "  connected peers: $PEERS"
+            if [ "${PEERS:-0}" -lt 1 ]; then
+              echo "  FAIL: $SVC has no connected peers"
+              FAILED=1
+            fi
+
+            # Head slot — must be non-zero
+            SLOT=$(curl -sf "$URL/eth/v1/beacon/headers/head" | jq -r '.data.header.message.slot')
+            echo "  head slot: $SLOT"
+            if [ "${SLOT:-0}" -lt 1 ]; then
+              echo "  FAIL: $SVC head slot is 0"
+              FAILED=1
+            fi
+
+            # Finality checkpoints — informational, log the finalized epoch
+            FINALIZED=$(curl -sf "$URL/eth/v1/beacon/states/head/finality_checkpoints" \
+              | jq -r '.data.finalized.epoch')
+            echo "  finalized epoch: $FINALIZED"
+          done
+
+          exit "$FAILED"
+
+      - name: Check zkboost sidecars are running and generating proofs
+        run: |
+          ENCLAVE=eip8025-zkboost
+
+          # Both zkboost services must be in RUNNING state
+          kurtosis enclave inspect "$ENCLAVE" | grep -E "zkboost-[12].*RUNNING" \
+            || { echo "FAIL: one or more zkboost services not in RUNNING state"; exit 1; }
+
+          # Each zkboost sidecar must have generated at least one proof
+          for SVC in zkboost-1 zkboost-2; do
+            COUNT=$(kurtosis service logs "$ENCLAVE" "$SVC" 2>/dev/null | grep -c "proof generated" || true)
+            echo "$SVC: $COUNT proofs generated"
+            if [ "${COUNT:-0}" -lt 1 ]; then
+              echo "FAIL: $SVC has not generated any proofs"
+              exit 1
+            fi
+          done
+
+      - name: Stop testnet and collect logs
+        if: always()
+        run: |
+          mkdir -p scripts/local_testnet/logs
+          ENCLAVE=eip8025-zkboost
+          for SVC in cl-1-lighthouse-reth cl-2-lighthouse-reth cl-3-lighthouse-reth cl-4-lighthouse-reth \
+                     zkboost-1 zkboost-2; do
+            kurtosis service logs "$ENCLAVE" "$SVC" > "scripts/local_testnet/logs/${SVC}.log" 2>&1 || true
+          done
+          kurtosis enclave rm -f "$ENCLAVE" || true
+
+      - name: Upload logs artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-kurtosis-eip8025
+          path: scripts/local_testnet/logs
+          retention-days: 3
