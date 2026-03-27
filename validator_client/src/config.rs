@@ -8,6 +8,7 @@ use directory::{
     get_network_dir,
 };
 use eth2::types::{Graffiti, GraffitiPolicy};
+use execution_layer::eip8025::types::ProofTypes;
 use graffiti_file::GraffitiFile;
 use initialized_validators::Config as InitializedValidatorsConfig;
 use lighthouse_validator_store::Config as ValidatorStoreConfig;
@@ -92,8 +93,10 @@ pub struct Config {
     pub disable_attesting: bool,
     /// URL of the proof engine HTTP JSON-RPC endpoint for EIP-8025 execution proofs
     pub proof_engine_endpoint: Option<SensitiveUrl>,
-    /// Proof type identifiers to request from the proof engine (e.g., 0, 1, 2)
-    pub proof_types: Option<Vec<u8>>,
+    /// Proof types to request from the proof engine. Defaults to
+    /// `[EthrexRisc0, EthrexSP1, EthrexZisk, RethOpenVM]`.
+    #[serde(default)]
+    pub proof_types: ProofTypes,
 }
 
 impl Default for Config {
@@ -141,7 +144,7 @@ impl Default for Config {
             initialized_validators: <_>::default(),
             disable_attesting: false,
             proof_engine_endpoint: None,
-            proof_types: None,
+            proof_types: ProofTypes::default(),
         }
     }
 }
@@ -298,7 +301,18 @@ impl Config {
             );
         }
 
-        config.proof_types = validator_client_config.proof_types.clone();
+        config.proof_types = if let Some(vals) = &validator_client_config.proof_types {
+            use execution_layer::eip8025::types::ProofType;
+            let types = vals
+                .iter()
+                .copied()
+                .map(ProofType::from_u8)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Invalid --proof-types value: {e:?}"))?;
+            ProofTypes::from(types)
+        } else {
+            ProofTypes::default()
+        };
 
         /*
          * Http API server

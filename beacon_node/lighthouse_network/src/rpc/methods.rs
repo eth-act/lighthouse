@@ -13,7 +13,7 @@ use std::sync::Arc;
 use strum::IntoStaticStr;
 use superstruct::superstruct;
 use types::data::BlobIdentifier;
-use types::execution::eip8025::SignedExecutionProof;
+use types::execution::eip8025::{ProofByRootIdentifier, SignedExecutionProof};
 use types::light_client::consts::MAX_REQUEST_LIGHT_CLIENT_UPDATES;
 use types::{
     ChainSpec, ColumnIndex, DataColumnSidecar, DataColumnsByRootIdentifier, Epoch, EthSpec,
@@ -626,17 +626,22 @@ impl std::fmt::Display for ExecutionProofsByRangeRequest {
 }
 
 /// Request execution proofs for specific blocks by root from a peer.
+///
+/// `List[ProofByRootIdentifier, MAX_BLOCKS_BY_ROOT]`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExecutionProofsByRootRequest {
-    /// The list of block roots whose execution proofs are being requested.
-    pub block_roots: RuntimeVariableList<Hash256>,
+    /// Each entry identifies a block root and the proof types we currently have for it.
+    pub identifiers: RuntimeVariableList<ProofByRootIdentifier>,
 }
 
 impl ExecutionProofsByRootRequest {
-    pub fn new(block_roots: Vec<Hash256>, max_request_blocks: usize) -> Result<Self, String> {
-        let block_roots = RuntimeVariableList::new(block_roots, max_request_blocks)
-            .map_err(|e| format!("ExecutionProofsByRootRequest too many roots: {e:?}"))?;
-        Ok(Self { block_roots })
+    pub fn new(
+        identifiers: Vec<ProofByRootIdentifier>,
+        max_request_blocks: usize,
+    ) -> Result<Self, String> {
+        let identifiers = RuntimeVariableList::new(identifiers, max_request_blocks)
+            .map_err(|e| format!("ExecutionProofsByRootRequest too many identifiers: {e:?}"))?;
+        Ok(Self { identifiers })
     }
 }
 
@@ -644,8 +649,8 @@ impl std::fmt::Display for ExecutionProofsByRootRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Request: ExecutionProofsByRoot: Number of Requested Roots: {}",
-            self.block_roots.len()
+            "Request: ExecutionProofsByRoot: Number of Requested Identifiers: {}",
+            self.identifiers.len()
         )
     }
 }

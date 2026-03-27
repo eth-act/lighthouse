@@ -46,6 +46,6 @@ pub use signed_execution_payload_envelope::SignedExecutionPayloadEnvelope;
 // EIP-8025: Optional Execution Proofs
 pub use eip8025::{
     DOMAIN_EXECUTION_PROOF, ExecutionProof, ExecutionProofList, GeneratedProof,
-    MIN_REQUIRED_EXECUTION_PROOFS, MaxExecutionProofsPerPayload, ProofAttributes, ProofGenId,
-    ProofStatus, ProofType, PublicInput, SignedExecutionProof,
+    MIN_REQUIRED_EXECUTION_PROOFS, MaxExecutionProofsPerPayload, ProofAttributes,
+    ProofByRootIdentifier, ProofGenId, ProofStatus, ProofType, PublicInput, SignedExecutionProof,
 };

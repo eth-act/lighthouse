@@ -6,7 +6,7 @@
 //! no subscriber is ever registered.
 
 use std::sync::Arc;
-use types::execution::eip8025::{ProofStatus, SignedExecutionProof};
+use types::execution::eip8025::{ProofByRootIdentifier, ProofStatus, SignedExecutionProof};
 use types::{Hash256, Slot};
 
 /// Event emitted on the per-node internal event bus.
@@ -22,7 +22,9 @@ pub enum InternalBeaconNodeEvent {
     /// An outbound `ExecutionProofsByRange` RPC request was sent to a peer.
     OutboundExecutionProofsByRange { start_slot: Slot, count: u64 },
     /// An outbound `ExecutionProofsByRoot` RPC request was sent to a peer.
-    OutboundExecutionProofsByRoot { block_root: Hash256 },
+    OutboundExecutionProofsByRoot {
+        identifiers: Vec<ProofByRootIdentifier>,
+    },
     /// `verify_execution_proof` completed; carries the status and, when the block is known,
     /// its root and slot.
     ExecutionProofVerified {

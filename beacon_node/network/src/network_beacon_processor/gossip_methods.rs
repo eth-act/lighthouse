@@ -1890,6 +1890,17 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         let proof_type = execution_proof.proof_type();
         let validator_index = execution_proof.validator_index();
 
+        // Ignore proofs whose type is not in our configured set.
+        if !self.proof_types.iter().any(|t| t.to_u8() == proof_type) {
+            warn!(
+                proof_type,
+                %request_root,
+                "Ignoring gossip execution proof: proof type not in configured set"
+            );
+            self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Ignore);
+            return;
+        }
+
         if self.chain.internal_event_sender().is_some() {
             self.chain
                 .emit_internal_event(InternalBeaconNodeEvent::GossipExecutionProof(
@@ -2086,6 +2097,16 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         let request_root = execution_proof.request_root();
         let proof_type = execution_proof.proof_type();
         let validator_index = execution_proof.validator_index();
+
+        // Ignore proofs whose type is not in our configured set.
+        if !self.proof_types.iter().any(|t| t.to_u8() == proof_type) {
+            warn!(
+                proof_type,
+                %request_root,
+                "Ignoring RPC execution proof: proof type not in configured set"
+            );
+            return;
+        }
 
         if self.chain.internal_event_sender().is_some() {
             self.chain

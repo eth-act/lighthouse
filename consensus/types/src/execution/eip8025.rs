@@ -87,6 +87,20 @@ pub struct SignedExecutionProof {
     pub signature: SignatureBytes,
 }
 
+/// Identifies a block root and the proof types being requested for it.
+///
+/// Matches the `ProofByRootIdentifier` container in the EIP-8025 p2p spec.
+#[derive(
+    Debug, Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Encode, Decode, TreeHash,
+)]
+#[cfg_attr(feature = "arbitrary", derive(Arbitrary))]
+pub struct ProofByRootIdentifier {
+    /// The beacon block root whose execution proofs are being requested.
+    pub block_root: Hash256,
+    /// Proof types the requester still needs for this block root.
+    pub proof_types: VariableList<ProofType, MaxExecutionProofsPerPayload>,
+}
+
 /// Proof attributes for requesting proof generation.
 ///
 /// Specifies which types of proofs should be generated for a payload.

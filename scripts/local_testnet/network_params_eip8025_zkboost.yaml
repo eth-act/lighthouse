@@ -20,6 +20,7 @@ participants:
     cl_extra_params:
       - --target-peers=3
       - --proof-engine-endpoint=http://zkboost-1:3000
+      - --proof-types=6
     vc_extra_params:
       - --proof-engine-endpoint=http://zkboost-1:3000
       - --proof-types=6
@@ -33,6 +34,7 @@ participants:
     cl_extra_params:
       - --target-peers=3
       - --proof-engine-endpoint=http://zkboost-2:3000
+      - --proof-types=6
     vc_extra_params:
       - --proof-engine-endpoint=http://zkboost-2:3000
       - --proof-types=6

@@ -14,6 +14,7 @@ use beacon_node_fallback::BeaconNodeFallback;
 use bls::PublicKey;
 use eth2::types::{BlockId, EventKind, EventTopic, SseExecutionProofValidated};
 use execution_layer::NewPayloadRequest;
+use execution_layer::eip8025::types::ProofTypes;
 use execution_layer::eip8025::{HttpProofEngine, ProofEvent};
 use futures::StreamExt;
 use parking_lot::RwLock;
@@ -64,11 +65,9 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> ProofService<S
         proof_engine: Arc<HttpProofEngine>,
         slot_clock: T,
         executor: TaskExecutor,
-        proof_types: Option<Vec<u8>>,
+        proof_types: ProofTypes,
     ) -> Self {
-        // Default to all available proof types if not specified
-        // TODO: Update when proof types are standardized
-        let proof_types = proof_types.unwrap_or_else(|| vec![0, 1, 2]);
+        let proof_types: Vec<u8> = proof_types.iter().map(|t| t.to_u8()).collect();
 
         Self {
             inner: Arc::new(Inner {
