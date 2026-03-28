@@ -844,6 +844,7 @@ pub fn cli_app() -> Command {
                        (EthrexRisc0, EthrexSP1, EthrexZisk, RethOpenVM).")
                 .requires("proof-engine-endpoint")
                 .value_delimiter(',')
+                .value_parser(clap::value_parser!(u8))
                 .action(ArgAction::Set)
                 .display_order(0)
         )
