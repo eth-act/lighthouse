@@ -236,6 +236,6 @@ fn base_builder() -> TestNetworkFixtureBuilder {
             proof_generator_nodes: 1,
             proof_verifier_nodes: 1,
             delayed_nodes: 0,
-            genesis_delay: 25,
+            genesis_delay: 40,
         })
 }
