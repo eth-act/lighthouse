@@ -183,8 +183,7 @@ test-release:
 # CPU by the parallel test-release job.  Each test spawns multiple beacon nodes and
 # is sensitive to slot timing, so dedicated sequential execution is required.
 test-proof-engine:
-	cargo nextest run -p proof_engine_test --release --features "$(TEST_FEATURES)" \
-		--test-threads 1
+	cargo nextest run -p proof_engine_test --release --test-threads 1
 
 
 # Runs the full workspace tests in **debug**, without downloading any additional test

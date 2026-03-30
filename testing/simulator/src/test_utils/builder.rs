@@ -2,13 +2,15 @@ use crate::local_network::NodeType;
 
 use super::*;
 
+type ClientConfigTransform = Box<dyn FnOnce(&mut ClientConfig) + Send + 'static>;
+
 /// Builder for creating test networks with configurable parameters.
 pub struct TestNetworkFixtureBuilder<E: EthSpec = MinimalEthSpec> {
     env: EnvironmentBuilder<E>,
     network_params: LocalNetworkParams,
     logger_config: LoggerConfig,
     disable_stdout: bool,
-    client_config_transform: Option<Box<dyn FnOnce(&mut ClientConfig) + Send + 'static>>,
+    client_config_transform: Option<ClientConfigTransform>,
 }
 
 impl Default for TestNetworkFixtureBuilder {
@@ -85,10 +87,7 @@ impl<E: EthSpec> TestNetworkFixtureBuilder<E> {
     /// Apply an arbitrary modification to the `ClientConfig` used for all beacon nodes.
     ///
     /// Multiple calls are composed in order: the first registered transform runs first.
-    pub fn map_client_config(
-        mut self,
-        f: impl FnOnce(&mut ClientConfig) + Send + 'static,
-    ) -> Self {
+    pub fn map_client_config(mut self, f: impl FnOnce(&mut ClientConfig) + Send + 'static) -> Self {
         self.client_config_transform = Some(match self.client_config_transform.take() {
             None => Box::new(f),
             Some(prev) => Box::new(move |config| {
