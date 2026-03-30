@@ -8,6 +8,7 @@ pub struct TestNetworkFixtureBuilder<E: EthSpec = MinimalEthSpec> {
     network_params: LocalNetworkParams,
     logger_config: LoggerConfig,
     disable_stdout: bool,
+    client_config_transform: Option<Box<dyn FnOnce(&mut ClientConfig) + Send + 'static>>,
 }
 
 impl Default for TestNetworkFixtureBuilder {
@@ -26,6 +27,7 @@ impl Default for TestNetworkFixtureBuilder {
             },
             logger_config: LoggerConfig::default(),
             disable_stdout: false,
+            client_config_transform: None,
         }
     }
 }
@@ -77,6 +79,23 @@ impl<E: EthSpec> TestNetworkFixtureBuilder<E> {
     /// Apply an arbitrary modification to the `LocalNetworkParams` used for the network.
     pub fn map_network_params(mut self, f: impl FnOnce(&mut LocalNetworkParams)) -> Self {
         f(&mut self.network_params);
+        self
+    }
+
+    /// Apply an arbitrary modification to the `ClientConfig` used for all beacon nodes.
+    ///
+    /// Multiple calls are composed in order: the first registered transform runs first.
+    pub fn map_client_config(
+        mut self,
+        f: impl FnOnce(&mut ClientConfig) + Send + 'static,
+    ) -> Self {
+        self.client_config_transform = Some(match self.client_config_transform.take() {
+            None => Box::new(f),
+            Some(prev) => Box::new(move |config| {
+                prev(config);
+                f(config);
+            }),
+        });
         self
     }
 
@@ -250,6 +269,7 @@ impl<E: EthSpec> TestNetworkFixtureBuilder<E> {
             network_params,
             logger_config,
             disable_stdout,
+            client_config_transform,
         } = self;
 
         // Ensure the `ChainSpec` is configured with the correct genesis parameters based on the network params.
@@ -299,7 +319,7 @@ impl<E: EthSpec> TestNetworkFixtureBuilder<E> {
 
         // Instantiate the local network
         info!(target: "simulator", "Initializing local network with params: {:?}", network_params);
-        let (network, beacon_config, mock_execution_config) =
+        let (network, mut beacon_config, mock_execution_config) =
             Box::pin(LocalNetwork::create_local_network(
                 None,
                 None,
@@ -308,6 +328,10 @@ impl<E: EthSpec> TestNetworkFixtureBuilder<E> {
             ))
             .await
             .map_err(anyhow::Error::msg)?;
+
+        if let Some(transform) = client_config_transform {
+            transform(&mut beacon_config);
+        }
 
         Ok((
             env,
