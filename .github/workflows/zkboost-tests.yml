@@ -66,7 +66,5 @@ jobs:
           bins: cargo-nextest
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      - name: Clear stale leveldb-sys cmake cache
-        run: rm -rf target/release/build/leveldb-sys-*/out/build 2>/dev/null || true
       - name: Run proof_engine_zkboost integration tests
         run: make test-zkboost

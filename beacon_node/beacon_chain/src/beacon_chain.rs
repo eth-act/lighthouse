@@ -7529,7 +7529,12 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         &self,
     ) -> tokio::sync::broadcast::Receiver<crate::internal_events::InternalBeaconNodeEvent> {
         self.internal_event_tx
-            .get_or_init(|| tokio::sync::broadcast::channel(64).0)
+            .get_or_init(|| {
+                tokio::sync::broadcast::channel(
+                    crate::internal_events::INTERNAL_EVENT_CHANNEL_CAPACITY,
+                )
+                .0
+            })
             .subscribe()
     }
 

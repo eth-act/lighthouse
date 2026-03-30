@@ -100,8 +100,6 @@ jobs:
       uses: foundry-rs/foundry-toolchain@v1
       with:
         version: nightly-ca67d15f4abd46394b324c50e21e66f306a1162d
-    - name: Clear stale leveldb-sys cmake cache
-      run: rm -rf target/release/build/leveldb-sys-*/out/build 2>/dev/null || true
     - name: Run tests in release
       run: make test-release
     - name: Show cache stats
@@ -123,8 +121,6 @@ jobs:
           bins: cargo-nextest
       env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    - name: Clear stale leveldb-sys cmake cache
-      run: rm -rf target/release/build/leveldb-sys-*/out/build 2>/dev/null || true
     - name: Run proof engine tests sequentially
       run: make test-proof-engine
   beacon-chain-tests:
