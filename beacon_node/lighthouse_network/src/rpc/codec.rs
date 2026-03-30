@@ -595,8 +595,12 @@ fn handle_rpc_request<E: EthSpec>(
             )))
         }
         SupportedProtocol::ExecutionProofsByRangeV1 => {
+            let max_filters = spec.max_request_blocks(current_fork);
             Ok(Some(RequestType::ExecutionProofsByRange(
-                ExecutionProofsByRangeRequest::from_ssz_bytes(decoded_buffer)?,
+                ExecutionProofsByRangeRequest::from_ssz_bytes_with_max(
+                    decoded_buffer,
+                    max_filters,
+                )?,
             )))
         }
         SupportedProtocol::ExecutionProofsByRootV1 => Ok(Some(RequestType::ExecutionProofsByRoot(

@@ -585,12 +585,22 @@ pub struct ExecutionProofStatus {
 }
 
 /// Request execution proofs for a slot range from a peer.
-#[derive(Encode, Decode, Clone, Debug, PartialEq)]
+///
+/// `proof_filters` is an optional per-block filter that tells the peer which proof types we still
+/// need for specific blocks in the range. Blocks not listed in `proof_filters` will have all known
+/// proof types returned; blocks listed will only have the specified types returned. This avoids
+/// transferring proof types the requester already holds.
+///
+/// Matches the `ExecutionProofsByRange` request type in the EIP-8025 p2p spec.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ExecutionProofsByRangeRequest {
     /// The starting slot to request execution proofs.
     pub start_slot: u64,
     /// The number of slots from the start slot.
     pub count: u64,
+    /// Per-block proof-type filters for blocks in the range where only some proof types are needed.
+    /// Empty list means "return all proof types for every block in the range."
+    pub proof_filters: RuntimeVariableList<ProofByRootIdentifier>,
 }
 
 impl ExecutionProofsByRangeRequest {
@@ -601,17 +611,65 @@ impl ExecutionProofsByRangeRequest {
             .saturating_mul(MaxExecutionProofsPerPayload::to_u64())
     }
 
+    /// Minimum SSZ encoded byte length: the two fixed `u64` fields plus the 4-byte offset pointer
+    /// for the variable-length `proof_filters` list.
     pub fn ssz_min_len() -> usize {
-        ExecutionProofsByRangeRequest {
-            start_slot: 0,
-            count: 0,
-        }
-        .as_ssz_bytes()
-        .len()
+        // start_slot (8) + count (8) + proof_filters offset (4)
+        20
     }
 
-    pub fn ssz_max_len() -> usize {
-        Self::ssz_min_len()
+    /// Maximum SSZ encoded byte length when `proof_filters` holds up to `max_request_blocks`
+    /// entries.
+    ///
+    /// Each `ProofByRootIdentifier` is a variable-length SSZ container:
+    /// - `block_root`: 32 bytes (fixed)
+    /// - `proof_types` offset field: 4 bytes (within the container fixed portion)
+    /// - `proof_types` content: at most `MAX_EXECUTION_PROOFS_PER_PAYLOAD` × 1 byte = 4 bytes
+    ///
+    /// A `List` of `max_request_blocks` variable-length items also requires a 4-byte offset table
+    /// entry per item.
+    pub fn ssz_max_len(max_request_blocks: usize) -> usize {
+        const MAX_PROOF_BY_ROOT_IDENTIFIER_BYTES: usize = 32 + 4 + 4;
+        Self::ssz_min_len() + max_request_blocks * (4 + MAX_PROOF_BY_ROOT_IDENTIFIER_BYTES)
+    }
+
+    /// Decode from SSZ bytes, supplying a runtime maximum for the `proof_filters` list length.
+    pub fn from_ssz_bytes_with_max(
+        bytes: &[u8],
+        max_filters: usize,
+    ) -> Result<Self, ssz::DecodeError> {
+        let mut builder = ssz::SszDecoderBuilder::new(bytes);
+        builder.register_type::<u64>()?;
+        builder.register_type::<u64>()?;
+        builder.register_anonymous_variable_length_item()?;
+        let mut decoder = builder.build()?;
+        Ok(Self {
+            start_slot: decoder.decode_next::<u64>()?,
+            count: decoder.decode_next::<u64>()?,
+            proof_filters: decoder.decode_next_with(|slice| {
+                RuntimeVariableList::from_ssz_bytes(slice, max_filters)
+            })?,
+        })
+    }
+}
+
+impl ssz::Encode for ExecutionProofsByRangeRequest {
+    fn is_ssz_fixed_len() -> bool {
+        false
+    }
+
+    fn ssz_append(&self, buf: &mut Vec<u8>) {
+        // Fixed portion: start_slot (8) + count (8) + proof_filters offset (4) = 20 bytes.
+        let num_fixed_bytes = 8 + 8 + ssz::BYTES_PER_LENGTH_OFFSET;
+        let mut encoder = ssz::SszEncoder::container(buf, num_fixed_bytes);
+        encoder.append(&self.start_slot);
+        encoder.append(&self.count);
+        encoder.append(&self.proof_filters);
+        encoder.finalize();
+    }
+
+    fn ssz_bytes_len(&self) -> usize {
+        8 + 8 + ssz::BYTES_PER_LENGTH_OFFSET + self.proof_filters.ssz_bytes_len()
     }
 }
 
@@ -619,8 +677,10 @@ impl std::fmt::Display for ExecutionProofsByRangeRequest {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "Request: ExecutionProofsByRange: Start Slot: {}, Count: {}",
-            self.start_slot, self.count
+            "Request: ExecutionProofsByRange: Start Slot: {}, Count: {}, Filters: {}",
+            self.start_slot,
+            self.count,
+            self.proof_filters.len()
         )
     }
 }

@@ -586,9 +586,10 @@ impl ProtocolId {
                 LightClientUpdatesByRangeRequest::ssz_max_len(),
             ),
             Protocol::MetaData => RpcLimits::new(0, 0), // Metadata requests are empty
+            // EIP-8025 is Fulu+; use the Deneb/post-Deneb max_request_blocks for proof_filters.
             Protocol::ExecutionProofsByRange => RpcLimits::new(
                 ExecutionProofsByRangeRequest::ssz_min_len(),
-                ExecutionProofsByRangeRequest::ssz_max_len(),
+                ExecutionProofsByRangeRequest::ssz_max_len(spec.max_request_blocks(ForkName::Fulu)),
             ),
             // ExecutionProofsByRoot request is List[ProofByRootIdentifier, MAX_BLOCKS_BY_ROOT.
             Protocol::ExecutionProofsByRoot => RpcLimits::new(0, spec.max_blocks_by_root_request),

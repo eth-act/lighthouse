@@ -2,8 +2,18 @@
 //!
 //! Defines [`ProofSync`], the subsystem responsible for requesting execution proofs
 //! that are missing from the local proof engine after block sync completes. It manages
-//! peer status tracking, decides between bulk range requests and targeted by-root
-//! requests, and coordinates the cooldown period between request batches.
+//! peer status tracking and, at each slot tick, consults the proof engine directly to
+//! decide the most bandwidth-efficient request strategy:
+//!
+//! - The SSZ-encoded sizes of an `ExecutionProofsByRange` request (20-byte fixed header
+//!   plus `proof_filters` for partially-held blocks) and an `ExecutionProofsByRoot` request
+//!   (one identifier per missing block) are compared over the full set of servable missing
+//!   proofs. Whichever encoding is smaller is used.
+//! - `proof_filters` lets the server skip proof types the requester already holds, so
+//!   partially-covered blocks do not waste bandwidth even in a range request.
+//!
+//! The protocol is driven entirely by what the proof engine reports as missing, not by
+//! the distance between peer and local verified heads.
 
 use super::network_context::{CachedExecutionProofStatus, SyncNetworkContext};
 use beacon_chain::{BeaconChain, BeaconChainTypes, WhenSlotSkipped};
@@ -17,11 +27,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, info};
-use types::{EthSpec, Hash256, Slot};
-
-/// Default slot gap above which a bulk `ExecutionProofsByRange` request is preferred over
-/// individual `ExecutionProofsByRoot` requests.
-const DEFAULT_RANGE_REQUEST_THRESHOLD: u64 = 16;
+use types::{Hash256, Slot};
 
 /// Tracks the single in-flight `ExecutionProofsByRange` request.
 ///
@@ -43,23 +49,24 @@ pub(crate) struct ByRootRequest {
 pub enum ProofSyncState {
     /// Range sync is active; proof sync is paused.
     Idle,
-    /// Waiting for the beacon processor to finish importing range sync blocks.
-    /// The inner value counts down remaining slot ticks before activation.
-    Waiting(u64),
-    /// Proof sync is active. Each poll chooses between a range request (large slot gap)
-    /// or by-root fill requests (small gap) based on current chain state.
+    /// Proof sync is active. Each poll queries the proof engine for missing proofs and
+    /// chooses between range or by-root requests based on byte-efficiency.
     Syncing,
 }
 
+/// Number of slot ticks to skip after a proof response stream completes before issuing
+/// the next request. Gives the beacon processor time to import received proofs so they
+/// no longer appear in `missing_execution_proofs()`.
+const POST_REQUEST_COOLDOWN_SLOTS: u64 = 1;
+
 /// Proof sync subsystem for EIP-8025.
 ///
-/// Operates as a three-state machine: `Idle` while range sync is active, `Waiting(n)`
-/// after range sync completes (counting down n slot ticks to let the beacon processor
-/// finish importing blocks), and `Syncing` once active. In `Syncing`, each poll computes
-/// the slot gap between the max(finalized epoch, local verified head) and peer verified
-/// head to determine the most efficient request strategy. In-flight by-root and range
-/// responses are always processed regardless of state transitions — the proofs are valid
-/// independent of sync progress.
+/// Operates as a two-state machine: `Idle` while range sync is active, `Syncing` once
+/// activated. In `Syncing`, each poll queries the proof engine for missing proofs and
+/// chooses the most byte-efficient request strategy (range vs by-root). A brief
+/// `post_request_cooldown` counter prevents immediate re-requesting after a response
+/// stream completes, giving the beacon processor time to import the received proofs.
+/// In-flight responses are always processed regardless of state transitions.
 pub struct ProofSync<T: BeaconChainTypes> {
     chain: Arc<BeaconChain<T>>,
     state: ProofSyncState,
@@ -67,15 +74,14 @@ pub struct ProofSync<T: BeaconChainTypes> {
     range_request: Option<ByRangeRequest>,
     /// Tracks the single in-flight `ExecutionProofsByRoot` batch request (ID + serving peer).
     root_request: Option<ByRootRequest>,
-    /// Slot gap above which a `ByRange` request is preferred over `ByRoot` fill requests.
-    range_request_threshold: u64,
+    /// Slot ticks remaining before the next request may be issued after a response stream
+    /// completes. Set to `POST_REQUEST_COOLDOWN_SLOTS` on termination, decremented each
+    /// poll, and blocks new requests until it reaches zero.
+    post_request_cooldown: u64,
     /// Cached `ExecutionProofStatus` responses, keyed by peer.
     peer_statuses: HashMap<PeerId, CachedExecutionProofStatus>,
     /// In-flight `ExecutionProofStatus` request IDs, keyed by peer.
     status_in_flight: HashMap<PeerId, ExecutionProofStatusRequestId>,
-    /// Number of slot ticks to wait after `start()` or a range response before issuing
-    /// the next `ExecutionProofsByRange` request.
-    activation_slots: u64,
     /// Suppresses repeated "no proof-capable peer" logs: set when the message is first
     /// emitted, cleared when a peer becomes available.
     logged_no_peer: bool,
@@ -86,19 +92,15 @@ pub struct ProofSync<T: BeaconChainTypes> {
 
 impl<T: BeaconChainTypes> ProofSync<T> {
     /// Creates a new `ProofSync` instance in the `Idle` state.
-    ///
-    /// `activation_slots` controls how many slot ticks to wait after `start()` or a
-    /// completed range response before issuing the next request batch.
-    pub fn new(chain: Arc<BeaconChain<T>>, activation_slots: u64) -> Self {
+    pub fn new(chain: Arc<BeaconChain<T>>) -> Self {
         Self {
             state: ProofSyncState::Idle,
             range_request: None,
             root_request: None,
             chain,
-            range_request_threshold: DEFAULT_RANGE_REQUEST_THRESHOLD,
+            post_request_cooldown: 0,
             peer_statuses: HashMap::default(),
             status_in_flight: HashMap::default(),
-            activation_slots,
             logged_no_peer: false,
             #[cfg(test)]
             test_missing_proofs: None,
@@ -122,11 +124,6 @@ impl<T: BeaconChainTypes> ProofSync<T> {
     }
 
     #[cfg(test)]
-    pub fn set_range_request_threshold(&mut self, threshold: u64) {
-        self.range_request_threshold = threshold;
-    }
-
-    #[cfg(test)]
     pub fn by_range_request(&self) -> Option<&ByRangeRequest> {
         self.range_request.as_ref()
     }
@@ -138,16 +135,14 @@ impl<T: BeaconChainTypes> ProofSync<T> {
 
     /// Called by `SyncManager` when range sync completes.
     ///
-    /// Kicks off peer status refreshes and transitions to `Waiting`, which counts down
-    /// slot ticks before activating. This delay allows the beacon processor to finish
-    /// importing range sync blocks before proof requests go out.
+    /// Kicks off peer status refreshes and transitions directly to `Syncing`. The proof
+    /// engine is the authoritative source of missing proofs — it only reports entries after
+    /// blocks are imported, so no artificial delay is needed before the first poll.
     pub fn start(&mut self, cx: &mut SyncNetworkContext<T>) {
-        info!(
-            activation_slots = self.activation_slots,
-            "ProofSync: starting, waiting before activation"
-        );
+        info!("ProofSync: starting");
+        self.post_request_cooldown = 0;
         self.refresh_peer_statuses(cx);
-        self.state = ProofSyncState::Waiting(self.activation_slots);
+        self.state = ProofSyncState::Syncing;
     }
 
     /// Called by `SyncManager` when range sync re-enters.
@@ -161,23 +156,28 @@ impl<T: BeaconChainTypes> ProofSync<T> {
 
     /// Drive one polling cycle.
     ///
-    /// In `Waiting`, counts down the activation delay. In `Syncing`, computes the slot
-    /// gap and dispatches either a range request (gap > `range_request_threshold`) or
-    /// by-root fill requests (gap ≤ threshold). Does nothing if a range request is
-    /// already in-flight. Peer status refreshes run in the background and do not block
-    /// request dispatch.
+    /// In `Syncing`, consults the proof engine for missing proofs and decides the most
+    /// request-efficient strategy:
+    ///
+    /// - Finds the consecutive run of missing slots with the highest byte savings over
+    ///   an equivalent `ExecutionProofsByRoot` request.
+    /// - If a run's savings are positive it sends `ExecutionProofsByRange` for that run
+    ///   (with `proof_filters` covering partially-held blocks so the peer skips redundant
+    ///   proof types).
+    /// - Otherwise sends a single `ExecutionProofsByRoot` batch for all servable missing
+    ///   proofs.
+    ///
+    /// Does nothing if a range request is already in-flight or a post-request cooldown is
+    /// active. Peer status refreshes run in the background and do not block request dispatch.
     pub fn poll(&mut self, cx: &mut SyncNetworkContext<T>) {
-        match self.state {
-            ProofSyncState::Idle => return,
-            ProofSyncState::Waiting(0) => {
-                info!("ProofSync: activation delay elapsed, transitioning to Syncing");
-                self.state = ProofSyncState::Syncing;
-            }
-            ProofSyncState::Waiting(ref mut n) => {
-                *n -= 1;
-                return;
-            }
-            ProofSyncState::Syncing => {}
+        if self.state == ProofSyncState::Idle {
+            return;
+        }
+
+        // Drain post-request cooldown before issuing the next request.
+        if self.post_request_cooldown > 0 {
+            self.post_request_cooldown -= 1;
+            return;
         }
 
         // If a range request is already in-flight, wait for it to drain.
@@ -185,46 +185,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
             return;
         }
 
-        // Compute the start slot: the higher of the finalized slot and our own verified proof slot,
-        // so we don't re-request proofs we've already processed.
-        let finalized_slot = self
-            .chain
-            .canonical_head
-            .cached_head()
-            .finalized_checkpoint()
-            .epoch
-            .start_slot(T::EthSpec::slots_per_epoch());
-        let local_proof_slot = Slot::new(cx.local_execution_proof_status().slot);
-        let start_slot = finalized_slot.max(local_proof_slot) + 1;
-
-        let Some((peer_id, peer_slot)) = self.best_peer(cx) else {
-            return;
-        };
-
-        let gap = peer_slot
-            .as_u64()
-            .checked_add(1)
-            .and_then(|end| end.checked_sub(start_slot.as_u64()))
-            .unwrap_or(0);
-
-        if gap > self.range_request_threshold {
-            match cx.request_execution_proofs_by_range(peer_id, start_slot, gap) {
-                Ok(id) => {
-                    debug!(%start_slot, %peer_slot, gap, "ProofSync: range request sent");
-                    self.range_request = Some(ByRangeRequest { id, peer_id });
-                }
-                Err(e) => {
-                    debug!(error = ?e, "ProofSync: range request error");
-                }
-            }
-            return;
-        }
-
-        // While a by-root batch is already in-flight, wait for it to complete.
-        if self.root_request.is_some() {
-            return;
-        }
-
+        // Ask the proof engine what it still needs — this is the authoritative source.
         #[cfg(not(test))]
         let missing = self.chain.missing_execution_proofs();
         #[cfg(test)]
@@ -233,8 +194,16 @@ impl<T: BeaconChainTypes> ProofSync<T> {
             .clone()
             .unwrap_or_else(|| self.chain.missing_execution_proofs());
 
-        // Collect all eligible roots into one batch, skipping slots ahead of the best peer.
-        let batch: Vec<MissingProofInfo> = missing
+        if missing.is_empty() {
+            return;
+        }
+
+        let Some((peer_id, peer_slot)) = self.best_peer(cx) else {
+            return;
+        };
+
+        // Keep only entries the best peer can serve; sort by slot for run analysis.
+        let mut servable: Vec<MissingProofInfo> = missing
             .into_iter()
             .filter(|info| {
                 if peer_slot < info.slot {
@@ -251,15 +220,62 @@ impl<T: BeaconChainTypes> ProofSync<T> {
             })
             .collect();
 
-        if batch.is_empty() {
+        if servable.is_empty() {
             return;
         }
 
-        match cx.request_execution_proofs_by_root(peer_id, &batch) {
+        servable.sort_unstable_by_key(|m| m.slot);
+
+        let num_types = cx.configured_proof_types_count();
+
+        // Partially-held entries must appear in proof_filters so the peer skips
+        // proof types the requester already has.
+        let partial: Vec<MissingProofInfo> = servable
+            .iter()
+            .filter(|m| !m.existing_proof_types.is_empty())
+            .cloned()
+            .collect();
+
+        let range_bytes = by_range_request_size(&partial, num_types);
+        let root_bytes = by_root_request_size(&servable, num_types);
+
+        // A single range request covers all servable slots with a fixed 20-byte header
+        // plus filters only for partial entries. If that is cheaper than naming every
+        // block individually in a root request, use range; otherwise use root.
+        if range_bytes < root_bytes {
+            let start_slot = servable[0].slot;
+            // count spans from first to last missing slot inclusive.
+            let count = (servable.last().expect("non-empty").slot - start_slot).as_u64() + 1;
+
+            match cx.request_execution_proofs_by_range(peer_id, start_slot, count, &partial) {
+                Ok(id) => {
+                    debug!(
+                        start_slot = %start_slot,
+                        count,
+                        num_filters = partial.len(),
+                        range_bytes,
+                        root_bytes,
+                        "ProofSync: range request sent"
+                    );
+                    self.range_request = Some(ByRangeRequest { id, peer_id });
+                }
+                Err(e) => {
+                    debug!(error = ?e, "ProofSync: range request error");
+                }
+            }
+            return;
+        }
+
+        // Root request is smaller — name every block and proof type still needed.
+        if self.root_request.is_some() {
+            return;
+        }
+
+        match cx.request_execution_proofs_by_root(peer_id, &servable) {
             Ok(id) => {
                 debug!(
-                    num_roots = batch.len(),
-                    "ProofSync: requesting missing proofs batch"
+                    num_roots = servable.len(),
+                    root_bytes, range_bytes, "ProofSync: by-root batch sent"
                 );
                 self.root_request = Some(ByRootRequest { id, peer_id });
             }
@@ -271,13 +287,13 @@ impl<T: BeaconChainTypes> ProofSync<T> {
 
     /// Called when an `ExecutionProofsByRange` RPC stream terminates (response `None`).
     ///
-    /// Transitions back to `Waiting` to give the proof engine time to process the
-    /// received proofs before the next request is issued.
+    /// Clears the in-flight request and starts a brief cooldown so the beacon processor
+    /// has time to import the received proofs before the next request is issued.
     pub fn on_range_request_terminated(&mut self, id: &ExecutionProofsByRangeRequestId) {
         if self.range_request.as_ref().map(|r| &r.id) == Some(id) {
-            info!("ProofSync: range stream complete, cooling down before next request");
+            debug!("ProofSync: range stream complete");
             self.range_request = None;
-            self.state = ProofSyncState::Waiting(self.activation_slots);
+            self.post_request_cooldown = POST_REQUEST_COOLDOWN_SLOTS;
         }
     }
 
@@ -303,11 +319,12 @@ impl<T: BeaconChainTypes> ProofSync<T> {
 
     /// Called when an `ExecutionProofsByRoot` RPC stream terminates (response `None`).
     ///
-    /// Clears the in-flight root request. The proof engine decides whether the received
-    /// proofs satisfy the request; this just frees the slot for the next batch.
+    /// Clears the in-flight root request and starts a brief cooldown so the beacon
+    /// processor has time to import the received proofs before the next request is issued.
     pub fn on_root_request_terminated(&mut self, id: &ExecutionProofsByRootRequestId) {
         if self.root_request.as_ref().map(|r| &r.id) == Some(id) {
             self.root_request = None;
+            self.post_request_cooldown = POST_REQUEST_COOLDOWN_SLOTS;
         }
     }
 
@@ -486,4 +503,55 @@ impl<T: BeaconChainTypes> ProofSync<T> {
 
         result
     }
+}
+
+// ── Request-size helpers ──────────────────────────────────────────────────────
+
+/// SSZ encoded byte cost of one `ProofByRootIdentifier` entry when it appears inside a
+/// variable-length list.
+///
+/// Layout:
+/// - 4 bytes — list offset-table entry (one u32 pointer per variable-length item)
+/// - 32 bytes — `block_root: Hash256` (fixed field within the container)
+/// - 4 bytes — SSZ offset for `proof_types` (variable field pointer within the container)
+/// - `needed` × 1 byte — the proof type values themselves (`ProofType` encodes as one `u8`)
+///
+/// `needed` = `num_configured_types` − `existing_proof_types.len()`, i.e. the types still
+/// outstanding for this block.
+fn per_identifier_ssz_bytes(info: &MissingProofInfo, num_configured_types: usize) -> usize {
+    let needed = num_configured_types.saturating_sub(info.existing_proof_types.len());
+    4 + 32 + 4 + needed
+}
+
+/// Byte size of an `ExecutionProofsByRoot` request encoding `missing` identifiers.
+///
+/// The request body is `List[ProofByRootIdentifier, ...]`; each entry pays the full
+/// per-identifier cost regardless of whether it is fully or partially missing.
+pub(crate) fn by_root_request_size(
+    missing: &[MissingProofInfo],
+    num_configured_types: usize,
+) -> usize {
+    missing
+        .iter()
+        .map(|m| per_identifier_ssz_bytes(m, num_configured_types))
+        .sum()
+}
+
+/// Byte size of an `ExecutionProofsByRange` request.
+///
+/// Layout:
+/// - 20 bytes — fixed header: `start_slot` (8) + `count` (8) + `proof_filters` offset (4)
+/// - `proof_filters` — only entries where `existing_proof_types` is non-empty; fully-missing
+///   blocks are absent (the peer returns all proof types for them by default).
+///
+/// `partial_missing` must contain only entries with non-empty `existing_proof_types`.
+pub(crate) fn by_range_request_size(
+    partial_missing: &[MissingProofInfo],
+    num_configured_types: usize,
+) -> usize {
+    let filter_bytes: usize = partial_missing
+        .iter()
+        .map(|m| per_identifier_ssz_bytes(m, num_configured_types))
+        .sum();
+    20 + filter_bytes
 }

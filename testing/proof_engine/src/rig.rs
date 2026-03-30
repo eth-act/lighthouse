@@ -228,11 +228,4 @@ fn base_builder() -> TestNetworkFixtureBuilder {
             delayed_nodes: 0,
             genesis_delay: 40,
         })
-        // Disable the activation delay so proof sync fires immediately after the node
-        // becomes head-synced. The default (10 slots) is intended for production to let
-        // the beacon processor drain, but in CI each slot can take several seconds,
-        // causing the countdown to exhaust the test timeout.
-        .map_client_config(|config| {
-            config.network.proof_sync_activation_slots = 0;
-        })
 }

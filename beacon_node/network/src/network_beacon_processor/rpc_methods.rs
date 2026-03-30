@@ -1326,7 +1326,10 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
 
     /// Handle an `ExecutionProofsByRange` request from the peer (EIP-8025).
     ///
-    /// Streams all `SignedExecutionProof` objects known for the requested slot range.
+    /// Streams `SignedExecutionProof` objects known for the requested slot range, filtered by
+    /// `proof_filters` when present. If `proof_filters` is non-empty, blocks listed in it are
+    /// served only for the proof types specified; blocks absent from `proof_filters` receive all
+    /// known proof types. This mirrors the `ExecutionProofsByRoot` semantics.
     pub fn handle_execution_proofs_by_range_request(
         &self,
         peer_id: PeerId,
@@ -1351,8 +1354,17 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
             %peer_id,
             start_slot = req.start_slot,
             count = req.count,
+            num_filters = req.proof_filters.len(),
             "Received ExecutionProofsByRange Request"
         );
+
+        // Build a lookup map: block_root → requested proof types from proof_filters.
+        // Blocks not listed in proof_filters will have all known proof types served.
+        let filter_map: std::collections::HashMap<_, _> = req
+            .proof_filters
+            .iter()
+            .map(|id| (id.block_root, &id.proof_types))
+            .collect();
 
         let block_roots = self.get_block_roots_for_slot_range(
             req.start_slot,
@@ -1362,7 +1374,16 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
 
         let mut proofs_sent = 0usize;
         for block_root in block_roots {
+            let allowed_types = filter_map.get(&block_root);
             for proof in self.chain.get_execution_proofs_by_block_root(block_root) {
+                // If this block has a filter entry, skip proof types not requested.
+                // An absent entry means "return all types" (same as an empty proof_types list).
+                if let Some(types) = allowed_types
+                    && !types.is_empty()
+                    && !types.contains(&proof.message.proof_type)
+                {
+                    continue;
+                }
                 self.send_network_message(NetworkMessage::SendResponse {
                     peer_id,
                     inbound_request_id,
