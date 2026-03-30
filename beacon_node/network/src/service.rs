@@ -11,6 +11,7 @@ use futures::channel::mpsc::Sender;
 use futures::future::OptionFuture;
 use futures::prelude::*;
 
+use execution_layer::eip8025::types::{ProofType, ProofTypes};
 use lighthouse_network::Enr;
 use lighthouse_network::identity::Keypair;
 use lighthouse_network::rpc::InboundRequestId;
@@ -317,6 +318,18 @@ impl<T: BeaconChainTypes> NetworkService<T> {
         // launch derived network services
 
         // router task
+        let proof_types = config
+            .proof_types
+            .as_deref()
+            .map(|types| {
+                ProofTypes::from(
+                    types
+                        .iter()
+                        .filter_map(|&t| ProofType::from_u8(t).ok())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .unwrap_or_default();
         let router_send = Router::spawn(
             beacon_chain.clone(),
             network_globals.clone(),
@@ -325,6 +338,7 @@ impl<T: BeaconChainTypes> NetworkService<T> {
             invalid_block_storage,
             beacon_processor_send,
             fork_context.clone(),
+            proof_types,
         )?;
 
         // attestation and sync committee subnet service

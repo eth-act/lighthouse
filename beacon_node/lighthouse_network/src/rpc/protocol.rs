@@ -16,6 +16,8 @@ use tokio_util::{
     codec::Framed,
     compat::{Compat, FuturesAsyncReadCompatExt},
 };
+use typenum::Unsigned;
+use types::execution::eip8025::MaxExecutionProofsPerPayload;
 use types::{
     BeaconBlock, BeaconBlockAltair, BeaconBlockBase, BlobSidecar, ChainSpec, DataColumnSidecar,
     EmptyBlock, Epoch, EthSpec, EthSpecId, ForkContext, ForkName, LightClientBootstrap,
@@ -588,7 +590,7 @@ impl ProtocolId {
                 ExecutionProofsByRangeRequest::ssz_min_len(),
                 ExecutionProofsByRangeRequest::ssz_max_len(),
             ),
-            // ExecutionProofsByRoot request is a list of block roots — same size limit as BlocksByRoot.
+            // ExecutionProofsByRoot request is List[ProofByRootIdentifier, MAX_BLOCKS_BY_ROOT.
             Protocol::ExecutionProofsByRoot => RpcLimits::new(0, spec.max_blocks_by_root_request),
             // ExecutionProofStatus request carries the local node's status.
             Protocol::ExecutionProofStatus => RpcLimits::new(
@@ -832,12 +834,8 @@ impl<E: EthSpec> RequestType<E> {
             RequestType::LightClientFinalityUpdate => 1,
             RequestType::LightClientUpdatesByRange(req) => req.count,
             RequestType::ExecutionProofsByRange(req) => req.max_requested(),
-            RequestType::ExecutionProofsByRoot(req) => {
-                use typenum::Unsigned;
-                use types::execution::eip8025::MaxExecutionProofsPerPayload;
-                (req.block_roots.len() as u64)
-                    .saturating_mul(MaxExecutionProofsPerPayload::to_u64())
-            }
+            RequestType::ExecutionProofsByRoot(req) => (req.identifiers.len() as u64)
+                .saturating_mul(MaxExecutionProofsPerPayload::to_u64()),
             RequestType::ExecutionProofStatus(_) => 1,
         }
     }

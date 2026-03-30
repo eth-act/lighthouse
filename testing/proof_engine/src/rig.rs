@@ -8,7 +8,6 @@ use simulator::test_utils::{
     BeaconNodeHttpClient, Epoch, EventStream, InternalBeaconNodeEvent, LocalNetworkParams,
     NodeType, TestNetworkFixture, TestNetworkFixtureBuilder,
 };
-use task_executor::TaskExecutor;
 use types::MinimalEthSpec;
 
 pub use simulator::test_utils::MockEventStream;
@@ -164,22 +163,17 @@ impl ProofEngineTestRig {
     pub async fn add_proof_verifier_and_subscribe(
         &self,
     ) -> anyhow::Result<(MockEventStream, EventStream<InternalBeaconNodeEvent>)> {
-        let net = self.fixture.network.clone();
         let client_config = self.fixture.config.client.clone();
         let exec_config = self.fixture.config.execution.clone();
 
-        self.fixture.network.executor().spawn(
-            async move {
-                net.add_beacon_node(client_config, exec_config, NodeType::ProofVerifier)
-                    .await
-                    .map_err(anyhow::Error::msg)
-                    .expect("should not error adding proof verifier");
-            },
-            "add_proof_verifier",
-        );
-
-        // Give the node a moment to register its mock before subscribing.
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // Await the node start so we know its index in beacon_nodes before subscribing.
+        // Spawning + sleeping is unreliable on slow CI runners where node startup takes
+        // longer than the fixed sleep duration.
+        self.fixture
+            .network
+            .add_beacon_node(client_config, exec_config, NodeType::ProofVerifier)
+            .await
+            .map_err(anyhow::Error::msg)?;
 
         // The new verifier is the last beacon node; subscribe to both event streams.
         let idx = self
@@ -202,10 +196,6 @@ impl ProofEngineTestRig {
             .map(EventStream::from)
             .ok_or_else(|| anyhow!("newly added verifier node has no beacon chain"))?;
         Ok((mock, chain))
-    }
-
-    pub fn executor(&self) -> TaskExecutor {
-        self.fixture.network.executor().clone()
     }
 
     /// Builder escape hatch for custom topologies.
@@ -236,6 +226,13 @@ fn base_builder() -> TestNetworkFixtureBuilder {
             proof_generator_nodes: 1,
             proof_verifier_nodes: 1,
             delayed_nodes: 0,
-            genesis_delay: 10,
+            genesis_delay: 40,
+        })
+        // Disable the activation delay so proof sync fires immediately after the node
+        // becomes head-synced. The default (10 slots) is intended for production to let
+        // the beacon processor drain, but in CI each slot can take several seconds,
+        // causing the countdown to exhaust the test timeout.
+        .map_client_config(|config| {
+            config.network.proof_sync_activation_slots = 0;
         })
 }

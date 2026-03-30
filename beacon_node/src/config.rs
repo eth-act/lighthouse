@@ -14,6 +14,7 @@ use client::{ClientConfig, ClientGenesis};
 use directory::{DEFAULT_BEACON_NODE_DIR, DEFAULT_NETWORK_DIR, DEFAULT_ROOT_DIR};
 use environment::RuntimeContext;
 use execution_layer::DEFAULT_JWT_FILE;
+use execution_layer::eip8025::types::{ProofType, ProofTypes};
 use http_api::TlsConfig;
 use lighthouse_network::{Enr, Multiaddr, NetworkConfig, PeerIdSerialized, multiaddr::Protocol};
 use network_utils::listen_addr::ListenAddress;
@@ -355,8 +356,21 @@ pub fn get_config<E: EthSpec>(
     el_config.secret_file = secret_file;
     el_config.execution_endpoint = execution_endpoint;
     el_config.proof_engine_endpoint = proof_engine_endpoint;
+    el_config.proof_types = if let Some(vals) = cli_args.get_many::<u8>("proof-types") {
+        let types = vals
+            .copied()
+            .map(ProofType::from_u8)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Invalid --proof-types value: {e:?}"))?;
+        ProofTypes::from(types)
+    } else {
+        ProofTypes::default()
+    };
     // Gate execution proof gossip subscription on proof engine being configured.
     client_config.network.enable_execution_proof = el_config.proof_engine_endpoint.is_some();
+    // Mirror proof types as u8 wire values for the network layer.
+    client_config.network.proof_types =
+        Some(el_config.proof_types.iter().map(|t| t.to_u8()).collect());
     el_config.suggested_fee_recipient =
         clap_utils::parse_optional(cli_args, "suggested-fee-recipient")?;
     el_config.jwt_id = clap_utils::parse_optional(cli_args, "execution-jwt-id")?;

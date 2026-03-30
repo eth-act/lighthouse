@@ -8,13 +8,12 @@
 use super::network_context::{CachedExecutionProofStatus, SyncNetworkContext};
 use beacon_chain::{BeaconChain, BeaconChainTypes, WhenSlotSkipped};
 use execution_layer::MissingProofInfo;
-use fnv::FnvHashMap;
 use lighthouse_network::PeerId;
 use lighthouse_network::rpc::methods::ExecutionProofStatus;
 use lighthouse_network::service::api_types::{
     ExecutionProofStatusRequestId, ExecutionProofsByRangeRequestId, ExecutionProofsByRootRequestId,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, info};
@@ -28,13 +27,16 @@ const DEFAULT_RANGE_REQUEST_THRESHOLD: u64 = 16;
 ///
 /// The request ID and serving peer are always set and cleared together, so they are
 /// co-located.
-pub(crate) struct RangeRequest {
+pub(crate) struct ByRangeRequest {
     pub(crate) id: ExecutionProofsByRangeRequestId,
     pub(crate) peer_id: PeerId,
 }
 
-/// Maximum number of concurrent `ExecutionProofsByRoot` requests.
-const DEFAULT_MAX_CONCURRENT: usize = 4;
+/// Tracks the single in-flight `ExecutionProofsByRoot` batch request.
+pub(crate) struct ByRootRequest {
+    pub(crate) id: ExecutionProofsByRootRequestId,
+    pub(crate) peer_id: PeerId,
+}
 
 /// Operating mode for the proof sync subsystem.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -62,13 +64,11 @@ pub struct ProofSync<T: BeaconChainTypes> {
     chain: Arc<BeaconChain<T>>,
     state: ProofSyncState,
     /// Tracks the single in-flight `ExecutionProofsByRange` request (ID + serving peer).
-    range_request: Option<RangeRequest>,
-    /// In-flight by-root request IDs → `MissingProofInfo`.
-    in_flight: FnvHashMap<ExecutionProofsByRootRequestId, MissingProofInfo>,
+    range_request: Option<ByRangeRequest>,
+    /// Tracks the single in-flight `ExecutionProofsByRoot` batch request (ID + serving peer).
+    root_request: Option<ByRootRequest>,
     /// Slot gap above which a `ByRange` request is preferred over `ByRoot` fill requests.
     range_request_threshold: u64,
-    /// Maximum number of concurrent by-root requests.
-    max_concurrent: usize,
     /// Cached `ExecutionProofStatus` responses, keyed by peer.
     peer_statuses: HashMap<PeerId, CachedExecutionProofStatus>,
     /// In-flight `ExecutionProofStatus` request IDs, keyed by peer.
@@ -93,10 +93,9 @@ impl<T: BeaconChainTypes> ProofSync<T> {
         Self {
             state: ProofSyncState::Idle,
             range_request: None,
+            root_request: None,
             chain,
-            in_flight: FnvHashMap::default(),
             range_request_threshold: DEFAULT_RANGE_REQUEST_THRESHOLD,
-            max_concurrent: DEFAULT_MAX_CONCURRENT,
             peer_statuses: HashMap::default(),
             status_in_flight: HashMap::default(),
             activation_slots,
@@ -113,8 +112,8 @@ impl<T: BeaconChainTypes> ProofSync<T> {
     }
 
     #[cfg(test)]
-    pub fn in_flight(&self) -> &FnvHashMap<ExecutionProofsByRootRequestId, MissingProofInfo> {
-        &self.in_flight
+    pub fn by_root_request(&self) -> Option<&ByRootRequest> {
+        self.root_request.as_ref()
     }
 
     #[cfg(test)]
@@ -128,7 +127,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
     }
 
     #[cfg(test)]
-    pub fn range_request(&self) -> Option<&RangeRequest> {
+    pub fn by_range_request(&self) -> Option<&ByRangeRequest> {
         self.range_request.as_ref()
     }
 
@@ -212,12 +211,17 @@ impl<T: BeaconChainTypes> ProofSync<T> {
             match cx.request_execution_proofs_by_range(peer_id, start_slot, gap) {
                 Ok(id) => {
                     debug!(%start_slot, %peer_slot, gap, "ProofSync: range request sent");
-                    self.range_request = Some(RangeRequest { id, peer_id });
+                    self.range_request = Some(ByRangeRequest { id, peer_id });
                 }
                 Err(e) => {
                     debug!(error = ?e, "ProofSync: range request error");
                 }
             }
+            return;
+        }
+
+        // While a by-root batch is already in-flight, wait for it to complete.
+        if self.root_request.is_some() {
             return;
         }
 
@@ -228,34 +232,39 @@ impl<T: BeaconChainTypes> ProofSync<T> {
             .test_missing_proofs
             .clone()
             .unwrap_or_else(|| self.chain.missing_execution_proofs());
-        let in_flight_roots: HashSet<Hash256> = self.in_flight.values().map(|i| i.root).collect();
-        let available = self.max_concurrent.saturating_sub(self.in_flight.len());
-        for info in missing
+
+        // Collect all eligible roots into one batch, skipping slots ahead of the best peer.
+        let batch: Vec<MissingProofInfo> = missing
             .into_iter()
-            .filter(|info| !in_flight_roots.contains(&info.root))
-            .take(available)
-        {
-            if peer_slot < info.slot {
-                debug!(
-                    block_root = %info.root,
-                    slot = %info.slot,
-                    %peer_slot,
-                    "ProofSync: best peer slot behind missing block, skipping"
-                );
-                continue;
-            }
-            match cx.request_execution_proofs_by_root(peer_id, info.root) {
-                Ok(id) => {
+            .filter(|info| {
+                if peer_slot < info.slot {
                     debug!(
                         block_root = %info.root,
-                        existing_proof_types = ?info.existing_proof_types,
-                        "ProofSync: requesting missing proof"
+                        slot = %info.slot,
+                        %peer_slot,
+                        "ProofSync: best peer slot behind missing block, skipping"
                     );
-                    self.in_flight.insert(id, info);
+                    false
+                } else {
+                    true
                 }
-                Err(e) => {
-                    debug!(error = ?e, "ProofSync: failed to send proof request");
-                }
+            })
+            .collect();
+
+        if batch.is_empty() {
+            return;
+        }
+
+        match cx.request_execution_proofs_by_root(peer_id, &batch) {
+            Ok(id) => {
+                debug!(
+                    num_roots = batch.len(),
+                    "ProofSync: requesting missing proofs batch"
+                );
+                self.root_request = Some(ByRootRequest { id, peer_id });
+            }
+            Err(e) => {
+                debug!(error = ?e, "ProofSync: failed to send proof batch request");
             }
         }
     }
@@ -284,19 +293,22 @@ impl<T: BeaconChainTypes> ProofSync<T> {
 
     /// Called when an `ExecutionProofsByRoot` RPC request errors.
     ///
-    /// Removes the entry from the in-flight map so the slot is eligible for retry on
-    /// the next `poll()`.
+    /// Clears the in-flight root request so the next `poll()` can retry.
     pub fn on_root_request_error(&mut self, id: &ExecutionProofsByRootRequestId) {
-        self.in_flight.remove(id);
+        if self.root_request.as_ref().map(|r| &r.id) == Some(id) {
+            debug!("ProofSync: root batch request failed, will retry next poll");
+            self.root_request = None;
+        }
     }
 
     /// Called when an `ExecutionProofsByRoot` RPC stream terminates (response `None`).
     ///
-    /// Removes the entry from the in-flight map. The proof engine is responsible for
-    /// deciding whether the received proofs satisfy the request; this just frees the
-    /// concurrency slot.
+    /// Clears the in-flight root request. The proof engine decides whether the received
+    /// proofs satisfy the request; this just frees the slot for the next batch.
     pub fn on_root_request_terminated(&mut self, id: &ExecutionProofsByRootRequestId) {
-        self.in_flight.remove(id);
+        if self.root_request.as_ref().map(|r| &r.id) == Some(id) {
+            self.root_request = None;
+        }
     }
 
     /// Called when a proof-capable peer connects.
@@ -318,12 +330,11 @@ impl<T: BeaconChainTypes> ProofSync<T> {
     /// Called when a proof-capable peer disconnects.
     ///
     /// Removes the peer's cached status and any in-flight status request. If this peer
-    /// was serving the active range request, that request is also cleared so the next
-    /// `poll()` can retry with a different peer.
+    /// was serving the active range or root request, that request is also cleared so the
+    /// next `poll()` can retry with a different peer.
     pub fn on_proof_capable_peer_disconnected(&mut self, peer_id: &PeerId) {
         self.peer_statuses.remove(peer_id);
         self.status_in_flight.remove(peer_id);
-        // If this peer was serving our range request, clear it so the next poll retries.
         if self
             .range_request
             .as_ref()
@@ -332,6 +343,15 @@ impl<T: BeaconChainTypes> ProofSync<T> {
             .is_some()
         {
             self.range_request = None;
+        }
+        if self
+            .root_request
+            .as_ref()
+            .map(|r| &r.peer_id)
+            .filter(|p| *p == peer_id)
+            .is_some()
+        {
+            self.root_request = None;
         }
     }
 

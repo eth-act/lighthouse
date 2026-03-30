@@ -476,6 +476,9 @@ pub struct Config {
     pub execution_endpoint: Option<SensitiveUrl>,
     /// Endpoint url for EIP-8025 proof engine (optional).
     pub proof_engine_endpoint: Option<SensitiveUrl>,
+    /// Proof types supported by this client.
+    #[serde(default)]
+    pub proof_types: eip8025::types::ProofTypes,
     /// Endpoint urls for services providing the builder api.
     pub builder_url: Option<SensitiveUrl>,
     /// The timeout value used when making a request to fetch a block header
@@ -512,6 +515,7 @@ impl<E: EthSpec> ExecutionLayer<E> {
         let Config {
             execution_endpoint,
             proof_engine_endpoint,
+            proof_types: _, // consumed at the network layer via NetworkConfig
             builder_url,
             builder_user_agent,
             builder_header_timeout,

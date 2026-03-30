@@ -127,6 +127,42 @@ impl TryFrom<String> for ProofType {
     }
 }
 
+// ─── ProofTypes ─────────────────────────────────────────────────────────────
+
+/// ProofTypes defines the support proof types.
+///
+/// This type allows us to implement `Default` with reasonable defaults.
+///
+/// The default is `[EthrexRisc0, EthrexSP1, EthrexZisk, RethOpenVM]` (wire
+/// values 0–3), matching the `--proof-types` CLI flag default.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProofTypes(pub Vec<ProofType>);
+
+impl Default for ProofTypes {
+    fn default() -> Self {
+        Self(vec![
+            ProofType::EthrexRisc0,
+            ProofType::EthrexSP1,
+            ProofType::EthrexZisk,
+            ProofType::RethOpenVM,
+        ])
+    }
+}
+
+impl std::ops::Deref for ProofTypes {
+    type Target = Vec<ProofType>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<Vec<ProofType>> for ProofTypes {
+    fn from(v: Vec<ProofType>) -> Self {
+        Self(v)
+    }
+}
+
 // ─── SSE Event Types ────────────────────────────────────────────────────────
 
 /// SSE event types broadcast by the proof engine.

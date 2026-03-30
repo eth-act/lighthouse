@@ -11,6 +11,7 @@ use crate::status::status_message;
 use crate::sync::SyncMessage;
 use beacon_chain::{BeaconChain, BeaconChainTypes};
 use beacon_processor::{BeaconProcessorSend, DuplicateCache};
+use execution_layer::eip8025::types::ProofTypes;
 use futures::prelude::*;
 use lighthouse_network::rpc::methods::ExecutionProofStatus;
 use lighthouse_network::rpc::*;
@@ -93,6 +94,7 @@ impl<T: BeaconChainTypes> Router<T> {
         invalid_block_storage: InvalidBlockStorage,
         beacon_processor_send: BeaconProcessorSend<T::EthSpec>,
         fork_context: Arc<ForkContext>,
+        proof_types: ProofTypes,
     ) -> Result<mpsc::UnboundedSender<RouterMessage<T::EthSpec>>, String> {
         trace!("Service starting");
 
@@ -110,6 +112,7 @@ impl<T: BeaconChainTypes> Router<T> {
             network_globals: network_globals.clone(),
             invalid_block_storage,
             executor: executor.clone(),
+            proof_types: proof_types.clone(),
         };
         let network_beacon_processor = Arc::new(network_beacon_processor);
 
@@ -121,6 +124,7 @@ impl<T: BeaconChainTypes> Router<T> {
             network_beacon_processor.clone(),
             sync_recv,
             fork_context,
+            proof_types,
         );
 
         // generate the Message handler

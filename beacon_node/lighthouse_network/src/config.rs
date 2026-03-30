@@ -130,6 +130,9 @@ pub struct Config {
     /// Set to `true` only when `--proof-engine-endpoint` is configured.
     pub enable_execution_proof: bool,
 
+    /// Proof types supported by this client.
+    pub proof_types: Option<Vec<u8>>,
+
     /// Number of slot ticks to wait after range sync completes before issuing
     /// `ExecutionProofsByRange` requests. Gives the beacon processor time to finish
     /// calling `notify_new_payload` for all imported blocks before proofs are requested.
@@ -370,6 +373,7 @@ impl Default for Config {
             metrics_enabled: false,
             enable_light_client_server: true,
             enable_execution_proof: false,
+            proof_types: None,
             proof_sync_activation_slots: DEFAULT_PROOF_SYNC_ACTIVATION_SLOTS,
             outbound_rate_limiter_config: None,
             invalid_block_storage: None,

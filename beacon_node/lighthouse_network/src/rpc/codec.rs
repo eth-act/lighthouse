@@ -368,7 +368,7 @@ impl<E: EthSpec> Encoder<RequestType<E>> for SSZSnappyOutboundCodec<E> {
             RequestType::LightClientBootstrap(req) => req.as_ssz_bytes(),
             RequestType::LightClientUpdatesByRange(req) => req.as_ssz_bytes(),
             RequestType::ExecutionProofsByRange(req) => req.as_ssz_bytes(),
-            RequestType::ExecutionProofsByRoot(req) => req.block_roots.as_ssz_bytes(),
+            RequestType::ExecutionProofsByRoot(req) => req.identifiers.as_ssz_bytes(),
             RequestType::ExecutionProofStatus(s) => s.as_ssz_bytes(),
             // no body to encode for these request types
             RequestType::MetaData(_)
@@ -601,7 +601,7 @@ fn handle_rpc_request<E: EthSpec>(
         }
         SupportedProtocol::ExecutionProofsByRootV1 => Ok(Some(RequestType::ExecutionProofsByRoot(
             ExecutionProofsByRootRequest {
-                block_roots: RuntimeVariableList::from_ssz_bytes(
+                identifiers: RuntimeVariableList::from_ssz_bytes(
                     decoded_buffer,
                     spec.max_request_blocks(current_fork),
                 )?,
