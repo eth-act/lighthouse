@@ -51,6 +51,15 @@ additional_services:
   - dora
   - prometheus_grafana
 
+# Grafana dashboards — referenced from our own fork/branch so the path
+# resolves correctly regardless of which Kurtosis package calls upload_files.
+# Each JSON file already has the ethereum-package Prometheus datasource UID
+# (PBFA97CFB590B2093) hardcoded in every panel, so file provisioning works
+# without any runtime substitution.
+grafana_params:
+  additional_dashboards:
+    - github.com/frisitano/lighthouse/scripts/local_testnet/kurtosis_zkboost/dashboards@feat/kurtosis-grafana
+
 # ── zkboost-server sidecar configuration ─────────────────────────────────────
 # Processed by kurtosis_zkboost/main.star; NOT forwarded to ethereum-package.
 zkboost:

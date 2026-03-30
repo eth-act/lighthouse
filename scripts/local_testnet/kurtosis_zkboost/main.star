@@ -47,6 +47,9 @@ def run(plan, args):
         fail("Missing required 'zkboost' key in args file.")
 
     # Run the standard ethereum-package with the remaining args.
+    # Grafana dashboards are provisioned via grafana_params.additional_dashboards
+    # in the args file — static JSON files in ./dashboards/ that already have
+    # the correct datasource UID (PBFA97CFB590B2093) hardcoded in every panel.
     ethereum_package.run(plan, args)
 
     # Extract zkboost settings with defaults.
@@ -103,3 +106,35 @@ def run(plan, args):
         )
 
         plan.print("Started zkboost service '{0}' -> EL '{1}'".format(name, el_service))
+
+        # Register this zkboost instance as a Prometheus scrape target.
+        # The ethereum-package deploys Prometheus with --web.enable-lifecycle, so
+        # we append a new job to its config and trigger a hot reload via the API.
+        # We use a heredoc (with quoted delimiter 'EOF' to suppress variable
+        # expansion) so that names containing hyphens or other special chars are
+        # written literally without any shell-quoting problems.
+        plan.exec(
+            service_name = "prometheus",
+            recipe = ExecRecipe(
+                command = [
+                    "/bin/sh", "-c",
+                    """cat >> /config/prometheus-config.yml << 'EOF'
+- job_name: {name}
+  metrics_path: {metrics_path}
+  scrape_interval: 15s
+  static_configs:
+    - targets:
+        - {name}:{port}
+      labels:
+        service: {name}
+        el_service: {el_service}
+EOF
+wget -q -O /dev/null --post-data '' http://localhost:9090/-/reload""".format(
+                        name = name,
+                        port = ZKBOOST_PORT_NUMBER,
+                        el_service = el_service,
+                        metrics_path = ZKBOOST_METRICS_PATH,
+                    ),
+                ],
+            ),
+        )
