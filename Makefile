@@ -177,7 +177,14 @@ build-release-tarballs:
 test-release:
 	cargo nextest run --workspace --release --features "$(TEST_FEATURES)" \
 		--exclude ef_tests --exclude beacon_chain --exclude slasher --exclude network \
-		--exclude http_api
+		--exclude http_api --exclude proof_engine_test
+
+# Runs the proof engine integration tests sequentially so they are not starved of
+# CPU by the parallel test-release job.  Each test spawns multiple beacon nodes and
+# is sensitive to slot timing, so dedicated sequential execution is required.
+test-proof-engine:
+	cargo nextest run -p proof_engine_test --release --features "$(TEST_FEATURES)" \
+		--test-threads 1
 
 
 # Runs the full workspace tests in **debug**, without downloading any additional test
