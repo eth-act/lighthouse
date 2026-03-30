@@ -1,8 +1,18 @@
-use lru_cache::LRUTimeCache;
 use parking_lot::Mutex;
-use std::net::{SocketAddr, TcpListener, UdpSocket};
+use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, UdpSocket};
 use std::sync::LazyLock;
-use std::time::Duration;
+
+/// Base port for the partitioned test port range (10000–29999).
+const PARTITION_BASE: u16 = 10000;
+/// Number of ports per process partition.
+const PARTITION_SIZE: u16 = 200;
+/// Total partitions; keeps the range within 10000–29999.
+const NUM_PARTITIONS: u32 = 100;
+
+/// Maps partition base → next port to try within that partition.
+static PORT_CURSORS: LazyLock<Mutex<HashMap<u16, u16>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[derive(Copy, Clone)]
 pub enum Transport {
@@ -16,10 +26,14 @@ pub enum IpVersion {
     Ipv6,
 }
 
-pub const CACHED_PORTS_TTL: Duration = Duration::from_secs(300);
-
-static FOUND_PORTS_CACHE: LazyLock<Mutex<LRUTimeCache<u16>>> =
-    LazyLock::new(|| Mutex::new(LRUTimeCache::new(CACHED_PORTS_TTL)));
+/// Returns the start of this process's port partition, derived from the PID.
+///
+/// Each OS process gets a distinct 200-port band, so concurrent test processes
+/// (which nextest launches as separate PIDs) land in different bands and cannot
+/// collide on the same port.
+fn partition_base() -> u16 {
+    PARTITION_BASE + ((std::process::id() % NUM_PARTITIONS) as u16) * PARTITION_SIZE
+}
 
 /// A convenience wrapper over [`zero_port`].
 pub fn unused_tcp4_port() -> Result<u16, String> {
@@ -41,59 +55,41 @@ pub fn unused_udp6_port() -> Result<u16, String> {
     zero_port(Transport::Udp, IpVersion::Ipv6)
 }
 
-/// A bit of hack to find an unused port.
+/// Finds an available port using a per-process port partition.
 ///
-/// Does not guarantee that the given port is unused after the function exits, just that it was
-/// unused before the function started (i.e., it does not reserve a port).
+/// Each process is assigned a 200-port band derived from its PID, keeping
+/// concurrent test processes out of each other's port ranges.  A per-partition
+/// cursor tracks the next port to try, so allocations advance sequentially
+/// without rescanning already-used ports.
 ///
-/// ## Notes
+/// The lock is held for the duration of the scan to prevent two concurrent
+/// callers within the same process from receiving the same port.
 ///
-/// It is possible that users are unable to bind to the ports returned by this function as the OS
-/// has a buffer period where it doesn't allow binding to the same port even after the socket is
-/// closed. We might have to use SO_REUSEADDR socket option from `std::net2` crate in that case.
+/// Returns an error if the partition is exhausted.
 pub fn zero_port(transport: Transport, ipv: IpVersion) -> Result<u16, String> {
-    let localhost = match ipv {
-        IpVersion::Ipv4 => std::net::Ipv4Addr::LOCALHOST.into(),
-        IpVersion::Ipv6 => std::net::Ipv6Addr::LOCALHOST.into(),
+    let localhost: IpAddr = match ipv {
+        IpVersion::Ipv4 => Ipv4Addr::LOCALHOST.into(),
+        IpVersion::Ipv6 => Ipv6Addr::LOCALHOST.into(),
     };
-    let socket_addr = std::net::SocketAddr::new(localhost, 0);
-    let mut unused_port: u16;
-    loop {
-        unused_port = find_unused_port(transport, socket_addr)?;
-        let mut cache_lock = FOUND_PORTS_CACHE.lock();
-        if !cache_lock.contains(&unused_port) {
-            cache_lock.insert(unused_port);
-            break;
+
+    let base = partition_base();
+    let end = base + PARTITION_SIZE;
+    let mut cursors = PORT_CURSORS.lock();
+    let start = *cursors.entry(base).or_insert(base);
+
+    for port in start..end {
+        let addr = SocketAddr::new(localhost, port);
+        let bindable = match transport {
+            Transport::Tcp => TcpListener::bind(addr).is_ok(),
+            Transport::Udp => UdpSocket::bind(addr).is_ok(),
+        };
+        if bindable {
+            cursors.insert(base, port + 1);
+            return Ok(port);
         }
     }
 
-    Ok(unused_port)
-}
-
-fn find_unused_port(transport: Transport, socket_addr: SocketAddr) -> Result<u16, String> {
-    let local_addr = match transport {
-        Transport::Tcp => {
-            let listener = TcpListener::bind(socket_addr).map_err(|e| {
-                format!("Failed to create TCP listener to find unused port: {:?}", e)
-            })?;
-            listener.local_addr().map_err(|e| {
-                format!(
-                    "Failed to read TCP listener local_addr to find unused port: {:?}",
-                    e
-                )
-            })?
-        }
-        Transport::Udp => {
-            let socket = UdpSocket::bind(socket_addr)
-                .map_err(|e| format!("Failed to create UDP socket to find unused port: {:?}", e))?;
-            socket.local_addr().map_err(|e| {
-                format!(
-                    "Failed to read UDP socket local_addr to find unused port: {:?}",
-                    e
-                )
-            })?
-        }
-    };
-
-    Ok(local_addr.port())
+    Err(format!(
+        "Could not find an unused port in {start}..{end} (pid-based partition).",
+    ))
 }

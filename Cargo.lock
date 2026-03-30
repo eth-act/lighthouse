@@ -6299,7 +6299,6 @@ dependencies = [
  "discv5",
  "hex",
  "libp2p-identity",
- "lru_cache",
  "metrics",
  "multiaddr",
  "parking_lot",
