@@ -340,12 +340,21 @@ impl TestRig {
     fn find_execution_proofs_by_range_request_with_slot(
         &mut self,
     ) -> ((ExecutionProofsByRangeRequestId, PeerId), Slot) {
+        let ((id, peer_id), start_slot, _count) =
+            self.find_execution_proofs_by_range_request_params();
+        ((id, peer_id), start_slot)
+    }
+
+    /// Assert an `ExecutionProofsByRange` RPC was sent; returns `((id, peer_id), start_slot, count)`.
+    fn find_execution_proofs_by_range_request_params(
+        &mut self,
+    ) -> ((ExecutionProofsByRangeRequestId, PeerId), Slot, u64) {
         self.pop_received_network_event(|ev| match ev {
             NetworkMessage::SendRequest {
                 peer_id,
                 request: RequestType::ExecutionProofsByRange(req),
                 app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofsByRange(id)),
-            } => Some(((*id, *peer_id), Slot::new(req.start_slot))),
+            } => Some(((*id, *peer_id), Slot::new(req.start_slot), req.count)),
             _ => None,
         })
         .unwrap_or_else(|e| panic!("Expected ExecutionProofsByRange request: {e:?}"))
@@ -752,17 +761,37 @@ fn finalized_sync_not_enough_custody_peers_on_start() {
 // --- ProofSync state-machine tests ---
 
 // These tests exercise the `ProofSync` state machine directly, covering its full lifecycle:
-// Idle → Syncing (range request for large gaps, by-root fill for small gaps),
+// Idle → Syncing (range request when a consecutive run of fully-missing blocks saves bytes,
+// by-root fill when all missing blocks are only partially missing).
 // pause/resume semantics, concurrency cap, in-flight deduplication, and response forwarding.
 //
-// In tests, range_request_threshold = 0, so any non-zero slot gap triggers a range request.
-// At genesis (slot 0, gap = 0) the poll goes directly to by-root fill requests.
+// Range vs root decisions are driven by `test_missing_proofs` (injected into proof_sync) and
+// a direct size comparison: by_range_request_size vs by_root_request_size over all servable
+// missing proofs. Fully-missing blocks always prefer range; all-partial sets always prefer root.
 
-/// Build a `MissingProofInfo` with a fresh random root for test seeding.
+/// Build a fully-missing `MissingProofInfo` (no proof types held yet).
+///
+/// Because no existing types are held, the size comparison always prefers a range request:
+/// the 20-byte range header is smaller than the 40-byte per-identifier cost when all types
+/// are needed.
 fn missing_proof(root: Hash256) -> MissingProofInfo {
     MissingProofInfo {
         root,
         existing_proof_types: vec![],
+        slot: Default::default(),
+    }
+}
+
+/// Build a partially-missing `MissingProofInfo` (one proof type already held).
+///
+/// Because the entry is partial, it must appear in `proof_filters` if included in a range
+/// request — making the range request larger than the equivalent by-root identifier.
+/// The size comparison therefore never prefers range for these entries; `poll()` falls back
+/// to `ExecutionProofsByRoot`.
+fn partial_missing_proof(root: Hash256) -> MissingProofInfo {
+    MissingProofInfo {
+        root,
+        existing_proof_types: vec![0u8], // one type already held; still needs the rest
         slot: Default::default(),
     }
 }
@@ -786,7 +815,7 @@ fn test_proof_sync_starts_in_idle() {
 }
 
 /// Test 2: After `start()`, the next `poll()` sends an `ExecutionProofsByRange` RPC.
-/// (slot gap = 1 > range_request_threshold = 0 in tests → range request).
+/// A fully-missing block is cheaper to request via range (20 bytes) than by-root (40+ bytes).
 #[test]
 fn test_proof_sync_pending_range_issues_request_on_poll() {
     let mut rig = TestRig::test_setup();
@@ -798,6 +827,10 @@ fn test_proof_sync_pending_range_issues_request_on_poll() {
         rig.sync_manager.proof_sync().state(),
         ProofSyncState::Syncing
     );
+
+    // Inject a fully-missing proof — range request is always cheaper.
+    rig.sync_manager.proof_sync_mut().test_missing_proofs =
+        Some(vec![missing_proof(Hash256::random())]);
 
     rig.sync_manager.poll_proof_sync();
     let _ = rig.find_execution_proofs_by_range_request();
@@ -815,6 +848,9 @@ fn test_proof_sync_no_peer_stays_pending() {
     rig.harness.advance_slot();
 
     rig.sync_manager.start_proof_sync();
+    // Inject a fully-missing proof so the size comparison prefers range when a peer is found.
+    rig.sync_manager.proof_sync_mut().test_missing_proofs =
+        Some(vec![missing_proof(Hash256::random())]);
     rig.sync_manager.poll_proof_sync();
     rig.expect_no_execution_proof_range_request();
     assert_eq!(
@@ -838,6 +874,8 @@ fn test_proof_sync_in_flight_poll_is_noop() {
     rig.harness.advance_slot();
 
     rig.sync_manager.start_proof_sync();
+    rig.sync_manager.proof_sync_mut().test_missing_proofs =
+        Some(vec![missing_proof(Hash256::random())]);
     rig.sync_manager.poll_proof_sync();
     let _ = rig.find_execution_proofs_by_range_request();
     rig.drain_execution_proof_status_requests();
@@ -849,33 +887,35 @@ fn test_proof_sync_in_flight_poll_is_noop() {
     assert!(rig.sync_manager.proof_sync().by_range_request().is_some());
 }
 
-/// Test 5: Stream termination with the correct ID clears the in-flight range request.
-/// The next poll will then issue by-root fill requests (gap is now 0 at genesis).
+/// Test 5: Stream termination with the correct ID clears the in-flight range request and
+/// starts a post-request cooldown; state stays `Syncing`.
 #[test]
-fn test_proof_sync_range_termination_enters_fill_mode() {
+fn test_proof_sync_range_termination_clears_request() {
     let mut rig = TestRig::test_setup();
     let _proof_peer = rig.new_proof_peer_with_status(1);
     rig.harness.advance_slot();
 
     rig.sync_manager.start_proof_sync();
+    rig.sync_manager.proof_sync_mut().test_missing_proofs =
+        Some(vec![missing_proof(Hash256::random())]);
     rig.sync_manager.poll_proof_sync();
     let (req_id, peer_id) = rig.find_execution_proofs_by_range_request();
     assert!(rig.sync_manager.proof_sync().by_range_request().is_some());
 
     rig.terminate_execution_proofs_by_range(req_id, peer_id);
-    // Termination transitions to Waiting to give the proof engine time to process
-    // received proofs before the next range request is issued.
-    assert!(
-        matches!(
-            rig.sync_manager.proof_sync().state(),
-            ProofSyncState::Waiting(_)
-        ),
-        "Range termination should enter Waiting state"
+    assert_eq!(
+        rig.sync_manager.proof_sync().state(),
+        ProofSyncState::Syncing,
+        "State should remain Syncing after range termination"
     );
     assert!(
         rig.sync_manager.proof_sync().by_range_request().is_none(),
         "Range request should be cleared after stream termination"
     );
+    // The cooldown blocks a new request for one slot tick.
+    rig.sync_manager.poll_proof_sync();
+    rig.expect_no_execution_proof_range_request();
+    assert!(rig.sync_manager.proof_sync().by_root_request().is_none());
 }
 
 /// Test 6: Stream termination with a wrong ID is ignored; the range request stays in-flight.
@@ -886,6 +926,8 @@ fn test_proof_sync_wrong_id_termination_ignored() {
     rig.harness.advance_slot();
 
     rig.sync_manager.start_proof_sync();
+    rig.sync_manager.proof_sync_mut().test_missing_proofs =
+        Some(vec![missing_proof(Hash256::random())]);
     rig.sync_manager.poll_proof_sync();
     let (_req_id, peer_id) = rig.find_execution_proofs_by_range_request();
     assert!(rig.sync_manager.proof_sync().by_range_request().is_some());
@@ -918,8 +960,8 @@ fn test_proof_sync_fill_mode_no_missing_proofs() {
     );
 }
 
-/// Test 8: With seeded missing proofs, `poll()` sends all roots in a single batched
-/// `ExecutionProofsByRoot` request.
+/// Test 8: With partially-missing proofs, `poll()` sends all roots in a single batched
+/// `ExecutionProofsByRoot` request (partial entries make range more expensive than root).
 #[test]
 fn test_proof_sync_fill_mode_issues_by_root_requests() {
     let mut rig = TestRig::test_setup();
@@ -929,8 +971,8 @@ fn test_proof_sync_fill_mode_issues_by_root_requests() {
     rig.drain_execution_proof_status_requests();
 
     let missing = vec![
-        missing_proof(Hash256::random()),
-        missing_proof(Hash256::random()),
+        partial_missing_proof(Hash256::random()),
+        partial_missing_proof(Hash256::random()),
     ];
     rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(missing);
     rig.sync_manager.poll_proof_sync();
@@ -951,8 +993,10 @@ fn test_proof_sync_fill_mode_batches_all_roots() {
     rig.sync_manager.start_proof_sync();
     rig.drain_execution_proof_status_requests();
 
-    // Seed 6 distinct missing proofs; all go into one batch request.
-    let missing: Vec<MissingProofInfo> = (0..6).map(|_| missing_proof(Hash256::random())).collect();
+    // Seed 6 distinct partial proofs; all go into one by-root batch request.
+    let missing: Vec<MissingProofInfo> = (0..6)
+        .map(|_| partial_missing_proof(Hash256::random()))
+        .collect();
     rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(missing);
     rig.sync_manager.poll_proof_sync();
 
@@ -975,8 +1019,8 @@ fn test_proof_sync_fill_mode_skips_while_batch_in_flight() {
     rig.drain_execution_proof_status_requests();
 
     let missing = vec![
-        missing_proof(Hash256::random()),
-        missing_proof(Hash256::random()),
+        partial_missing_proof(Hash256::random()),
+        partial_missing_proof(Hash256::random()),
     ];
     rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(missing);
 
@@ -1004,8 +1048,8 @@ fn test_proof_sync_fill_mode_no_peer_breaks() {
         .set_state(ProofSyncState::Syncing);
 
     let missing = vec![
-        missing_proof(Hash256::random()),
-        missing_proof(Hash256::random()),
+        partial_missing_proof(Hash256::random()),
+        partial_missing_proof(Hash256::random()),
     ];
     rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(missing);
     rig.sync_manager.poll_proof_sync();
@@ -1026,7 +1070,7 @@ fn test_proof_sync_on_request_terminated_clears_in_flight() {
     rig.sync_manager.start_proof_sync();
     rig.drain_execution_proof_status_requests();
 
-    let missing = vec![missing_proof(Hash256::random())];
+    let missing = vec![partial_missing_proof(Hash256::random())];
     rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(missing);
     rig.sync_manager.poll_proof_sync();
 
@@ -1050,10 +1094,10 @@ fn test_proof_sync_pause_resets_to_idle() {
     rig.sync_manager.start_proof_sync();
     rig.drain_execution_proof_status_requests();
 
-    // Seed some missing proofs; poll sends one batch request.
+    // Seed some partial proofs; poll sends one by-root batch request.
     let missing = vec![
-        missing_proof(Hash256::random()),
-        missing_proof(Hash256::random()),
+        partial_missing_proof(Hash256::random()),
+        partial_missing_proof(Hash256::random()),
     ];
     rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(missing);
     rig.sync_manager.poll_proof_sync();
@@ -1080,6 +1124,10 @@ fn test_proof_sync_re_enter_range_resets_then_restarts() {
     let _proof_peer = rig.new_proof_peer_with_status(1);
     rig.harness.advance_slot();
 
+    // Inject a fully-missing proof so the size comparison prefers range.
+    rig.sync_manager.proof_sync_mut().test_missing_proofs =
+        Some(vec![missing_proof(Hash256::random())]);
+
     // First range request cycle.
     rig.sync_manager.start_proof_sync();
     rig.sync_manager.poll_proof_sync();
@@ -1098,29 +1146,31 @@ fn test_proof_sync_re_enter_range_resets_then_restarts() {
         ProofSyncState::Syncing
     );
 
-    // New poll sends a fresh range request (slot gap still > 0).
+    // New poll sends a fresh range request (same missing proof data still injected).
     rig.sync_manager.poll_proof_sync();
     let _ = rig.find_execution_proofs_by_range_request();
     assert!(rig.sync_manager.proof_sync().by_range_request().is_some());
 }
 
-/// Test 15: At genesis (slot gap = 0 ≤ range_request_threshold = 0), no range request
-/// is issued — `poll()` goes directly to the by-root fill path.
+/// Test 15: With no missing proofs reported by the proof engine, no request of any kind
+/// is emitted and the state stays `Syncing`.
 #[test]
-fn test_proof_sync_count_zero_skips_to_fill() {
+fn test_proof_sync_no_missing_proofs_no_request() {
     let mut rig = TestRig::test_setup();
     let _proof_peer = rig.new_proof_peer_with_status(0);
 
     rig.sync_manager.start_proof_sync();
     rig.drain_execution_proof_status_requests();
+    // test_missing_proofs = None → chain.missing_execution_proofs() returns empty.
     rig.sync_manager.poll_proof_sync();
 
-    rig.expect_no_execution_proof_range_request();
+    rig.expect_empty_network();
     assert_eq!(
         rig.sync_manager.proof_sync().state(),
         ProofSyncState::Syncing
     );
     assert!(rig.sync_manager.proof_sync().by_range_request().is_none());
+    assert!(rig.sync_manager.proof_sync().by_root_request().is_none());
 }
 
 /// Test 16: A proof arriving on an `ExecutionProofsByRange` stream must be forwarded
@@ -1132,6 +1182,8 @@ fn test_proof_sync_range_response_forwarded_to_processor() {
     rig.harness.advance_slot();
 
     rig.sync_manager.start_proof_sync();
+    rig.sync_manager.proof_sync_mut().test_missing_proofs =
+        Some(vec![missing_proof(Hash256::random())]);
     rig.sync_manager.poll_proof_sync();
     let (req_id, peer_id) = rig.find_execution_proofs_by_range_request();
     assert!(rig.sync_manager.proof_sync().by_range_request().is_some());
@@ -1159,11 +1211,11 @@ fn test_proof_sync_root_response_forwarded_to_processor() {
     let mut rig = TestRig::test_setup();
     let _proof_peer = rig.new_proof_peer_with_status(0);
 
-    // At genesis (gap = 0) poll goes directly to by-root fill.
+    // Partial missing proofs are cheaper via by-root than range.
     rig.sync_manager.start_proof_sync();
     rig.drain_execution_proof_status_requests();
 
-    let missing = vec![missing_proof(Hash256::random())];
+    let missing = vec![partial_missing_proof(Hash256::random())];
     rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(missing);
     rig.sync_manager.poll_proof_sync();
 
@@ -1383,7 +1435,7 @@ fn test_inbound_status_populates_cache() {
 /// Test 22: `local_execution_proof_status` can be set and read back via `network_globals`.
 ///
 /// This verifies the `NetworkGlobals` getter/setter used by the proof-verified callback path
-/// (in `gossip_methods.rs`) and consumed by `ProofSync.poll()`.
+/// in `gossip_methods.rs`.
 #[test]
 fn test_local_execution_proof_status_read_write() {
     let rig = TestRig::test_setup();
@@ -1405,58 +1457,146 @@ fn test_local_execution_proof_status_read_write() {
     assert_eq!(updated.block_root, block_root);
 }
 
-/// Test 23: `ProofSync.poll()` uses `local_execution_proof_status` as the lower bound
-/// for `start_slot`, so proofs already verified locally are never re-requested.
-///
-/// Setup: peer announces slot 10, local proof status is at slot 7.
-/// Expected: range request start_slot = max(finalized_slot, local_proof_slot) + 1 = 8.
+/// Test 23: For a single fully-missing proof, the range request covers exactly that slot
+/// (start_slot = proof slot, count = 1).
 #[test]
-fn test_proof_sync_start_slot_respects_local_proof_status() {
+fn test_proof_sync_range_covers_single_missing_slot() {
     let mut rig = TestRig::test_setup();
-
-    // Peer has proofs up to slot 10.
     let _proof_peer = rig.new_proof_peer_with_status(10);
     rig.harness.advance_slot();
 
-    // Simulate that we have already verified proofs up to slot 7 locally.
-    rig.network_globals
-        .set_local_execution_proof_status(ExecutionProofStatus {
-            slot: 7,
-            block_root: Hash256::repeat_byte(0xcc),
-        });
+    rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(vec![MissingProofInfo {
+        root: Hash256::random(),
+        existing_proof_types: vec![],
+        slot: Slot::new(5),
+    }]);
 
     rig.sync_manager.start_proof_sync();
     rig.sync_manager.poll_proof_sync();
 
-    let ((_req_id, _peer_id), start_slot) = rig.find_execution_proofs_by_range_request_with_slot();
-
-    // start_slot must be at least local_proof_slot + 1 = 8.
-    assert!(
-        start_slot.as_u64() >= 8,
-        "start_slot {start_slot} should be >= 8 (local_proof_slot + 1)"
+    let (_, start_slot, count) = rig.find_execution_proofs_by_range_request_params();
+    assert_eq!(
+        start_slot.as_u64(),
+        5,
+        "start_slot should be the proof's slot"
     );
+    assert_eq!(count, 1, "count should be 1 for a single missing slot");
 }
 
-/// Test 24: When `local_execution_proof_status` is updated to a slot beyond the peer's
-/// announced slot, `ProofSync.poll()` computes a zero gap and issues no range request.
+/// Test 24: When all missing proofs have slots beyond the peer's announced slot, no request
+/// is issued (the peer cannot serve them yet).
 #[test]
-fn test_proof_sync_no_request_when_local_status_ahead_of_peer() {
+fn test_proof_sync_no_request_when_missing_slot_ahead_of_peer() {
     let mut rig = TestRig::test_setup();
 
     // Peer only has proofs up to slot 5.
     let _proof_peer = rig.new_proof_peer_with_status(5);
+
+    // Inject a proof at slot 6 — beyond what the peer can serve.
+    rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(vec![MissingProofInfo {
+        root: Hash256::random(),
+        existing_proof_types: vec![],
+        slot: Slot::new(6),
+    }]);
+
+    rig.sync_manager.start_proof_sync();
+    rig.drain_execution_proof_status_requests();
+    rig.sync_manager.poll_proof_sync();
+
+    // No request should be emitted since the only missing slot is beyond peer_slot = 5.
+    rig.expect_no_execution_proof_range_request();
+    rig.expect_empty_network();
+}
+
+/// Test 25: Non-consecutive fully-missing slots are covered by a single range request whose
+/// `count` spans from the first slot to the last (inclusive), bridging any gaps.
+///
+/// By-range request size = 20 bytes (no partial filters).
+/// By-root request size  = 44 + 44 = 88 bytes.
+/// Range wins; count = last_slot − first_slot + 1.
+#[test]
+fn test_proof_sync_range_spans_non_consecutive_slots() {
+    let mut rig = TestRig::test_setup();
+    let _proof_peer = rig.new_proof_peer_with_status(20);
     rig.harness.advance_slot();
 
-    // Local proof status is already at slot 5 (equal to peer) — gap = 0.
-    rig.network_globals
-        .set_local_execution_proof_status(ExecutionProofStatus {
-            slot: 5,
-            block_root: Hash256::repeat_byte(0xdd),
-        });
+    // Two fully-missing proofs at slots 5 and 10 (not consecutive).
+    rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(vec![
+        MissingProofInfo {
+            root: Hash256::random(),
+            existing_proof_types: vec![],
+            slot: Slot::new(5),
+        },
+        MissingProofInfo {
+            root: Hash256::random(),
+            existing_proof_types: vec![],
+            slot: Slot::new(10),
+        },
+    ]);
 
     rig.sync_manager.start_proof_sync();
     rig.sync_manager.poll_proof_sync();
 
-    // No range request should be emitted since start_slot (6) > peer_slot (5).
-    rig.expect_no_execution_proof_range_request();
+    let (_, start_slot, count) = rig.find_execution_proofs_by_range_request_params();
+    assert_eq!(
+        start_slot.as_u64(),
+        5,
+        "range should start at the earliest missing slot"
+    );
+    assert_eq!(
+        count, 6,
+        "count should span from slot 5 to slot 10 inclusive (10 - 5 + 1 = 6)"
+    );
+}
+
+/// Test 26: When all missing proofs are partially held (some proof types already present),
+/// every block must appear in `proof_filters` — making the range request larger than root.
+/// The size comparison picks root even when slots are consecutive.
+///
+/// By-range size = 20 + 43 + 43 = 106 bytes (both entries in proof_filters).
+/// By-root size  = 43 + 43 = 86 bytes.
+/// Root wins.
+///
+/// A mixed set (one fully-missing + one partial) is also tested: range wins there because
+/// the fully-missing entry is free in range (not in proof_filters).
+/// By-range = 20 + 43 = 63 bytes, by-root = 44 + 43 = 87 bytes → range cheaper.
+#[test]
+fn test_proof_sync_range_vs_root_size_decision() {
+    // ── All partial → root chosen ──────────────────────────────────────────────
+    {
+        let mut rig = TestRig::test_setup();
+        let _proof_peer = rig.new_proof_peer_with_status(10);
+        rig.harness.advance_slot();
+
+        rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(vec![
+            partial_missing_proof(Hash256::random()),
+            partial_missing_proof(Hash256::random()),
+        ]);
+        rig.sync_manager.start_proof_sync();
+        rig.drain_execution_proof_status_requests();
+        rig.sync_manager.poll_proof_sync();
+
+        rig.expect_no_execution_proof_range_request();
+        let _ = rig.find_execution_proofs_by_root_request();
+    }
+
+    // ── One fully-missing + one partial → range chosen ─────────────────────────
+    {
+        let mut rig = TestRig::test_setup();
+        let _proof_peer = rig.new_proof_peer_with_status(10);
+        rig.harness.advance_slot();
+
+        rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(vec![
+            // fully missing at slot 0 — free in range, costs 44 in root
+            missing_proof(Hash256::random()),
+            // partial at slot 0 — costs 43 in both range (as filter) and root
+            partial_missing_proof(Hash256::random()),
+        ]);
+        rig.sync_manager.start_proof_sync();
+        rig.sync_manager.poll_proof_sync();
+
+        // range_bytes = 20 + 43 = 63 < root_bytes = 44 + 43 = 87
+        let (_, _, count) = rig.find_execution_proofs_by_range_request_params();
+        assert_eq!(count, 1, "both entries are at slot 0; count = 1");
+    }
 }

@@ -585,10 +585,10 @@ impl ProtocolId {
                 LightClientUpdatesByRangeRequest::ssz_min_len(),
                 LightClientUpdatesByRangeRequest::ssz_max_len(),
             ),
-            Protocol::MetaData => RpcLimits::new(0, 0), // Metadata requests are empty
+            Protocol::MetaData => RpcLimits::new(0, 0),
             Protocol::ExecutionProofsByRange => RpcLimits::new(
                 ExecutionProofsByRangeRequest::ssz_min_len(),
-                ExecutionProofsByRangeRequest::ssz_max_len(),
+                ExecutionProofsByRangeRequest::ssz_max_len(spec.max_request_blocks_upper_bound()),
             ),
             // ExecutionProofsByRoot request is List[ProofByRootIdentifier, MAX_BLOCKS_BY_ROOT.
             Protocol::ExecutionProofsByRoot => RpcLimits::new(0, spec.max_blocks_by_root_request),

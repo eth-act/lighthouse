@@ -51,13 +51,17 @@ impl State {
         Self::default()
     }
 
-    /// Return buffer entries that do not yet have sufficient proofs for promotion,
-    /// restricted to those on the ancestor path required to satisfy `latest_fcs`.
+    /// Return all buffer entries on the ancestor path required to satisfy `latest_fcs`,
+    /// including entries that already have sufficient proofs.
+    ///
+    /// Complete entries are returned so the sync layer can include them as skip-filters in
+    /// `ExecutionProofsByRange` requests, telling the serving peer not to re-send proofs
+    /// for blocks the requester already holds. Callers should inspect `existing_proof_types`
+    /// against the configured proof type set to determine which entries are still missing.
     ///
     /// If `latest_fcs` is unset there is no pending fork-choice update to satisfy, so
     /// nothing is returned. Otherwise the buffer is walked backwards from
-    /// `latest_fcs.head_block_hash`; entries that lack sufficient proofs are collected
-    /// until a block is not found in the buffer (reached the tree or an unseen block).
+    /// `latest_fcs.head_block_hash` until a block is not found in the buffer.
     pub fn missing_proofs(&self) -> Vec<MissingProofInfo> {
         let Some(latest_fcs) = &self.latest_fcs else {
             return vec![];
@@ -71,22 +75,20 @@ impl State {
             .map(|p| (p.metadata.block_hash, p))
             .collect();
 
-        // Walk backwards from the FCS head through buffer entries, collecting
-        // those that still lack sufficient proofs. Stop when a block is not in
-        // the buffer (reached the tree or an unseen block).
+        // Walk backwards from the FCS head through buffer entries, collecting all
+        // entries (missing and complete). Stop when a block is not in the buffer
+        // (reached the tree or an unseen block).
         let mut result = Vec::new();
         let mut current = latest_fcs.head_block_hash;
         loop {
             let Some(req) = buffer_by_block_hash.get(&current) else {
                 break;
             };
-            if req.proofs.len() < self.min_required_proofs {
-                result.push(MissingProofInfo {
-                    root: req.metadata.request_root,
-                    existing_proof_types: req.proofs.iter().map(|p| p.message.proof_type).collect(),
-                    slot: Default::default(), // populated by BeaconChain::missing_execution_proofs()
-                });
-            }
+            result.push(MissingProofInfo {
+                root: req.metadata.request_root,
+                existing_proof_types: req.proofs.iter().map(|p| p.message.proof_type).collect(),
+                slot: Default::default(), // populated by BeaconChain::missing_execution_proofs()
+            });
             current = req.metadata.parent_hash;
         }
 
