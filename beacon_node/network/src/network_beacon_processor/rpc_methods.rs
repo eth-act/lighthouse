@@ -1408,13 +1408,23 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
     ) -> Result<(), (RpcErrorResponse, &'static str)> {
         debug!(
             %peer_id,
-            num_roots = req.block_roots.len(),
+            num_identifiers = req.identifiers.len(),
             "Received ExecutionProofsByRoot Request"
         );
 
         let mut proofs_sent = 0usize;
-        for block_root in req.block_roots.iter() {
-            for proof in self.chain.get_execution_proofs_by_block_root(*block_root) {
+        for identifier in req.identifiers.iter() {
+            for proof in self
+                .chain
+                .get_execution_proofs_by_block_root(identifier.block_root)
+            {
+                // Only return proof types the requester asked for.
+                // An empty list means the requester wants all types.
+                if !identifier.proof_types.is_empty()
+                    && !identifier.proof_types.contains(&proof.message.proof_type)
+                {
+                    continue;
+                }
                 self.send_network_message(NetworkMessage::SendResponse {
                     peer_id,
                     inbound_request_id,
@@ -1426,7 +1436,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
 
         debug!(
             %peer_id,
-            num_roots = req.block_roots.len(),
+            num_identifiers = req.identifiers.len(),
             returned = proofs_sent,
             "ExecutionProofsByRoot Response processed"
         );

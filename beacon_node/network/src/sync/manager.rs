@@ -56,6 +56,7 @@ use beacon_chain::validator_monitor::timestamp_now;
 use beacon_chain::{
     AvailabilityProcessingStatus, BeaconChain, BeaconChainTypes, BlockError, EngineState,
 };
+use execution_layer::eip8025::types::ProofTypes;
 use futures::StreamExt;
 use lighthouse_network::SyncInfo;
 use lighthouse_network::rpc::RPCError;
@@ -297,6 +298,7 @@ pub fn spawn<T: BeaconChainTypes>(
     beacon_processor: Arc<NetworkBeaconProcessor<T>>,
     sync_recv: mpsc::UnboundedReceiver<SyncMessage<T::EthSpec>>,
     fork_context: Arc<ForkContext>,
+    proof_types: ProofTypes,
 ) {
     assert!(
         beacon_chain
@@ -313,6 +315,7 @@ pub fn spawn<T: BeaconChainTypes>(
         beacon_processor,
         sync_recv,
         fork_context,
+        proof_types,
     );
 
     // spawn the sync manager thread
@@ -327,6 +330,7 @@ impl<T: BeaconChainTypes> SyncManager<T> {
         beacon_processor: Arc<NetworkBeaconProcessor<T>>,
         sync_recv: mpsc::UnboundedReceiver<SyncMessage<T::EthSpec>>,
         fork_context: Arc<ForkContext>,
+        proof_types: ProofTypes,
     ) -> Self {
         let network_globals = beacon_processor.network_globals.clone();
         Self {
@@ -337,6 +341,7 @@ impl<T: BeaconChainTypes> SyncManager<T> {
                 beacon_processor.clone(),
                 beacon_chain.clone(),
                 fork_context.clone(),
+                proof_types,
             ),
             range_sync: RangeSync::new(beacon_chain.clone()),
             backfill_sync: BackFillSync::new(beacon_chain.clone(), network_globals.clone()),

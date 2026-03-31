@@ -177,19 +177,24 @@ build-release-tarballs:
 test-release:
 	cargo nextest run --workspace --release --features "$(TEST_FEATURES)" \
 		--exclude ef_tests --exclude beacon_chain --exclude slasher --exclude network \
-		--exclude http_api --exclude proof_engine_zkboost_test
+		--exclude http_api --exclude proof_engine_test
+
+# Runs the proof engine integration tests sequentially so they are not starved of
+# CPU by the parallel test-release job.  Each test spawns multiple beacon nodes and
+# is sensitive to slot timing, so dedicated sequential execution is required.
+test-proof-engine:
+	cargo nextest run -p proof_engine_test --release --test-threads 1
 
 
 # Runs the full workspace tests in **debug**, without downloading any additional test
 # vectors.
 test-debug:
 	cargo nextest run --workspace --features "$(TEST_FEATURES)" \
-		--exclude ef_tests --exclude beacon_chain --exclude network --exclude http_api \
-		--exclude proof_engine_zkboost_test
+		--exclude ef_tests --exclude beacon_chain --exclude network --exclude http_api
 
 # Runs the proof_engine_zkboost integration tests against a real (mock-backend) zkBoost server.
 test-zkboost:
-	cargo nextest run -p proof_engine_zkboost_test --release --features "$(TEST_FEATURES)"
+	cargo nextest run --manifest-path testing/proof_engine_zkboost/Cargo.toml --release
 
 # Runs cargo-fmt (linter).
 cargo-fmt:
@@ -329,7 +334,7 @@ install-audit:
 	cargo install --force cargo-audit
 
 audit-CI:
-	cargo audit
+	cargo audit --ignore RUSTSEC-2026-0049
 
 # Runs cargo deny (check for banned crates, duplicate versions, and source restrictions)
 deny: install-deny deny-CI

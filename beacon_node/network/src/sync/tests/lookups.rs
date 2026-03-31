@@ -27,6 +27,7 @@ use beacon_chain::{
     validator_monitor::timestamp_now,
 };
 use beacon_processor::WorkEvent;
+use execution_layer::eip8025::types::ProofTypes;
 use lighthouse_network::discovery::CombinedKey;
 use lighthouse_network::{
     NetworkConfig, NetworkGlobals, PeerId,
@@ -117,6 +118,7 @@ impl TestRig {
             // Pass empty recv not tied to any tx
             mpsc::unbounded_channel().1,
             fork_context,
+            ProofTypes::default(),
         );
         // In tests any non-zero gap triggers a range request, keeping slot advancement minimal.
         sync_manager.proof_sync_mut().set_range_request_threshold(0);

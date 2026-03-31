@@ -5,8 +5,12 @@ version.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+execution_layer = { workspace = true }
+futures = { workspace = true }
 network = { workspace = true, features = ["disable-backfill"] }
 simulator = { path = "../simulator", features = ["test-utils"] }
+task_executor = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+types = { workspace = true }
 

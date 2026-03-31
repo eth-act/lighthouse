@@ -802,7 +802,7 @@ fn test_proof_sync_pending_range_issues_request_on_poll() {
     rig.sync_manager.poll_proof_sync();
     let _ = rig.find_execution_proofs_by_range_request();
     assert!(
-        rig.sync_manager.proof_sync().range_request().is_some(),
+        rig.sync_manager.proof_sync().by_range_request().is_some(),
         "Range request should be in-flight after poll"
     );
 }
@@ -821,13 +821,13 @@ fn test_proof_sync_no_peer_stays_pending() {
         rig.sync_manager.proof_sync().state(),
         ProofSyncState::Syncing
     );
-    assert!(rig.sync_manager.proof_sync().range_request().is_none());
+    assert!(rig.sync_manager.proof_sync().by_range_request().is_none());
 
     // Adding a proof-capable peer; the next poll sends the request.
     let _proof_peer = rig.new_proof_peer_with_status(1);
     rig.sync_manager.poll_proof_sync();
     let _ = rig.find_execution_proofs_by_range_request();
-    assert!(rig.sync_manager.proof_sync().range_request().is_some());
+    assert!(rig.sync_manager.proof_sync().by_range_request().is_some());
 }
 
 /// Test 4: While a range request is in-flight, `poll()` must not send any new requests.
@@ -841,12 +841,12 @@ fn test_proof_sync_in_flight_poll_is_noop() {
     rig.sync_manager.poll_proof_sync();
     let _ = rig.find_execution_proofs_by_range_request();
     rig.drain_execution_proof_status_requests();
-    assert!(rig.sync_manager.proof_sync().range_request().is_some());
+    assert!(rig.sync_manager.proof_sync().by_range_request().is_some());
 
     // A second poll while a range request is in-flight should produce nothing.
     rig.sync_manager.poll_proof_sync();
     rig.expect_empty_network();
-    assert!(rig.sync_manager.proof_sync().range_request().is_some());
+    assert!(rig.sync_manager.proof_sync().by_range_request().is_some());
 }
 
 /// Test 5: Stream termination with the correct ID clears the in-flight range request.
@@ -860,7 +860,7 @@ fn test_proof_sync_range_termination_enters_fill_mode() {
     rig.sync_manager.start_proof_sync();
     rig.sync_manager.poll_proof_sync();
     let (req_id, peer_id) = rig.find_execution_proofs_by_range_request();
-    assert!(rig.sync_manager.proof_sync().range_request().is_some());
+    assert!(rig.sync_manager.proof_sync().by_range_request().is_some());
 
     rig.terminate_execution_proofs_by_range(req_id, peer_id);
     // Termination transitions to Waiting to give the proof engine time to process
@@ -873,7 +873,7 @@ fn test_proof_sync_range_termination_enters_fill_mode() {
         "Range termination should enter Waiting state"
     );
     assert!(
-        rig.sync_manager.proof_sync().range_request().is_none(),
+        rig.sync_manager.proof_sync().by_range_request().is_none(),
         "Range request should be cleared after stream termination"
     );
 }
@@ -888,13 +888,13 @@ fn test_proof_sync_wrong_id_termination_ignored() {
     rig.sync_manager.start_proof_sync();
     rig.sync_manager.poll_proof_sync();
     let (_req_id, peer_id) = rig.find_execution_proofs_by_range_request();
-    assert!(rig.sync_manager.proof_sync().range_request().is_some());
+    assert!(rig.sync_manager.proof_sync().by_range_request().is_some());
 
     // Terminate with a different (fake) ID — should be ignored.
     let fake_id = ExecutionProofsByRangeRequestId { id: 9999 };
     rig.terminate_execution_proofs_by_range(fake_id, peer_id);
     assert!(
-        rig.sync_manager.proof_sync().range_request().is_some(),
+        rig.sync_manager.proof_sync().by_range_request().is_some(),
         "Wrong ID should not clear the in-flight range request"
     );
 }
@@ -918,8 +918,8 @@ fn test_proof_sync_fill_mode_no_missing_proofs() {
     );
 }
 
-/// Test 8: With seeded missing proofs, `poll()` sends one `ExecutionProofsByRoot`
-/// request per missing proof.
+/// Test 8: With seeded missing proofs, `poll()` sends all roots in a single batched
+/// `ExecutionProofsByRoot` request.
 #[test]
 fn test_proof_sync_fill_mode_issues_by_root_requests() {
     let mut rig = TestRig::test_setup();
@@ -935,42 +935,39 @@ fn test_proof_sync_fill_mode_issues_by_root_requests() {
     rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(missing);
     rig.sync_manager.poll_proof_sync();
 
+    // All roots go in one batched request.
     let _ = rig.find_execution_proofs_by_root_request();
-    let _ = rig.find_execution_proofs_by_root_request();
-    assert_eq!(rig.sync_manager.proof_sync().in_flight().len(), 2);
+    assert!(rig.sync_manager.proof_sync().by_root_request().is_some());
+    rig.expect_empty_network();
 }
 
-/// Test 9: `poll()` must not exceed `DEFAULT_MAX_CONCURRENT = 4` in-flight requests
-/// even when more missing proofs are present.
+/// Test 9: All missing proofs are included in one batch; a second poll while the batch
+/// is in-flight emits no new requests.
 #[test]
-fn test_proof_sync_fill_mode_respects_max_concurrent() {
+fn test_proof_sync_fill_mode_batches_all_roots() {
     let mut rig = TestRig::test_setup();
     let _proof_peer = rig.new_proof_peer_with_status(0);
 
     rig.sync_manager.start_proof_sync();
     rig.drain_execution_proof_status_requests();
 
-    // Seed 6 distinct missing proofs; only 4 should be requested.
+    // Seed 6 distinct missing proofs; all go into one batch request.
     let missing: Vec<MissingProofInfo> = (0..6).map(|_| missing_proof(Hash256::random())).collect();
     rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(missing);
     rig.sync_manager.poll_proof_sync();
 
-    // Consume exactly 4 requests.
-    for _ in 0..4 {
-        let _ = rig.find_execution_proofs_by_root_request();
-    }
-    assert_eq!(
-        rig.sync_manager.proof_sync().in_flight().len(),
-        4,
-        "Should have exactly 4 in-flight requests (max_concurrent)"
+    // Exactly one batch request for all 6 roots.
+    let _ = rig.find_execution_proofs_by_root_request();
+    assert!(
+        rig.sync_manager.proof_sync().by_root_request().is_some(),
+        "All roots go in a single in-flight batch"
     );
-    // No 5th request should be present.
     rig.expect_empty_network();
 }
 
-/// Test 10: In-flight roots must not be re-requested on a subsequent poll.
+/// Test 10: While a by-root batch is in-flight, a second poll emits no new requests.
 #[test]
-fn test_proof_sync_fill_mode_skips_in_flight_roots() {
+fn test_proof_sync_fill_mode_skips_while_batch_in_flight() {
     let mut rig = TestRig::test_setup();
     let _proof_peer = rig.new_proof_peer_with_status(0);
 
@@ -983,19 +980,17 @@ fn test_proof_sync_fill_mode_skips_in_flight_roots() {
     ];
     rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(missing);
 
-    // First poll: 2 requests sent, in_flight = 2.
+    // First poll: one batch request with both roots.
     rig.sync_manager.poll_proof_sync();
     let _ = rig.find_execution_proofs_by_root_request();
-    let _ = rig.find_execution_proofs_by_root_request();
-    assert_eq!(rig.sync_manager.proof_sync().in_flight().len(), 2);
+    assert!(rig.sync_manager.proof_sync().by_root_request().is_some());
 
-    // Second poll with same missing list: roots already in-flight, no new requests.
+    // Second poll while batch is in-flight: no new requests.
     rig.sync_manager.poll_proof_sync();
     rig.expect_empty_network();
-    assert_eq!(
-        rig.sync_manager.proof_sync().in_flight().len(),
-        2,
-        "In-flight count should be unchanged after second poll"
+    assert!(
+        rig.sync_manager.proof_sync().by_root_request().is_some(),
+        "In-flight batch should be unchanged on second poll"
     );
 }
 
@@ -1016,10 +1011,9 @@ fn test_proof_sync_fill_mode_no_peer_breaks() {
     rig.sync_manager.poll_proof_sync();
 
     rig.expect_empty_network();
-    assert_eq!(
-        rig.sync_manager.proof_sync().in_flight().len(),
-        0,
-        "NoPeer should break iteration leaving in_flight empty"
+    assert!(
+        rig.sync_manager.proof_sync().by_root_request().is_none(),
+        "NoPeer should leave no in-flight root request"
     );
 }
 
@@ -1037,13 +1031,12 @@ fn test_proof_sync_on_request_terminated_clears_in_flight() {
     rig.sync_manager.poll_proof_sync();
 
     let (req_id, peer_id) = rig.find_execution_proofs_by_root_request();
-    assert_eq!(rig.sync_manager.proof_sync().in_flight().len(), 1);
+    assert!(rig.sync_manager.proof_sync().by_root_request().is_some());
 
     rig.terminate_execution_proofs_by_root(req_id, peer_id);
-    assert_eq!(
-        rig.sync_manager.proof_sync().in_flight().len(),
-        0,
-        "in_flight should be empty after termination"
+    assert!(
+        rig.sync_manager.proof_sync().by_root_request().is_none(),
+        "root_request should be None after termination"
     );
 }
 
@@ -1057,7 +1050,7 @@ fn test_proof_sync_pause_resets_to_idle() {
     rig.sync_manager.start_proof_sync();
     rig.drain_execution_proof_status_requests();
 
-    // Seed some in-flight requests.
+    // Seed some missing proofs; poll sends one batch request.
     let missing = vec![
         missing_proof(Hash256::random()),
         missing_proof(Hash256::random()),
@@ -1065,15 +1058,14 @@ fn test_proof_sync_pause_resets_to_idle() {
     rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(missing);
     rig.sync_manager.poll_proof_sync();
     let _ = rig.find_execution_proofs_by_root_request();
-    let _ = rig.find_execution_proofs_by_root_request();
-    assert!(!rig.sync_manager.proof_sync().in_flight().is_empty());
+    assert!(rig.sync_manager.proof_sync().by_root_request().is_some());
 
-    // Pause resets state but preserves in-flight by-root entries.
+    // Pause resets state but preserves the in-flight by-root request.
     rig.sync_manager.proof_sync_mut().pause();
     assert_eq!(rig.sync_manager.proof_sync().state(), ProofSyncState::Idle);
     assert!(
-        !rig.sync_manager.proof_sync().in_flight().is_empty(),
-        "in-flight by-root requests are preserved across pause so responses can still land"
+        rig.sync_manager.proof_sync().by_root_request().is_some(),
+        "in-flight by-root request is preserved across pause so responses can still land"
     );
 
     // Polling in Idle emits nothing new.
@@ -1093,7 +1085,7 @@ fn test_proof_sync_re_enter_range_resets_then_restarts() {
     rig.sync_manager.poll_proof_sync();
     let (req_id, peer_id) = rig.find_execution_proofs_by_range_request();
     rig.terminate_execution_proofs_by_range(req_id, peer_id);
-    assert!(rig.sync_manager.proof_sync().range_request().is_none());
+    assert!(rig.sync_manager.proof_sync().by_range_request().is_none());
 
     // Re-entering range sync pauses ProofSync.
     rig.sync_manager.proof_sync_mut().pause();
@@ -1109,7 +1101,7 @@ fn test_proof_sync_re_enter_range_resets_then_restarts() {
     // New poll sends a fresh range request (slot gap still > 0).
     rig.sync_manager.poll_proof_sync();
     let _ = rig.find_execution_proofs_by_range_request();
-    assert!(rig.sync_manager.proof_sync().range_request().is_some());
+    assert!(rig.sync_manager.proof_sync().by_range_request().is_some());
 }
 
 /// Test 15: At genesis (slot gap = 0 ≤ range_request_threshold = 0), no range request
@@ -1128,7 +1120,7 @@ fn test_proof_sync_count_zero_skips_to_fill() {
         rig.sync_manager.proof_sync().state(),
         ProofSyncState::Syncing
     );
-    assert!(rig.sync_manager.proof_sync().range_request().is_none());
+    assert!(rig.sync_manager.proof_sync().by_range_request().is_none());
 }
 
 /// Test 16: A proof arriving on an `ExecutionProofsByRange` stream must be forwarded
@@ -1142,7 +1134,7 @@ fn test_proof_sync_range_response_forwarded_to_processor() {
     rig.sync_manager.start_proof_sync();
     rig.sync_manager.poll_proof_sync();
     let (req_id, peer_id) = rig.find_execution_proofs_by_range_request();
-    assert!(rig.sync_manager.proof_sync().range_request().is_some());
+    assert!(rig.sync_manager.proof_sync().by_range_request().is_some());
 
     // Send a proof (non-termination) response.
     rig.send_sync_message(SyncMessage::RpcExecutionProof {
@@ -1157,7 +1149,7 @@ fn test_proof_sync_range_response_forwarded_to_processor() {
     .unwrap_or_else(|e| panic!("Expected GossipExecutionProof work event: {e:?}"));
 
     // Range request is still in-flight (stream not yet terminated).
-    assert!(rig.sync_manager.proof_sync().range_request().is_some());
+    assert!(rig.sync_manager.proof_sync().by_range_request().is_some());
 }
 
 /// Test 17: A proof arriving on an `ExecutionProofsByRoot` stream must be forwarded

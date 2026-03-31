@@ -4,6 +4,7 @@
 //! HTTP transport is delegated to a [`ProofNodeClient`] implementation.
 
 use super::errors::ProofEngineError;
+use super::metrics;
 use super::persisted_state::PersistedProofEngineState;
 use super::proof_node_client::{HttpProofNodeClient, ProofNodeClient};
 use super::types::ProofEvent;
@@ -110,29 +111,58 @@ impl HttpProofEngine {
         &self,
         proof: &SignedExecutionProof,
     ) -> Result<ProofStatus, ProofEngineError> {
+        let proof_type_str = crate::eip8025::ProofType::from_u8(proof.proof_type())
+            .map(|pt| pt.as_str())
+            .unwrap_or("unknown");
+
         if !self
             .state
             .read()
             .contains_request_root(&proof.request_root())
         {
             tracing::info!(target: "execution_layer", "Received proof for unknown request root {}, buffering", proof.request_root());
-            self.buffered_proofs
-                .write()
-                .entry(proof.request_root())
+            let mut buf = self.buffered_proofs.write();
+            buf.entry(proof.request_root())
                 .or_default()
                 .push(proof.clone());
+            let total: usize = buf.values().map(|v| v.len()).sum();
+            metrics::set_gauge(&metrics::PROOF_ENGINE_BUFFERED_PROOF_COUNT, total as i64);
+            metrics::inc_counter_vec(
+                &metrics::PROOF_ENGINE_VERIFICATIONS_TOTAL,
+                &[proof_type_str, metrics::BUFFERED],
+            );
             return Ok(ProofStatus::Syncing);
         }
 
-        let status = self
+        let timer = metrics::start_timer_vec(
+            &metrics::PROOF_ENGINE_VERIFICATION_DURATION,
+            &[proof_type_str],
+        );
+        let verify_result = self
             .proof_node
             .verify_proof(proof.request_root(), proof.proof_type(), proof.proof_data())
-            .await?;
+            .await;
+        drop(timer);
+
+        let status = verify_result.inspect_err(|_e| {
+            metrics::inc_counter_vec(
+                &metrics::PROOF_ENGINE_VERIFICATIONS_TOTAL,
+                &[proof_type_str, metrics::ERROR],
+            );
+        })?;
 
         if status.is_valid() {
+            metrics::inc_counter_vec(
+                &metrics::PROOF_ENGINE_VERIFICATIONS_TOTAL,
+                &[proof_type_str, metrics::VALID],
+            );
             return Ok(self.state.write().insert_proof(proof.clone())?);
         }
 
+        metrics::inc_counter_vec(
+            &metrics::PROOF_ENGINE_VERIFICATIONS_TOTAL,
+            &[proof_type_str, metrics::INVALID],
+        );
         Ok(status)
     }
 
@@ -141,13 +171,21 @@ impl HttpProofEngine {
         &self,
         request: &NewPayloadRequest<'_, E>,
     ) -> Result<PayloadStatusV1, ProofEngineError> {
+        metrics::inc_counter(&metrics::PROOF_ENGINE_NEW_PAYLOADS_TOTAL);
         let request: RequestMetadata = request.into();
         let buffered_proofs = self
             .buffered_proofs
             .write()
             .remove(&request.request_root)
             .unwrap_or_default();
-        self.state.write().buffer_request(request);
+        {
+            let mut state = self.state.write();
+            state.buffer_request(request);
+            metrics::set_gauge(
+                &metrics::PROOF_ENGINE_BUFFER_SIZE,
+                state.buffer_len() as i64,
+            );
+        } // guard dropped before the await loop below
 
         let mut status = PayloadStatusV1Status::Syncing;
         for proof in buffered_proofs {
@@ -170,7 +208,33 @@ impl HttpProofEngine {
         forkchoice_state: ForkchoiceState,
     ) -> Result<ForkchoiceUpdatedResponse, ProofEngineError> {
         tracing::info!(target: "execution_layer", "Received forkchoice update: head {}, safe {}, finalized {}", forkchoice_state.head_block_hash, forkchoice_state.safe_block_hash, forkchoice_state.finalized_block_hash);
-        Ok(self.state.write().forkchoice_updated(forkchoice_state)?)
+        let result = self.state.write().forkchoice_updated(forkchoice_state);
+        match &result {
+            Ok(response) => {
+                let status = if response.payload_status.status == PayloadStatusV1Status::Syncing {
+                    "syncing"
+                } else {
+                    metrics::SUCCESS
+                };
+                metrics::inc_counter_vec(
+                    &metrics::PROOF_ENGINE_FORKCHOICE_UPDATES_TOTAL,
+                    &[status],
+                );
+                let state = self.state.read();
+                metrics::set_gauge(&metrics::PROOF_ENGINE_TREE_SIZE, state.tree_len() as i64);
+                metrics::set_gauge(
+                    &metrics::PROOF_ENGINE_MISSING_PROOF_COUNT,
+                    state.missing_proofs().len() as i64,
+                );
+            }
+            Err(_) => {
+                metrics::inc_counter_vec(
+                    &metrics::PROOF_ENGINE_FORKCHOICE_UPDATES_TOTAL,
+                    &[metrics::ERROR],
+                );
+            }
+        }
+        Ok(result?)
     }
 
     /// Request proof generation from the proof engine.
@@ -182,6 +246,11 @@ impl HttpProofEngine {
         new_payload_request: NewPayloadRequest<'_, E>,
         proof_attributes: ProofAttributes,
     ) -> Result<Hash256, ProofEngineError> {
+        for &proof_type in &proof_attributes.proof_types {
+            if let Ok(pt) = crate::eip8025::ProofType::from_u8(proof_type) {
+                metrics::inc_counter_vec(&metrics::PROOF_ENGINE_REQUESTS_TOTAL, &[pt.as_str()]);
+            }
+        }
         self.proof_node
             .request_proofs(new_payload_request.as_ssz_bytes(), proof_attributes)
             .await

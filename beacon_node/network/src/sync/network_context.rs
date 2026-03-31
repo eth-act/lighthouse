@@ -18,8 +18,11 @@ use crate::sync::block_sidecar_coupling::CouplingError;
 use crate::sync::network_context::requests::BlobsByRootSingleBlockRequest;
 use crate::sync::range_data_column_batch_request::RangeDataColumnBatchRequest;
 use beacon_chain::block_verification_types::RpcBlock;
+use beacon_chain::internal_events::InternalBeaconNodeEvent;
 use beacon_chain::{BeaconChain, BeaconChainTypes, BlockProcessStatus, EngineState};
 use custody::CustodyRequestResult;
+use execution_layer::MissingProofInfo;
+use execution_layer::eip8025::types::ProofTypes;
 use fnv::FnvHashMap;
 use lighthouse_network::Eth2Enr;
 use lighthouse_network::rpc::methods::{
@@ -45,6 +48,7 @@ use requests::{
 };
 #[cfg(test)]
 use slot_clock::SlotClock;
+use ssz_types::VariableList;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
@@ -57,7 +61,7 @@ use tracing::{Span, debug, debug_span, error, warn};
 use types::data::FixedBlobSidecarList;
 use types::{
     BlobSidecar, BlockImportSource, ColumnIndex, DataColumnSidecar, DataColumnSidecarList, EthSpec,
-    ForkContext, Hash256, SignedBeaconBlock, Slot,
+    ForkContext, Hash256, SignedBeaconBlock, Slot, execution::eip8025::ProofByRootIdentifier,
 };
 
 pub mod custody;
@@ -263,6 +267,9 @@ pub struct SyncNetworkContext<T: BeaconChainTypes> {
     pub chain: Arc<BeaconChain<T>>,
 
     fork_context: Arc<ForkContext>,
+
+    /// Proof types to request from peers. Populated from the `--proof-types` CLI flag.
+    proof_types: ProofTypes,
 }
 
 /// Small enumeration to make dealing with block and blob requests easier.
@@ -306,6 +313,7 @@ impl<E: EthSpec> SyncNetworkContext<TestBeaconChainType<E>> {
             Arc::new(beacon_processor),
             beacon_chain,
             fork_context,
+            ProofTypes::default(),
         )
     }
 }
@@ -316,6 +324,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
         network_beacon_processor: Arc<NetworkBeaconProcessor<T>>,
         chain: Arc<BeaconChain<T>>,
         fork_context: Arc<ForkContext>,
+        proof_types: ProofTypes,
     ) -> Self {
         SyncNetworkContext {
             network_send,
@@ -333,6 +342,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             network_beacon_processor,
             chain,
             fork_context,
+            proof_types,
         }
     }
 
@@ -364,6 +374,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             network_beacon_processor: _,
             chain: _,
             fork_context: _,
+            proof_types: _,
         } = self;
 
         let blocks_by_root_ids = blocks_by_root_requests
@@ -425,6 +436,11 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
                 app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofsByRange(id)),
             })
             .map_err(|_| RpcRequestSendError::InternalError("network send error".to_owned()))?;
+        if self.chain.internal_event_sender().is_some() {
+            self.chain.emit_internal_event(
+                InternalBeaconNodeEvent::OutboundExecutionProofsByRange { start_slot, count },
+            );
+        }
         debug!(
             method = "ExecutionProofsByRange",
             %start_slot,
@@ -436,21 +452,47 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
         Ok(id)
     }
 
-    /// Send a `ExecutionProofsByRoot` request for `block_root` to the given proof-capable peer.
+    /// Send a `ExecutionProofsByRoot` request for all `missing` proofs to `peer_id`.
+    ///
+    /// Each entry in `missing` contributes one `ProofByRootIdentifier`. The `proof_types` field
+    /// is populated with the configured proof types that are not already present in
+    /// `info.existing_proof_types`, so we only request proof types we still need.
     ///
     /// Callers should use `find_best_proof_capable_peer` to select the peer first.
     pub fn request_execution_proofs_by_root(
         &mut self,
         peer_id: PeerId,
-        block_root: Hash256,
+        missing: &[MissingProofInfo],
     ) -> Result<ExecutionProofsByRootRequestId, RpcRequestSendError> {
+        let mut identifiers = Vec::with_capacity(missing.len());
+        for info in missing {
+            let needed: Vec<u8> = self
+                .proof_types
+                .iter()
+                .map(|t| t.to_u8())
+                .filter(|t| !info.existing_proof_types.contains(t))
+                .collect();
+            let proof_types = VariableList::new(needed)
+                .map_err(|e| RpcRequestSendError::InternalError(format!("proof_types: {e:?}")))?;
+            identifiers.push(ProofByRootIdentifier {
+                block_root: info.root,
+                proof_types,
+            });
+        }
         let max_request_blocks = self
             .chain
             .spec
             .max_request_blocks(self.fork_context.current_fork_name());
-        let request = ExecutionProofsByRootRequest::new(vec![block_root], max_request_blocks)
+        let request = ExecutionProofsByRootRequest::new(identifiers, max_request_blocks)
             .map_err(RpcRequestSendError::InternalError)?;
         let id = ExecutionProofsByRootRequestId { id: self.next_id() };
+        if self.chain.internal_event_sender().is_some() {
+            self.chain.emit_internal_event(
+                InternalBeaconNodeEvent::OutboundExecutionProofsByRoot {
+                    identifiers: request.identifiers.to_vec(),
+                },
+            );
+        }
         self.network_send
             .send(NetworkMessage::SendRequest {
                 peer_id,
@@ -460,7 +502,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             .map_err(|_| RpcRequestSendError::InternalError("network send error".to_owned()))?;
         debug!(
             method = "ExecutionProofsByRoot",
-            block_root = %block_root,
+            num_roots = missing.len(),
             peer = %peer_id,
             %id,
             "Sync RPC request sent"
@@ -568,6 +610,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             network_beacon_processor: _,
             chain: _,
             fork_context: _,
+            proof_types: _,
             // Don't use a fallback match. We want to be sure that all requests are considered when
             // adding new ones
         } = self;

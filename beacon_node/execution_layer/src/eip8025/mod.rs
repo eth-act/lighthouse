@@ -8,6 +8,7 @@
 //! - SSE event types for proof completion streaming
 
 pub mod errors;
+pub mod metrics;
 pub mod persisted_state;
 pub mod proof_engine;
 pub mod proof_node_client;

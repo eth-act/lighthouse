@@ -509,6 +509,87 @@ pub static SYNC_UNKNOWN_NETWORK_REQUESTS: LazyLock<Result<IntCounterVec>> = Lazy
 });
 
 /*
+ * Proof Sync Metrics
+ */
+
+/// Total `ExecutionProofsByRange` requests sent, labelled by outcome (`success`, `error`).
+pub static PROOF_SYNC_RANGE_REQUESTS_TOTAL: LazyLock<Result<IntCounterVec>> = LazyLock::new(|| {
+    try_create_int_counter_vec(
+        "proof_sync_range_requests_total",
+        "Total ExecutionProofsByRange requests dispatched by proof sync",
+        &["result"],
+    )
+});
+
+/// Total `ExecutionProofsByRoot` batch requests sent, labelled by outcome (`success`, `error`).
+pub static PROOF_SYNC_ROOT_REQUESTS_TOTAL: LazyLock<Result<IntCounterVec>> = LazyLock::new(|| {
+    try_create_int_counter_vec(
+        "proof_sync_root_requests_total",
+        "Total ExecutionProofsByRoot batch requests dispatched by proof sync",
+        &["result"],
+    )
+});
+
+/// Total `ExecutionProofStatus` requests sent to peers.
+pub static PROOF_SYNC_STATUS_REQUESTS_TOTAL: LazyLock<Result<IntCounter>> = LazyLock::new(|| {
+    try_create_int_counter(
+        "proof_sync_status_requests_total",
+        "Total ExecutionProofStatus requests sent to peers",
+    )
+});
+
+/// Total `ExecutionProofStatus` responses received from peers, labelled by `verified`
+/// (`true` if the peer's slot/root pair was confirmed on our canonical chain).
+pub static PROOF_SYNC_STATUS_RESPONSES_TOTAL: LazyLock<Result<IntCounterVec>> =
+    LazyLock::new(|| {
+        try_create_int_counter_vec(
+            "proof_sync_status_responses_total",
+            "Total ExecutionProofStatus responses received from peers",
+            &["verified"],
+        )
+    });
+
+/// Total proof-capable peer disconnects observed by proof sync.
+pub static PROOF_SYNC_PEER_DISCONNECTS_TOTAL: LazyLock<Result<IntCounter>> = LazyLock::new(|| {
+    try_create_int_counter(
+        "proof_sync_peer_disconnects_total",
+        "Total proof-capable peer disconnects observed by proof sync",
+    )
+});
+
+/// Current proof sync state: 0 = Idle, 1 = Waiting, 2 = Syncing.
+pub static PROOF_SYNC_STATE: LazyLock<Result<IntGauge>> = LazyLock::new(|| {
+    try_create_int_gauge(
+        "proof_sync_state",
+        "Current proof sync state (0=Idle, 1=Waiting, 2=Syncing)",
+    )
+});
+
+/// Number of proof-capable peers currently tracked by proof sync.
+pub static PROOF_SYNC_PEER_COUNT: LazyLock<Result<IntGauge>> = LazyLock::new(|| {
+    try_create_int_gauge(
+        "proof_sync_peer_count",
+        "Number of proof-capable peers tracked by proof sync",
+    )
+});
+
+/// Whether a `ExecutionProofsByRange` request is currently in-flight (0 or 1).
+pub static PROOF_SYNC_RANGE_REQUEST_IN_FLIGHT: LazyLock<Result<IntGauge>> = LazyLock::new(|| {
+    try_create_int_gauge(
+        "proof_sync_range_request_in_flight",
+        "1 if a ExecutionProofsByRange request is currently in-flight, 0 otherwise",
+    )
+});
+
+/// Whether a `ExecutionProofsByRoot` batch request is currently in-flight (0 or 1).
+pub static PROOF_SYNC_ROOT_REQUEST_IN_FLIGHT: LazyLock<Result<IntGauge>> = LazyLock::new(|| {
+    try_create_int_gauge(
+        "proof_sync_root_request_in_flight",
+        "1 if a ExecutionProofsByRoot batch request is currently in-flight, 0 otherwise",
+    )
+});
+
+/*
  * Block Delay Metrics
  */
 pub static BEACON_BLOCK_DELAY_GOSSIP: LazyLock<Result<IntGauge>> = LazyLock::new(|| {

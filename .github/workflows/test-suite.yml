@@ -100,14 +100,29 @@ jobs:
       uses: foundry-rs/foundry-toolchain@v1
       with:
         version: nightly-ca67d15f4abd46394b324c50e21e66f306a1162d
-    - name: Clear stale leveldb-sys cmake cache
-      run: rm -rf target/release/build/leveldb-sys-*/out/build 2>/dev/null || true
     - name: Run tests in release
       run: make test-release
     - name: Show cache stats
       if: env.SELF_HOSTED_RUNNERS == 'true'
       continue-on-error: true
       run: sccache --show-stats
+  proof-engine-tests:
+    name: proof-engine-tests
+    needs: [check-labels]
+    if: needs.check-labels.outputs.skip_ci != 'true'
+    runs-on: ${{ github.repository == 'sigp/lighthouse' && 'warp-ubuntu-latest-x64-4x' || 'ubuntu-latest' }}
+    steps:
+    - uses: actions/checkout@v5
+    - name: Get latest version of stable Rust
+      uses: moonrepo/setup-rust@v1
+      with:
+          channel: stable
+          cache-target: release
+          bins: cargo-nextest
+      env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Run proof engine tests sequentially
+      run: make test-proof-engine
   beacon-chain-tests:
     name: beacon-chain-tests
     needs: [check-labels]
@@ -443,6 +458,7 @@ jobs:
       'check-labels',
       'target-branch-check',
       'release-tests-ubuntu',
+      'proof-engine-tests',
       'beacon-chain-tests',
       'op-pool-tests',
       'network-tests',

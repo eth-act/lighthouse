@@ -11,6 +11,7 @@ use beacon_processor::{
     BeaconProcessorSend, DuplicateCache, GossipAggregatePackage, GossipAttestationPackage, Work,
     WorkEvent as BeaconWorkEvent,
 };
+use execution_layer::eip8025::types::ProofTypes;
 use lighthouse_network::rpc::InboundRequestId;
 use lighthouse_network::rpc::methods::{
     BlobsByRangeRequest, BlobsByRootRequest, DataColumnsByRangeRequest, DataColumnsByRootRequest,
@@ -61,6 +62,7 @@ pub struct NetworkBeaconProcessor<T: BeaconChainTypes> {
     pub network_globals: Arc<NetworkGlobals<T::EthSpec>>,
     pub invalid_block_storage: InvalidBlockStorage,
     pub executor: TaskExecutor,
+    pub proof_types: ProofTypes,
 }
 
 // Publish blobs in batches of exponentially increasing size.
@@ -1156,6 +1158,7 @@ impl<E: EthSpec> NetworkBeaconProcessor<TestBeaconChainType<E>> {
             network_globals,
             invalid_block_storage: InvalidBlockStorage::Disabled,
             executor,
+            proof_types: ProofTypes::default(),
         };
 
         (network_beacon_processor, beacon_processor_rx)

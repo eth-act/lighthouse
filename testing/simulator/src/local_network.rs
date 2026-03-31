@@ -550,6 +550,14 @@ impl<E: EthSpec> LocalNetwork<E> {
         Ok(())
     }
 
+    /// Return a HTTP client for the beacon node at `index` in the `beacon_nodes` vec.
+    pub fn remote_node(&self, index: usize) -> Option<BeaconNodeHttpClient> {
+        self.beacon_nodes
+            .read()
+            .get(index)
+            .and_then(|n| n.remote_node().ok())
+    }
+
     /// For all beacon nodes in `Self`, return a HTTP client to access each nodes HTTP API.
     pub fn remote_nodes(&self) -> Result<Vec<BeaconNodeHttpClient>, String> {
         let beacon_nodes = self.beacon_nodes.read();
@@ -573,19 +581,33 @@ impl<E: EthSpec> LocalNetwork<E> {
             .map(|body| body.unwrap().data.finalized.epoch)
     }
 
-    /// Subscribe to method-invocation events from the proof generator node's mock proof client.
-    ///
-    /// Searches all beacon nodes for the first one that exposes a mock client event stream
-    /// (i.e. a `ProofGenerator` node configured with the mock proof engine URL).
-    pub fn proof_generator_subscribe_client_events(
+    /// Subscribe to mock client events for a beacon node at a specific index.
+    pub fn node_subscribe_client_events(
         &self,
+        index: usize,
     ) -> Option<tokio::sync::broadcast::Receiver<execution_layer::test_utils::MockClientEvent>>
     {
-        self.beacon_nodes.read().iter().find_map(|bn| {
+        self.beacon_nodes.read().get(index).and_then(|bn| {
             bn.client
                 .beacon_chain()
                 .and_then(|chain| chain.execution_layer.as_ref().cloned())
                 .and_then(|el| el.subscribe_proof_node_client_events())
+        })
+    }
+
+    /// Subscribe to the internal event bus for a beacon node at a specific index.
+    ///
+    /// Returns `None` if the index is out of range or the beacon chain is unavailable.
+    pub fn node_subscribe_internal_events(
+        &self,
+        index: usize,
+    ) -> Option<
+        tokio::sync::broadcast::Receiver<beacon_chain::internal_events::InternalBeaconNodeEvent>,
+    > {
+        self.beacon_nodes.read().get(index).and_then(|bn| {
+            bn.client
+                .beacon_chain()
+                .map(|chain| chain.subscribe_internal_events())
         })
     }
 

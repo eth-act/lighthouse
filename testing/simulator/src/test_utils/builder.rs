@@ -2,12 +2,15 @@ use crate::local_network::NodeType;
 
 use super::*;
 
+type ClientConfigTransform = Box<dyn FnOnce(&mut ClientConfig) + Send + 'static>;
+
 /// Builder for creating test networks with configurable parameters.
 pub struct TestNetworkFixtureBuilder<E: EthSpec = MinimalEthSpec> {
     env: EnvironmentBuilder<E>,
     network_params: LocalNetworkParams,
     logger_config: LoggerConfig,
     disable_stdout: bool,
+    client_config_transform: Option<ClientConfigTransform>,
 }
 
 impl Default for TestNetworkFixtureBuilder {
@@ -26,6 +29,7 @@ impl Default for TestNetworkFixtureBuilder {
             },
             logger_config: LoggerConfig::default(),
             disable_stdout: false,
+            client_config_transform: None,
         }
     }
 }
@@ -80,6 +84,20 @@ impl<E: EthSpec> TestNetworkFixtureBuilder<E> {
         self
     }
 
+    /// Apply an arbitrary modification to the `ClientConfig` used for all beacon nodes.
+    ///
+    /// Multiple calls are composed in order: the first registered transform runs first.
+    pub fn map_client_config(mut self, f: impl FnOnce(&mut ClientConfig) + Send + 'static) -> Self {
+        self.client_config_transform = Some(match self.client_config_transform.take() {
+            None => Box::new(f),
+            Some(prev) => Box::new(move |config| {
+                prev(config);
+                f(config);
+            }),
+        });
+        self
+    }
+
     /// Build the test network fixture with the specified configuration.
     pub async fn build(self) -> anyhow::Result<TestNetworkFixture<E>> {
         info!(target: "simulator", "Building test network fixture");
@@ -106,6 +124,7 @@ impl<E: EthSpec> TestNetworkFixtureBuilder<E> {
             config: TestConfig {
                 client: beacon_config,
                 execution: mock_execution_config,
+                network_params,
             },
         })
     }
@@ -190,97 +209,44 @@ impl<E: EthSpec> TestNetworkFixtureBuilder<E> {
         beacon_config: &ClientConfig,
         mock_execution_config: &MockExecutionConfig,
     ) -> anyhow::Result<()> {
-        // Add nodes to the network
-        info!(target: "simulator", "Adding {} beacon nodes to the network", network_params.node_count);
-        for _idx in 0..network_params.node_count {
-            let net = network.clone();
-            let config = beacon_config.clone();
-            let mock_config = mock_execution_config.clone();
-            network
-                .executor()
-                .spawn_handle(
-                    async move {
-                        net.add_beacon_node(config.clone(), mock_config.clone(), NodeType::Default)
-                            .await
-                            .map_err(anyhow::Error::msg)
-                            .expect("should add beacon node");
-                    },
-                    "beacon_node_setup",
-                )
-                .expect("Failed to spawn blocking task")
-                .await?;
+        // Build the full list of (NodeType, count) pairs, then spawn all nodes concurrently.
+        let node_types = [
+            (NodeType::Default, network_params.node_count),
+            (NodeType::Proposer, network_params.proposer_nodes),
+            (
+                NodeType::ProofGenerator,
+                network_params.proof_generator_nodes,
+            ),
+            (NodeType::ProofVerifier, network_params.proof_verifier_nodes),
+        ];
+
+        let total: usize = node_types.iter().map(|(_, n)| n).sum();
+        info!(target: "simulator", "Spawning {total} beacon nodes in parallel");
+
+        let mut handles = Vec::with_capacity(total);
+        for (node_type, count) in node_types {
+            for _ in 0..count {
+                let net = network.clone();
+                let config = beacon_config.clone();
+                let mock_config = mock_execution_config.clone();
+                let handle = network
+                    .executor()
+                    .spawn_handle(
+                        async move {
+                            net.add_beacon_node(config, mock_config, node_type)
+                                .await
+                                .map_err(anyhow::Error::msg)
+                                .expect("should add beacon node");
+                        },
+                        "beacon_node_setup",
+                    )
+                    .expect("Failed to spawn beacon node task");
+                handles.push(handle);
+            }
         }
 
-        info!(target: "simulator", "Adding {} proposer beacon nodes to the network", network_params.proposer_nodes);
-        for _idx in 0..network_params.proposer_nodes {
-            let net = network.clone();
-            let config = beacon_config.clone();
-            let mock_config = mock_execution_config.clone();
-            network
-                .executor()
-                .spawn_handle(
-                    async move {
-                        net.add_beacon_node(
-                            config.clone(),
-                            mock_config.clone(),
-                            NodeType::Proposer,
-                        )
-                        .await
-                        .map_err(anyhow::Error::msg)
-                        .expect("should add beacon node");
-                    },
-                    "proposer_beacon_node_setup",
-                )
-                .expect("Failed to spawn blocking task")
-                .await?;
-        }
-
-        info!(target: "simulator", "Adding {} proof generator beacon nodes to the network", network_params.proof_generator_nodes);
-        for _idx in 0..network_params.proof_generator_nodes {
-            let net = network.clone();
-            let config = beacon_config.clone();
-            let mock_config = mock_execution_config.clone();
-            network
-                .executor()
-                .spawn_handle(
-                    async move {
-                        net.add_beacon_node(
-                            config.clone(),
-                            mock_config.clone(),
-                            NodeType::ProofGenerator,
-                        )
-                        .await
-                        .map_err(anyhow::Error::msg)
-                        .expect("should add beacon node");
-                    },
-                    "proof_generator_beacon_node_setup",
-                )
-                .expect("Failed to spawn blocking task")
-                .await?;
-        }
-
-        info!(target: "simulator", "Adding {} proof verifier beacon nodes to the network", network_params.proof_verifier_nodes);
-        for _idx in 0..network_params.proof_verifier_nodes {
-            let net = network.clone();
-            let config = beacon_config.clone();
-            let mock_config = mock_execution_config.clone();
-            network
-                .executor()
-                .spawn_handle(
-                    async move {
-                        net.add_beacon_node(
-                            config.clone(),
-                            mock_config.clone(),
-                            NodeType::ProofVerifier,
-                        )
-                        .await
-                        .map_err(anyhow::Error::msg)
-                        .expect("should add beacon node");
-                    },
-                    "proof_verifier_beacon_node_setup",
-                )
-                .expect("Failed to spawn blocking task")
-                .await?;
+        for handle in handles {
+            handle.await?;
         }
 
         Ok(())
@@ -302,6 +268,7 @@ impl<E: EthSpec> TestNetworkFixtureBuilder<E> {
             network_params,
             logger_config,
             disable_stdout,
+            client_config_transform,
         } = self;
 
         // Ensure the `ChainSpec` is configured with the correct genesis parameters based on the network params.
@@ -351,7 +318,7 @@ impl<E: EthSpec> TestNetworkFixtureBuilder<E> {
 
         // Instantiate the local network
         info!(target: "simulator", "Initializing local network with params: {:?}", network_params);
-        let (network, beacon_config, mock_execution_config) =
+        let (network, mut beacon_config, mock_execution_config) =
             Box::pin(LocalNetwork::create_local_network(
                 None,
                 None,
@@ -360,6 +327,10 @@ impl<E: EthSpec> TestNetworkFixtureBuilder<E> {
             ))
             .await
             .map_err(anyhow::Error::msg)?;
+
+        if let Some(transform) = client_config_transform {
+            transform(&mut beacon_config);
+        }
 
         Ok((
             env,
