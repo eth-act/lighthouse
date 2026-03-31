@@ -1,0 +1,100 @@
+# EIP-8025 testnet with zkboost-server backed by real GPU (ZisK) provers.
+#
+# Uses ere-server-zisk (CUDA) containers for reth-zisk and ethrex-zisk proving,
+# mirroring the docker-compose setup in:
+#   https://github.com/eth-act/zkboost/blob/master/docker/example/testnet/docker-compose.yml
+#
+# Run with:
+#   kurtosis run --enclave eip8025-zkboost-gpu \
+#       github.com/frisitano/ethereum-package@feat/integrate-zkboost \
+#       --args-file scripts/local_testnet/network_params_eip8025_zkboost_gpu.yaml
+#
+# Prerequisites:
+#   - NVIDIA GPUs with drivers installed (≥8 GPUs recommended: 4 per prover type)
+#   - NVIDIA Container Toolkit configured for Docker
+#   - ~5-10 min startup time for ZisK setup on first run
+
+# ── Ethereum package participants ────────────────────────────────────────────
+participants:
+  # Supernode participants
+  - cl_type: lighthouse
+    cl_image: lighthouse:local
+    el_type: reth
+    el_image: ghcr.io/paradigmxyz/reth
+    supernode: true
+    cl_extra_params:
+      - --target-peers=3
+      - --proof-engine-endpoint=http://zkboost-1:3000
+      - --proof-types=6
+    vc_extra_params:
+      - --proof-engine-endpoint=http://zkboost-1:3000
+      - --proof-types=6
+    count: 2
+  # Non-supernode participants
+  - cl_type: lighthouse
+    cl_image: lighthouse:local
+    el_type: reth
+    el_image: ghcr.io/paradigmxyz/reth
+    supernode: false
+    cl_extra_params:
+      - --target-peers=3
+      - --proof-engine-endpoint=http://zkboost-1:3000
+      - --proof-types=6
+    vc_extra_params:
+      - --proof-engine-endpoint=http://zkboost-1:3000
+      - --proof-types=6
+    count: 2
+
+network_params:
+  fulu_fork_epoch: 0
+  seconds_per_slot: 6
+
+snooper_enabled: false
+global_log_level: debug
+
+additional_services:
+  - zkboost
+  - dora
+  - prometheus
+  - grafana
+
+# ── zkboost-server configuration ─────────────────────────────────────────────
+zkboost_params:
+  image: ghcr.io/eth-act/zkboost/zkboost-server:0.3.0
+  port: 3000
+  witness_timeout_secs: 12
+  proof_timeout_secs: 300
+  witness_cache_size: 128
+  proof_cache_size: 128
+  instances:
+    - name: zkboost-1
+      el_participant_index: 0
+  zkvms:
+    # reth-zisk GPU prover — uses GPUs 0-3 on the host
+    - kind: ere_server
+      proof_type: reth-zisk
+      image: ghcr.io/eth-act/ere/ere-server-zisk:0.6.0-cuda
+      program_url: https://github.com/eth-act/ere/releases/download/v0.7.0/stateless-validator-reth-zisk
+      port: 3000
+      shm_size_mb: 32768    # 32 GiB — ZisK requires large shared memory for GPU proving
+      gpu_count: 4
+      ulimits:
+        memlock: -1         # unlimited memory lock — required for CUDA unified memory
+      env:
+        RUST_LOG: info
+        ERE_ZISK_SETUP_ON_INIT: "1"
+        ERE_ZISK_START_SERVER_TIMEOUT_SEC: "600"
+    # ethrex-zisk GPU prover — uses GPUs 4-7 on the host
+    - kind: ere_server
+      proof_type: ethrex-zisk
+      image: ghcr.io/eth-act/ere/ere-server-zisk:0.6.0-cuda
+      program_url: https://github.com/eth-act/ere/releases/download/v0.7.0/stateless-validator-ethrex-zisk
+      port: 3000
+      shm_size_mb: 32768
+      gpu_count: 4
+      ulimits:
+        memlock: -1
+      env:
+        RUST_LOG: info
+        ERE_ZISK_SETUP_ON_INIT: "1"
+        ERE_ZISK_START_SERVER_TIMEOUT_SEC: "600"
