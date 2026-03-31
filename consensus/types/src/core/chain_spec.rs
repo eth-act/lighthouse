@@ -700,6 +700,18 @@ impl ChainSpec {
         }
     }
 
+    /// Returns the highest possible value for max_request_blocks based on enabled forks.
+    ///
+    /// This is useful for upper bounds where no specific fork context is available, such as
+    /// computing SSZ size limits for RPC protocols that activate at Deneb or later.
+    pub fn max_request_blocks_upper_bound(&self) -> usize {
+        if self.deneb_fork_epoch.is_some() {
+            self.max_request_blocks_deneb as usize
+        } else {
+            self.max_request_blocks as usize
+        }
+    }
+
     /// Returns the highest possible value for max_request_blobs based on enabled forks.
     ///
     /// This is useful for upper bounds in testing.

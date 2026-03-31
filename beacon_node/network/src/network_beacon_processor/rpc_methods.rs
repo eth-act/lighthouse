@@ -1330,6 +1330,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
     /// `proof_filters` when present. For blocks listed in `proof_filters`:
     /// - a non-empty `proof_types` list → serve only those types
     /// - an empty `proof_types` list → skip the block entirely (requester already has all proofs)
+    ///
     /// Blocks absent from `proof_filters` receive all known proof types.
     pub fn handle_execution_proofs_by_range_request(
         &self,
