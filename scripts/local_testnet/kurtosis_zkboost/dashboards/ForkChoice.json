@@ -1692,7 +1692,9 @@
   ],
   "refresh": "5s",
   "schemaVersion": 39,
-  "tags": [],
+  "tags": [
+    "lighthouse"
+  ],
   "templating": {
     "list": []
   },

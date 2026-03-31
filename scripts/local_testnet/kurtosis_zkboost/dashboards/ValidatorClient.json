@@ -2280,7 +2280,7 @@
       "yaxis": {
         "align": false,
         "alignLevel": null
-       }
+      }
     },
     {
       "datasource": "Prometheus",
@@ -2552,7 +2552,9 @@
   ],
   "refresh": "10s",
   "schemaVersion": 39,
-  "tags": [],
+  "tags": [
+    "lighthouse"
+  ],
   "templating": {
     "list": []
   },
