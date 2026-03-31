@@ -111,7 +111,7 @@ impl TestRig {
         init_tracing();
 
         let network_globals = beacon_processor.network_globals.clone();
-        let mut sync_manager = SyncManager::new(
+        let sync_manager = SyncManager::new(
             chain,
             network_tx,
             beacon_processor.into(),
@@ -120,8 +120,6 @@ impl TestRig {
             fork_context,
             ProofTypes::default(),
         );
-        // In tests any non-zero gap triggers a range request, keeping slot advancement minimal.
-        sync_manager.proof_sync_mut().set_range_request_threshold(0);
 
         TestRig {
             beacon_processor_rx,
