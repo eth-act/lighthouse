@@ -105,9 +105,13 @@ jobs:
           kurtosis enclave inspect "$ENCLAVE" | grep -E "zkboost-[12].*RUNNING" \
             || { echo "FAIL: one or more zkboost services not in RUNNING state"; exit 1; }
 
-          # Each zkboost sidecar must have generated at least one proof
+          # Each zkboost sidecar must have generated at least one proof.
+          # Check via the Prometheus metrics endpoint (zkboost_prove_total) rather than
+          # log scraping — kurtosis service logs may not be available in all CI environments.
           for SVC in zkboost-1 zkboost-2; do
-            COUNT=$(kurtosis service logs "$ENCLAVE" "$SVC" 2>/dev/null | grep -c "proof generated" || true)
+            URL=$(kurtosis port print "$ENCLAVE" "$SVC" http)
+            COUNT=$(curl -sf "$URL/metrics" \
+              | awk '/^zkboost_prove_total\{/ {sum += $2} END {print int(sum)}')
             echo "$SVC: $COUNT proofs generated"
             if [ "${COUNT:-0}" -lt 1 ]; then
               echo "FAIL: $SVC has not generated any proofs"
