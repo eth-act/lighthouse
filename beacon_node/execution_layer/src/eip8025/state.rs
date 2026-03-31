@@ -93,6 +93,16 @@ impl State {
         result
     }
 
+    /// Number of payload requests currently tracked in the tree.
+    pub fn tree_len(&self) -> usize {
+        self.tree.proofs_by_block_hash.len()
+    }
+
+    /// Number of payload requests currently in the pre-tree buffer.
+    pub fn buffer_len(&self) -> usize {
+        self.buffer.proofs.len()
+    }
+
     /// Check if the state contains any proofs associated with the given new payload request root.
     pub fn contains_request_root(&self, request_root: &Hash256) -> bool {
         self.tree

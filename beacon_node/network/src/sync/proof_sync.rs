@@ -6,6 +6,7 @@
 //! requests, and coordinates the cooldown period between request batches.
 
 use super::network_context::{CachedExecutionProofStatus, SyncNetworkContext};
+use crate::metrics;
 use beacon_chain::{BeaconChain, BeaconChainTypes, WhenSlotSkipped};
 use execution_layer::MissingProofInfo;
 use lighthouse_network::PeerId;
@@ -148,6 +149,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
         );
         self.refresh_peer_statuses(cx);
         self.state = ProofSyncState::Waiting(self.activation_slots);
+        metrics::set_gauge(&metrics::PROOF_SYNC_STATE, 1);
     }
 
     /// Called by `SyncManager` when range sync re-enters.
@@ -157,6 +159,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
     pub fn pause(&mut self) {
         debug!("ProofSync: pausing");
         self.state = ProofSyncState::Idle;
+        metrics::set_gauge(&metrics::PROOF_SYNC_STATE, 0);
     }
 
     /// Drive one polling cycle.
@@ -172,6 +175,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
             ProofSyncState::Waiting(0) => {
                 info!("ProofSync: activation delay elapsed, transitioning to Syncing");
                 self.state = ProofSyncState::Syncing;
+                metrics::set_gauge(&metrics::PROOF_SYNC_STATE, 2);
             }
             ProofSyncState::Waiting(ref mut n) => {
                 *n -= 1;
@@ -212,9 +216,18 @@ impl<T: BeaconChainTypes> ProofSync<T> {
                 Ok(id) => {
                     debug!(%start_slot, %peer_slot, gap, "ProofSync: range request sent");
                     self.range_request = Some(ByRangeRequest { id, peer_id });
+                    metrics::inc_counter_vec(
+                        &metrics::PROOF_SYNC_RANGE_REQUESTS_TOTAL,
+                        &["success"],
+                    );
+                    metrics::set_gauge(&metrics::PROOF_SYNC_RANGE_REQUEST_IN_FLIGHT, 1);
                 }
                 Err(e) => {
                     debug!(error = ?e, "ProofSync: range request error");
+                    metrics::inc_counter_vec(
+                        &metrics::PROOF_SYNC_RANGE_REQUESTS_TOTAL,
+                        &["error"],
+                    );
                 }
             }
             return;
@@ -262,9 +275,12 @@ impl<T: BeaconChainTypes> ProofSync<T> {
                     "ProofSync: requesting missing proofs batch"
                 );
                 self.root_request = Some(ByRootRequest { id, peer_id });
+                metrics::inc_counter_vec(&metrics::PROOF_SYNC_ROOT_REQUESTS_TOTAL, &["success"]);
+                metrics::set_gauge(&metrics::PROOF_SYNC_ROOT_REQUEST_IN_FLIGHT, 1);
             }
             Err(e) => {
                 debug!(error = ?e, "ProofSync: failed to send proof batch request");
+                metrics::inc_counter_vec(&metrics::PROOF_SYNC_ROOT_REQUESTS_TOTAL, &["error"]);
             }
         }
     }
@@ -278,6 +294,8 @@ impl<T: BeaconChainTypes> ProofSync<T> {
             info!("ProofSync: range stream complete, cooling down before next request");
             self.range_request = None;
             self.state = ProofSyncState::Waiting(self.activation_slots);
+            metrics::set_gauge(&metrics::PROOF_SYNC_RANGE_REQUEST_IN_FLIGHT, 0);
+            metrics::set_gauge(&metrics::PROOF_SYNC_STATE, 1);
         }
     }
 
@@ -288,6 +306,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
         if self.range_request.as_ref().map(|r| &r.id) == Some(id) {
             debug!("ProofSync: range request failed, will retry next poll");
             self.range_request = None;
+            metrics::set_gauge(&metrics::PROOF_SYNC_RANGE_REQUEST_IN_FLIGHT, 0);
         }
     }
 
@@ -298,6 +317,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
         if self.root_request.as_ref().map(|r| &r.id) == Some(id) {
             debug!("ProofSync: root batch request failed, will retry next poll");
             self.root_request = None;
+            metrics::set_gauge(&metrics::PROOF_SYNC_ROOT_REQUEST_IN_FLIGHT, 0);
         }
     }
 
@@ -308,6 +328,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
     pub fn on_root_request_terminated(&mut self, id: &ExecutionProofsByRootRequestId) {
         if self.root_request.as_ref().map(|r| &r.id) == Some(id) {
             self.root_request = None;
+            metrics::set_gauge(&metrics::PROOF_SYNC_ROOT_REQUEST_IN_FLIGHT, 0);
         }
     }
 
@@ -320,6 +341,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
             Ok(id) => {
                 debug!(%peer_id, %id, "ProofSync: queried peer execution proof status");
                 self.status_in_flight.insert(peer_id, id);
+                metrics::inc_counter(&metrics::PROOF_SYNC_STATUS_REQUESTS_TOTAL);
             }
             Err(e) => {
                 debug!(error = ?e, %peer_id, "ProofSync: failed to query peer status on connect");
@@ -343,6 +365,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
             .is_some()
         {
             self.range_request = None;
+            metrics::set_gauge(&metrics::PROOF_SYNC_RANGE_REQUEST_IN_FLIGHT, 0);
         }
         if self
             .root_request
@@ -352,7 +375,13 @@ impl<T: BeaconChainTypes> ProofSync<T> {
             .is_some()
         {
             self.root_request = None;
+            metrics::set_gauge(&metrics::PROOF_SYNC_ROOT_REQUEST_IN_FLIGHT, 0);
         }
+        metrics::inc_counter(&metrics::PROOF_SYNC_PEER_DISCONNECTS_TOTAL);
+        metrics::set_gauge(
+            &metrics::PROOF_SYNC_PEER_COUNT,
+            self.peer_statuses.len() as i64,
+        );
     }
 
     /// Called when an `ExecutionProofStatus` arrives from a peer.
@@ -408,6 +437,15 @@ impl<T: BeaconChainTypes> ProofSync<T> {
                 timestamp: Instant::now(),
                 verified,
             },
+        );
+        let verified_label = if verified { "true" } else { "false" };
+        metrics::inc_counter_vec(
+            &metrics::PROOF_SYNC_STATUS_RESPONSES_TOTAL,
+            &[verified_label],
+        );
+        metrics::set_gauge(
+            &metrics::PROOF_SYNC_PEER_COUNT,
+            self.peer_statuses.len() as i64,
         );
     }
 
