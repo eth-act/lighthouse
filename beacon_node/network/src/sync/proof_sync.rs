@@ -224,10 +224,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
                 }
                 Err(e) => {
                     debug!(error = ?e, "ProofSync: range request error");
-                    metrics::inc_counter_vec(
-                        &metrics::PROOF_SYNC_RANGE_REQUESTS_TOTAL,
-                        &["error"],
-                    );
+                    metrics::inc_counter_vec(&metrics::PROOF_SYNC_RANGE_REQUESTS_TOTAL, &["error"]);
                 }
             }
             return;

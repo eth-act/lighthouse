@@ -513,24 +513,22 @@ pub static SYNC_UNKNOWN_NETWORK_REQUESTS: LazyLock<Result<IntCounterVec>> = Lazy
  */
 
 /// Total `ExecutionProofsByRange` requests sent, labelled by outcome (`success`, `error`).
-pub static PROOF_SYNC_RANGE_REQUESTS_TOTAL: LazyLock<Result<IntCounterVec>> =
-    LazyLock::new(|| {
-        try_create_int_counter_vec(
-            "proof_sync_range_requests_total",
-            "Total ExecutionProofsByRange requests dispatched by proof sync",
-            &["result"],
-        )
-    });
+pub static PROOF_SYNC_RANGE_REQUESTS_TOTAL: LazyLock<Result<IntCounterVec>> = LazyLock::new(|| {
+    try_create_int_counter_vec(
+        "proof_sync_range_requests_total",
+        "Total ExecutionProofsByRange requests dispatched by proof sync",
+        &["result"],
+    )
+});
 
 /// Total `ExecutionProofsByRoot` batch requests sent, labelled by outcome (`success`, `error`).
-pub static PROOF_SYNC_ROOT_REQUESTS_TOTAL: LazyLock<Result<IntCounterVec>> =
-    LazyLock::new(|| {
-        try_create_int_counter_vec(
-            "proof_sync_root_requests_total",
-            "Total ExecutionProofsByRoot batch requests dispatched by proof sync",
-            &["result"],
-        )
-    });
+pub static PROOF_SYNC_ROOT_REQUESTS_TOTAL: LazyLock<Result<IntCounterVec>> = LazyLock::new(|| {
+    try_create_int_counter_vec(
+        "proof_sync_root_requests_total",
+        "Total ExecutionProofsByRoot batch requests dispatched by proof sync",
+        &["result"],
+    )
+});
 
 /// Total `ExecutionProofStatus` requests sent to peers.
 pub static PROOF_SYNC_STATUS_REQUESTS_TOTAL: LazyLock<Result<IntCounter>> = LazyLock::new(|| {

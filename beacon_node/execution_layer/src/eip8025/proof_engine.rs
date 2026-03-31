@@ -144,12 +144,11 @@ impl HttpProofEngine {
             .await;
         drop(timer);
 
-        let status = verify_result.map_err(|e| {
+        let status = verify_result.inspect_err(|_e| {
             metrics::inc_counter_vec(
                 &metrics::PROOF_ENGINE_VERIFICATIONS_TOTAL,
                 &[proof_type_str, metrics::ERROR],
             );
-            e
         })?;
 
         if status.is_valid() {
@@ -222,10 +221,7 @@ impl HttpProofEngine {
                     &[status],
                 );
                 let state = self.state.read();
-                metrics::set_gauge(
-                    &metrics::PROOF_ENGINE_TREE_SIZE,
-                    state.tree_len() as i64,
-                );
+                metrics::set_gauge(&metrics::PROOF_ENGINE_TREE_SIZE, state.tree_len() as i64);
                 metrics::set_gauge(
                     &metrics::PROOF_ENGINE_MISSING_PROOF_COUNT,
                     state.missing_proofs().len() as i64,
@@ -252,10 +248,7 @@ impl HttpProofEngine {
     ) -> Result<Hash256, ProofEngineError> {
         for &proof_type in &proof_attributes.proof_types {
             if let Ok(pt) = crate::eip8025::ProofType::from_u8(proof_type) {
-                metrics::inc_counter_vec(
-                    &metrics::PROOF_ENGINE_REQUESTS_TOTAL,
-                    &[pt.as_str()],
-                );
+                metrics::inc_counter_vec(&metrics::PROOF_ENGINE_REQUESTS_TOTAL, &[pt.as_str()]);
             }
         }
         self.proof_node
