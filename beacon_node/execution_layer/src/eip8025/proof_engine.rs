@@ -179,13 +179,14 @@ impl HttpProofEngine {
             .write()
             .remove(&request.request_root)
             .unwrap_or_default();
-        let mut state = self.state.write();
-        state.buffer_request(request);
-        metrics::set_gauge(
-            &metrics::PROOF_ENGINE_BUFFER_SIZE,
-            state.buffer_len() as i64,
-        );
-        drop(state);
+        {
+            let mut state = self.state.write();
+            state.buffer_request(request);
+            metrics::set_gauge(
+                &metrics::PROOF_ENGINE_BUFFER_SIZE,
+                state.buffer_len() as i64,
+            );
+        } // guard dropped before the await loop below
 
         let mut status = PayloadStatusV1Status::Syncing;
         for proof in buffered_proofs {

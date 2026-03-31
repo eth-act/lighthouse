@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 
-# Start a local EIP-8025 testnet with real zkboost-server backends using Kurtosis.
+# Start a local EIP-8025 testnet with zkboost-server backends using Kurtosis.
 #
-# This script builds Lighthouse and launches a Kurtosis enclave using the
-# kurtosis_zkboost wrapper package, which first starts the ethereum-package
-# and then adds zkboost-server sidecar services.
+# Builds a Lighthouse Docker image then launches a Kurtosis enclave via the
+# ethereum-package with native zkboost support.
 #
-# For the mock-only path, use start_eip8025_testnet.sh instead.
+# For the mock-only path (no zkboost), use start_eip8025_testnet.sh instead.
 #
 # Requires: docker, kurtosis, yq
 
@@ -16,26 +15,28 @@ SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 ROOT_DIR="$SCRIPT_DIR/../.."
 ENCLAVE_NAME=eip8025-zkboost
 NETWORK_PARAMS_FILE=$SCRIPT_DIR/network_params_eip8025_zkboost.yaml
-KURTOSIS_PKG_DIR=$SCRIPT_DIR/kurtosis_zkboost
+ETHEREUM_PKG=github.com/frisitano/ethereum-package@feat/integrate-zkboost
 
 BUILD_IMAGE=true
 KEEP_ENCLAVE=false
 
 # Get options
-while getopts "e:n:bkh" flag; do
+while getopts "e:n:p:bkh" flag; do
   case "${flag}" in
     e) ENCLAVE_NAME=${OPTARG};;
     n) NETWORK_PARAMS_FILE=${OPTARG};;
+    p) ETHEREUM_PKG=${OPTARG};;
     b) BUILD_IMAGE=false;;
     k) KEEP_ENCLAVE=true;;
     h)
-        echo "Start a local EIP-8025 testnet with real zkboost backends."
+        echo "Start a local EIP-8025 testnet with zkboost backends."
         echo
         echo "usage: $0 <Options>"
         echo
         echo "Options:"
         echo "   -e: enclave name                                default: $ENCLAVE_NAME"
         echo "   -n: kurtosis network params file path           default: $NETWORK_PARAMS_FILE"
+        echo "   -p: ethereum-package path or GitHub ref         default: $ETHEREUM_PKG"
         echo "   -b: skip building Lighthouse docker image"
         echo "   -k: keep existing enclave (don't destroy first)"
         echo "   -h: this help"
@@ -58,7 +59,7 @@ if [ "$KEEP_ENCLAVE" = false ]; then
 fi
 
 if [ "$BUILD_IMAGE" = true ]; then
-    echo "Building Lighthouse Docker image."
+    echo "Building Lighthouse Docker image ($LH_IMAGE_NAME)."
     docker build \
         --build-arg FEATURES=portable,spec-minimal \
         -f "$ROOT_DIR/Dockerfile" \
@@ -69,8 +70,9 @@ else
 fi
 
 echo "Starting EIP-8025 zkboost testnet enclave: $ENCLAVE_NAME"
+echo "  ethereum-package: $ETHEREUM_PKG"
 kurtosis run --enclave "$ENCLAVE_NAME" \
-    "$KURTOSIS_PKG_DIR" \
+    "$ETHEREUM_PKG" \
     --args-file "$NETWORK_PARAMS_FILE"
 
 echo ""
