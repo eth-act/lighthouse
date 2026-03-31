@@ -1327,9 +1327,10 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
     /// Handle an `ExecutionProofsByRange` request from the peer (EIP-8025).
     ///
     /// Streams `SignedExecutionProof` objects known for the requested slot range, filtered by
-    /// `proof_filters` when present. If `proof_filters` is non-empty, blocks listed in it are
-    /// served only for the proof types specified; blocks absent from `proof_filters` receive all
-    /// known proof types. This mirrors the `ExecutionProofsByRoot` semantics.
+    /// `proof_filters` when present. For blocks listed in `proof_filters`:
+    /// - a non-empty `proof_types` list → serve only those types
+    /// - an empty `proof_types` list → skip the block entirely (requester already has all proofs)
+    /// Blocks absent from `proof_filters` receive all known proof types.
     pub fn handle_execution_proofs_by_range_request(
         &self,
         peer_id: PeerId,
@@ -1376,11 +1377,12 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         for block_root in block_roots {
             let allowed_types = filter_map.get(&block_root);
             for proof in self.chain.get_execution_proofs_by_block_root(block_root) {
-                // If this block has a filter entry, skip proof types not requested.
-                // An absent entry means "return all types" (same as an empty proof_types list).
+                // If this block has a filter entry:
+                //   - empty proof_types  → skip the block entirely (requester already complete)
+                //   - non-empty          → serve only the listed types
+                // An absent entry means "return all types".
                 if let Some(types) = allowed_types
-                    && !types.is_empty()
-                    && !types.contains(&proof.message.proof_type)
+                    && (types.is_empty() || !types.contains(&proof.message.proof_type))
                 {
                     continue;
                 }

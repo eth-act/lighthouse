@@ -228,31 +228,47 @@ impl<T: BeaconChainTypes> ProofSync<T> {
 
         let num_types = cx.configured_proof_types_count();
 
-        // Partially-held entries must appear in proof_filters so the peer skips
-        // proof types the requester already has.
-        let partial: Vec<MissingProofInfo> = servable
+        // Partition into blocks still needing at least one proof type and blocks
+        // that are already complete in the proof engine buffer.
+        let (actually_missing, complete_in_window): (Vec<MissingProofInfo>, Vec<MissingProofInfo>) =
+            servable
+                .into_iter()
+                .partition(|m| m.existing_proof_types.len() < num_types);
+
+        if actually_missing.is_empty() {
+            return;
+        }
+
+        // Build filter_entries for the range request:
+        //   - partial entries (some types present, some missing) → peer returns only needed types
+        //   - complete entries → peer skips the block entirely (empty proof_types in filter)
+        // Fully-missing entries are excluded from the filter; the peer returns all types for them.
+        let filter_entries: Vec<MissingProofInfo> = actually_missing
             .iter()
             .filter(|m| !m.existing_proof_types.is_empty())
             .cloned()
+            .chain(complete_in_window)
             .collect();
 
-        let range_bytes = by_range_request_size(&partial, num_types);
-        let root_bytes = by_root_request_size(&servable, num_types);
+        let range_bytes = by_range_request_size(&filter_entries, num_types);
+        let root_bytes = by_root_request_size(&actually_missing, num_types);
 
-        // A single range request covers all servable slots with a fixed 20-byte header
-        // plus filters only for partial entries. If that is cheaper than naming every
-        // block individually in a root request, use range; otherwise use root.
+        // A single range request covers all servable slots with a fixed 20-byte header plus
+        // proof_filters for partial and complete blocks. If cheaper than naming every block
+        // individually in a root request, use range; otherwise use root.
         if range_bytes < root_bytes {
-            let start_slot = servable[0].slot;
+            let start_slot = actually_missing[0].slot;
             // count spans from first to last missing slot inclusive.
-            let count = (servable.last().expect("non-empty").slot - start_slot).as_u64() + 1;
+            let count =
+                (actually_missing.last().expect("non-empty").slot - start_slot).as_u64() + 1;
 
-            match cx.request_execution_proofs_by_range(peer_id, start_slot, count, &partial) {
+            match cx.request_execution_proofs_by_range(peer_id, start_slot, count, &filter_entries)
+            {
                 Ok(id) => {
                     debug!(
                         start_slot = %start_slot,
                         count,
-                        num_filters = partial.len(),
+                        num_filters = filter_entries.len(),
                         range_bytes,
                         root_bytes,
                         "ProofSync: range request sent"
@@ -271,10 +287,10 @@ impl<T: BeaconChainTypes> ProofSync<T> {
             return;
         }
 
-        match cx.request_execution_proofs_by_root(peer_id, &servable) {
+        match cx.request_execution_proofs_by_root(peer_id, &actually_missing) {
             Ok(id) => {
                 debug!(
-                    num_roots = servable.len(),
+                    num_roots = actually_missing.len(),
                     root_bytes, range_bytes, "ProofSync: by-root batch sent"
                 );
                 self.root_request = Some(ByRootRequest { id, peer_id });
@@ -541,15 +557,16 @@ pub(crate) fn by_root_request_size(
 ///
 /// Layout:
 /// - 20 bytes — fixed header: `start_slot` (8) + `count` (8) + `proof_filters` offset (4)
-/// - `proof_filters` — only entries where `existing_proof_types` is non-empty; fully-missing
-///   blocks are absent (the peer returns all proof types for them by default).
+/// - `proof_filters` — partial entries (some types held, some needed) and complete entries
+///   (empty `proof_types` list tells the peer to skip the block). Fully-missing blocks are
+///   absent; the peer returns all proof types for them by default.
 ///
-/// `partial_missing` must contain only entries with non-empty `existing_proof_types`.
+/// `filter_entries` should contain partial and complete entries only (not fully-missing ones).
 pub(crate) fn by_range_request_size(
-    partial_missing: &[MissingProofInfo],
+    filter_entries: &[MissingProofInfo],
     num_configured_types: usize,
 ) -> usize {
-    let filter_bytes: usize = partial_missing
+    let filter_bytes: usize = filter_entries
         .iter()
         .map(|m| per_identifier_ssz_bytes(m, num_configured_types))
         .sum();

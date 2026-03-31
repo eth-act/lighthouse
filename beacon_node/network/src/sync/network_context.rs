@@ -417,11 +417,14 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
 
     /// Send a `ExecutionProofsByRange` request to the given proof-capable peer.
     ///
-    /// `partial_missing` contains `MissingProofInfo` entries for blocks within the requested slot
-    /// range that already have *some* proof types. An entry is included in the request's
-    /// `proof_filters` only when the block has partial coverage (i.e. `existing_proof_types` is
-    /// non-empty), so the peer knows to return only the missing types. Blocks with no existing
-    /// proofs are not filtered — the peer will return all proof types for them.
+    /// `filter_entries` contains `MissingProofInfo` entries for blocks within the requested slot
+    /// range that should appear in `proof_filters`:
+    /// - entries with non-empty `existing_proof_types` → peer returns only the missing types
+    /// - entries with all types already present (`needed` is empty) → peer skips the block
+    ///   entirely (requester already holds all proofs for it)
+    ///
+    /// Blocks with no existing proofs at all are excluded from `filter_entries`; the peer
+    /// will return all known proof types for them by default.
     ///
     /// Callers should use `find_best_proof_capable_peer` to select the peer first.
     pub fn request_execution_proofs_by_range(
@@ -429,21 +432,22 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
         peer_id: PeerId,
         start_slot: Slot,
         count: u64,
-        partial_missing: &[MissingProofInfo],
+        filter_entries: &[MissingProofInfo],
     ) -> Result<ExecutionProofsByRangeRequestId, RpcRequestSendError> {
         let id = ExecutionProofsByRangeRequestId { id: self.next_id() };
 
-        // Build proof_filters: one entry per block in `partial_missing` that still needs a subset
-        // of proof types. Blocks already fully proven are excluded (wouldn't appear in
-        // partial_missing); blocks with no proofs at all are also excluded (peer returns all types
-        // by default for blocks absent from proof_filters).
+        // Build proof_filters from filter_entries:
+        //   - partial blocks: proof_types = types still needed (non-empty)
+        //   - complete blocks: proof_types = [] → peer skips the block entirely
+        //   - fully-missing blocks (existing empty): excluded — peer returns all types by default
         let max_request_blocks = self
             .chain
             .spec
             .max_request_blocks(self.fork_context.current_fork_name());
         let mut filter_items: Vec<ProofByRootIdentifier> = Vec::new();
-        for info in partial_missing {
+        for info in filter_entries {
             if info.existing_proof_types.is_empty() {
+                // Fully missing: no filter entry; peer returns all proof types by default.
                 continue;
             }
             let needed: Vec<u8> = self
@@ -452,9 +456,8 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
                 .map(|t| t.to_u8())
                 .filter(|t| !info.existing_proof_types.contains(t))
                 .collect();
-            if needed.is_empty() {
-                continue;
-            }
+            // needed may be empty for complete blocks — that is intentional.
+            // An empty proof_types list tells the peer to skip this block entirely.
             let proof_types = VariableList::new(needed)
                 .map_err(|e| RpcRequestSendError::InternalError(format!("proof_types: {e:?}")))?;
             filter_items.push(ProofByRootIdentifier {
