@@ -352,6 +352,7 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> Inner<S, T> {
                 warn!(
                     root = %failure.new_payload_request_root,
                     proof_type = failure.proof_type,
+                    reason = ?failure.reason,
                     error = %failure.error,
                     "Proof generation failed"
                 );
@@ -359,14 +360,6 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> Inner<S, T> {
                     failure.new_payload_request_root,
                     failure.proof_type,
                 );
-            }
-            ProofEvent::WitnessTimeout(ref info) | ProofEvent::ProofTimeout(ref info) => {
-                warn!(
-                    root = %info.new_payload_request_root,
-                    proof_type = info.proof_type,
-                    "Proof generation timed out"
-                );
-                self.remove_pending_proof_type(info.new_payload_request_root, info.proof_type);
             }
         }
     }

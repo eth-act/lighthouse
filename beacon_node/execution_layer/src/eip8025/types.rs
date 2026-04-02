@@ -170,12 +170,8 @@ impl From<Vec<ProofType>> for ProofTypes {
 pub enum ProofEvent {
     /// A proof completed successfully.
     ProofComplete(ProofComplete),
-    /// A proof failed.
+    /// A proof failed (includes timeouts, now encoded in [`FailureReason`]).
     ProofFailure(ProofFailure),
-    /// Witness fetch timed out.
-    WitnessTimeout(ProofEventInfo),
-    /// Proof generation timed out.
-    ProofTimeout(ProofEventInfo),
 }
 
 /// Payload for a successful proof event.
@@ -192,15 +188,22 @@ pub struct ProofFailure {
     pub new_payload_request_root: Hash256,
     #[serde(deserialize_with = "deserialize_proof_type")]
     pub proof_type: u8,
+    /// Structured reason for the failure.
+    pub reason: FailureReason,
+    /// Human-readable error message with details about the failure.
     pub error: String,
 }
 
-/// Common info for timeout events.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct ProofEventInfo {
-    pub new_payload_request_root: Hash256,
-    #[serde(deserialize_with = "deserialize_proof_type")]
-    pub proof_type: u8,
+/// Failure reason of a proof request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureReason {
+    /// The execution witness could not be fetched within the configured timeout.
+    WitnessTimeout,
+    /// Proof generation did not complete within the configured timeout.
+    ProvingTimeout,
+    /// A general error occurred during proving.
+    ProvingError,
 }
 
 /// Deserialize `proof_type` from either a string (`"reth-sp1"`) or a
@@ -245,12 +248,6 @@ impl<'a> TryFrom<SseEventParts<'a>> for ProofEvent {
             "proof_failure" => Ok(Self::ProofFailure(
                 serde_json::from_str(data).map_err(ProofEngineError::SerdeError)?,
             )),
-            "witness_timeout" => Ok(Self::WitnessTimeout(
-                serde_json::from_str(data).map_err(ProofEngineError::SerdeError)?,
-            )),
-            "proof_timeout" => Ok(Self::ProofTimeout(
-                serde_json::from_str(data).map_err(ProofEngineError::SerdeError)?,
-            )),
             other => Err(ProofEngineError::SseError(format!(
                 "unknown SSE event type: {other}"
             ))),
@@ -264,8 +261,6 @@ impl ProofEvent {
         match self {
             Self::ProofComplete(inner) => inner.new_payload_request_root,
             Self::ProofFailure(inner) => inner.new_payload_request_root,
-            Self::WitnessTimeout(inner) => inner.new_payload_request_root,
-            Self::ProofTimeout(inner) => inner.new_payload_request_root,
         }
     }
 
@@ -274,8 +269,6 @@ impl ProofEvent {
         match self {
             Self::ProofComplete(inner) => inner.proof_type,
             Self::ProofFailure(inner) => inner.proof_type,
-            Self::WitnessTimeout(inner) => inner.proof_type,
-            Self::ProofTimeout(inner) => inner.proof_type,
         }
     }
 }
