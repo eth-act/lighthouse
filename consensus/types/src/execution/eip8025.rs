@@ -13,10 +13,10 @@ use tree_hash_derive::TreeHash;
 #[cfg(feature = "arbitrary")]
 use arbitrary::Arbitrary;
 
-/// Maximum proof size: 300 KiB (307200 bytes)
+/// Maximum proof size: 400 KiB (409600 bytes)
 ///
-/// Product of U75 * U4096
-pub type MaxProofSize = typenum::Prod<typenum::U75, typenum::U4096>;
+/// Product of U100 * U4096
+pub type MaxProofSize = typenum::Prod<typenum::U100, typenum::U4096>;
 
 /// Proof data type
 ///
