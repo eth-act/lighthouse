@@ -54,12 +54,14 @@ additional_services:
 # ── zkboost-server configuration ─────────────────────────────────────────────
 # Processed natively by ethereum-package; see src/zkboost/zkboost_launcher.star.
 zkboost_params:
-  image: ghcr.io/eth-act/zkboost/zkboost-server:0.3.0
+  image: ghcr.io/eth-act/zkboost/zkboost-server:0.3.1
   port: 3000
   witness_timeout_secs: 12
   proof_timeout_secs: 300
   witness_cache_size: 128
   proof_cache_size: 128
+  env:
+    RUST_LOG: info,zkboost=debug
   # Two instances: each connected to its own EL, serving one group of participants.
   # el_participant_index is 0-based into the flat participant list after count expansion:
   #   0 = el-1-reth-lighthouse (first supernode)
