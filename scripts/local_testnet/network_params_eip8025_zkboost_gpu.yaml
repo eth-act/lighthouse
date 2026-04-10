@@ -78,10 +78,11 @@ zkboost_params:
       image: ghcr.io/eth-act/ere/ere-server-zisk:0.6.1-cuda
       program_url: https://github.com/eth-act/ere-guests/releases/download/v0.7.0/stateless-validator-reth-zisk
       port: 3000
-      shm_size_mb: 32768    # 32 GiB — ZisK requires large shared memory for GPU proving
-      gpu_device_ids: ["0", "1", "2", "3"]
-      ulimits:
-        memlock: -1         # unlimited memory lock — required for CUDA unified memory
+      gpu:
+        device_ids: ["0", "1", "2", "3"]
+        shm_size: 32768    # 32 GiB — ZisK requires large shared memory for GPU proving
+        ulimits:
+          memlock: -1       # unlimited memory lock — required for CUDA unified memory
       env:
         RUST_LOG: info
         ERE_ZISK_SETUP_ON_INIT: "1"
@@ -92,10 +93,11 @@ zkboost_params:
       image: ghcr.io/eth-act/ere/ere-server-zisk:0.6.1-cuda
       program_url: https://github.com/eth-act/ere-guests/releases/download/v0.7.0/stateless-validator-ethrex-zisk
       port: 3000
-      shm_size_mb: 32768
-      gpu_device_ids: ["4", "5", "6", "7"]
-      ulimits:
-        memlock: -1
+      gpu:
+        device_ids: ["4", "5", "6", "7"]
+        shm_size: 32768
+        ulimits:
+          memlock: -1
       env:
         RUST_LOG: info
         ERE_ZISK_SETUP_ON_INIT: "1"
