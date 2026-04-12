@@ -3,6 +3,7 @@ name: docker
 on:
     push:
         branches:
+            - optional-proofs
             - unstable
             - stable
         tags:
@@ -13,10 +14,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-    DOCKER_PASSWORD: ${{ secrets.DH_KEY }}
-    DOCKER_USERNAME: ${{ secrets.DH_ORG }}
     # Enable self-hosted runners for the sigp repo only.
     SELF_HOSTED_RUNNERS: ${{ github.repository == 'sigp/lighthouse' }}
+    REGISTRY: ghcr.io
 
 jobs:
     # Extract the VERSION which is either `latest` or `vX.Y.Z`, and the VERSION_SUFFIX
@@ -38,6 +38,11 @@ jobs:
               run: |
                     echo "VERSION=latest" >> $GITHUB_ENV
                     echo "VERSION_SUFFIX=-unstable" >> $GITHUB_ENV
+            - name: Extract version (if optional-proofs)
+              if: github.event.ref == 'refs/heads/optional-proofs'
+              run: |
+                    echo "VERSION=latest" >> $GITHUB_ENV
+                    echo "VERSION_SUFFIX=-optional-proofs" >> $GITHUB_ENV
             - name: Extract version (if tagged release)
               if: startsWith(github.event.ref, 'refs/tags')
               run: |
@@ -48,12 +53,14 @@ jobs:
             VERSION_SUFFIX: ${{ env.VERSION_SUFFIX }}
     build-docker-single-arch:
         name: build-docker-${{ matrix.binary }}-${{ matrix.cpu_arch }}${{ matrix.features.version_suffix }}
+        permissions:
+            contents: read
+            packages: write
         # Use self-hosted runners only on the sigp repo.
         runs-on: ${{ github.repository == 'sigp/lighthouse' && fromJson('["self-hosted", "linux", "release"]') || 'ubuntu-22.04'  }}
         strategy:
             matrix:
-                binary:   [lighthouse,
-                           lcli]
+                binary:   [lighthouse]
                 cpu_arch: [aarch64,
                            x86_64]
                 include:
@@ -68,9 +75,12 @@ jobs:
             - name: Update Rust
               if: env.SELF_HOSTED_RUNNERS == 'false'
               run: rustup update stable
-            - name: Dockerhub login
-              run: |
-                  echo "${DOCKER_PASSWORD}" | docker login --username ${DOCKER_USERNAME} --password-stdin
+            - name: Login to GitHub Container Registry
+              uses: docker/login-action@v3
+              with:
+                  registry: ${{ env.REGISTRY }}
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
 
             - name: Sets env vars for Lighthouse
               if: startsWith(matrix.binary, 'lighthouse')
@@ -81,11 +91,6 @@ jobs:
               if: startsWith(matrix.binary, 'lighthouse')
               run: |
                 echo "MAKE_CMD=build-${{ matrix.cpu_arch }}" >> $GITHUB_ENV
-
-            - name: Set `make` command for lcli
-              if: startsWith(matrix.binary, 'lcli')
-              run: |
-                echo "MAKE_CMD=build-lcli-${{ matrix.cpu_arch }}" >> $GITHUB_ENV
 
             - name: Cross build binaries
               run: |
@@ -123,28 +128,17 @@ jobs:
                 platforms: linux/${{ env.SHORT_ARCH }}
                 push: true
                 tags: |
-                  ${{ github.repository_owner}}/${{ matrix.binary }}:${{ env.VERSION }}-${{ env.SHORT_ARCH }}${{ env.VERSION_SUFFIX }}
-
-            - name: Build and push (lcli)
-              if: startsWith(matrix.binary, 'lcli')
-              uses: docker/build-push-action@v5
-              with:
-                file: ./lcli/Dockerfile.cross
-                context: .
-                platforms: linux/${{ env.SHORT_ARCH }}
-                push: true
-
-                tags: |
-                  ${{ github.repository_owner}}/${{ matrix.binary }}:${{ env.VERSION }}-${{ env.SHORT_ARCH }}${{ env.VERSION_SUFFIX }}
-
+                  ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.binary }}:${{ env.VERSION }}-${{ env.SHORT_ARCH }}${{ env.VERSION_SUFFIX }}
 
     build-docker-multiarch:
         name: build-docker-${{ matrix.binary }}-multiarch
+        permissions:
+            contents: read
+            packages: write
         runs-on: ubuntu-22.04
         strategy:
             matrix:
-                binary: [lighthouse,
-                         lcli]
+                binary: [lighthouse]
         needs: [build-docker-single-arch, extract-version]
         env:
             VERSION: ${{ needs.extract-version.outputs.VERSION }}
@@ -153,13 +147,16 @@ jobs:
             - name: Set up Docker Buildx
               uses: docker/setup-buildx-action@v3
 
-            - name: Dockerhub login
-              run: |
-                  echo "${DOCKER_PASSWORD}" | docker login --username ${DOCKER_USERNAME} --password-stdin
+            - name: Login to GitHub Container Registry
+              uses: docker/login-action@v3
+              with:
+                  registry: ${{ env.REGISTRY }}
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
 
             - name: Create and push multiarch manifests
               run: |
-                  docker buildx imagetools create -t ${{ github.repository_owner}}/${{ matrix.binary }}:${VERSION}${VERSION_SUFFIX} \
-                      ${{ github.repository_owner}}/${{ matrix.binary }}:${VERSION}-arm64${VERSION_SUFFIX} \
-                      ${{ github.repository_owner}}/${{ matrix.binary }}:${VERSION}-amd64${VERSION_SUFFIX};
+                  docker buildx imagetools create -t ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.binary }}:${VERSION}${VERSION_SUFFIX} \
+                      ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.binary }}:${VERSION}-arm64${VERSION_SUFFIX} \
+                      ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.binary }}:${VERSION}-amd64${VERSION_SUFFIX};
 
