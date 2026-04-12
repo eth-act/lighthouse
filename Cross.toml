@@ -1,14 +1,26 @@
 [target.x86_64-unknown-linux-gnu]
-# Use the most recent Cross image because the stable 0.2.5 image has GCC 5.4.0 which
-# doesn't support the -Wthread-safety flag used by leveldb-sys v2.0.9.
+# leveldb-sys v2.0.9 uses -Wthread-safety in its CMake build, which is a Clang-specific
+# flag not recognised by GCC. Install clang and set CC/CXX so cmake-rs uses it.
 image = "ghcr.io/cross-rs/x86_64-unknown-linux-gnu:main"
 pre-build = ["apt-get install -y cmake clang"]
 
+[target.x86_64-unknown-linux-gnu.env]
+set = { CC = "clang", CXX = "clang++" }
+
 [target.aarch64-unknown-linux-gnu]
-# Use the most recent Cross image because the stable 0.2.5 image has GCC 5.4.0 which
-# doesn't support the -Wthread-safety flag used by leveldb-sys v2.0.9.
+# leveldb-sys v2.0.9 uses -Wthread-safety in its CMake build, which is a Clang-specific
+# flag not recognised by aarch64-linux-gnu-gcc. Create thin clang wrapper scripts that
+# target aarch64-linux-gnu using the installed GCC toolchain, then point cmake at them.
+# CC must be a plain executable path (no inline flags), hence the wrapper scripts.
 image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main"
-pre-build = ["apt-get install -y cmake clang"]
+pre-build = [
+    "apt-get install -y cmake clang gcc-aarch64-linux-gnu",
+    "printf '#!/bin/sh\\nexec clang -target aarch64-linux-gnu --gcc-toolchain=/usr \"$@\"\\n' > /usr/local/bin/aarch64-clang && chmod +x /usr/local/bin/aarch64-clang",
+    "printf '#!/bin/sh\\nexec clang++ -target aarch64-linux-gnu --gcc-toolchain=/usr \"$@\"\\n' > /usr/local/bin/aarch64-clang++ && chmod +x /usr/local/bin/aarch64-clang++"
+]
+
+[target.aarch64-unknown-linux-gnu.env]
+set = { CC = "/usr/local/bin/aarch64-clang", CXX = "/usr/local/bin/aarch64-clang++" }
 
 [target.riscv64gc-unknown-linux-gnu]
 pre-build = ["apt-get install -y cmake clang"]
