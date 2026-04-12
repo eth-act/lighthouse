@@ -1,8 +1,14 @@
 [target.x86_64-unknown-linux-gnu]
-pre-build = ["apt-get install -y cmake clang-5.0"]
+# Use the most recent Cross image because the stable 0.2.5 image has GCC 5.4.0 which
+# doesn't support the -Wthread-safety flag used by leveldb-sys v2.0.9.
+image = "ghcr.io/cross-rs/x86_64-unknown-linux-gnu:main"
+pre-build = ["apt-get install -y cmake clang"]
 
 [target.aarch64-unknown-linux-gnu]
-pre-build = ["apt-get install -y cmake clang-5.0"]
+# Use the most recent Cross image because the stable 0.2.5 image has GCC 5.4.0 which
+# doesn't support the -Wthread-safety flag used by leveldb-sys v2.0.9.
+image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main"
+pre-build = ["apt-get install -y cmake clang"]
 
 [target.riscv64gc-unknown-linux-gnu]
 pre-build = ["apt-get install -y cmake clang"]
