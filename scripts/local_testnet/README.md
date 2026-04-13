@@ -93,8 +93,8 @@ EIP-8025 introduces execution proofs into the Ethereum consensus layer. Three Ku
 | File | Proof backend | EL client | Use case |
 |---|---|---|---|
 | `network_params_eip8025.yaml` | Mock (`http://mock/0/`) | Geth | Fast local dev/CI |
-| `network_params_eip8025_zkboost.yaml` | zkboost-server (mock zkVM) | Reth | Integration testing |
-| `network_params_eip8025_zkboost_gpu.yaml` | zkboost-server (GPU ZisK) | Reth | Full proving validation |
+| `network_params_eip8025_zkboost.yaml` | zkboost (mock zkVM) | Reth | Integration testing |
+| `network_params_eip8025_zkboost_gpu.yaml` | zkboost (GPU ZisK) | Reth | Full proving validation |
 
 All three configurations run 4 participants: 2 supernodes (with proof generation enabled) and 2 non-supernodes.
 
@@ -124,7 +124,7 @@ To skip rebuilding Lighthouse on subsequent runs:
 
 ### zkboost testnet (mock provers)
 
-Starts a 4-node network backed by two `zkboost-server` instances, each connected to its own Reth execution client. Proving is handled by a mock zkVM (`reth-zisk` kind), so no GPU hardware is required. Uses a fork of the ethereum-package with native zkboost support.
+Starts a 4-node network backed by two `zkboost` instances, each connected to its own Reth execution client. Proving is handled by a mock zkVM (`reth-zisk` kind), so no GPU hardware is required. Uses a fork of the ethereum-package with native zkboost support.
 
 ```bash
 cd ./scripts/local_testnet

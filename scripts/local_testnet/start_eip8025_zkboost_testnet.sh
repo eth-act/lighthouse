@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Start a local EIP-8025 testnet with zkboost-server backends using Kurtosis.
+# Start a local EIP-8025 testnet with zkboost backends using Kurtosis.
 #
 # Builds a Lighthouse Docker image then launches a Kurtosis enclave via the
 # ethereum-package with native zkboost support.

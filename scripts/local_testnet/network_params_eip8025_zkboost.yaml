@@ -1,4 +1,4 @@
-# EIP-8025 testnet with zkboost-server backends via native ethereum-package integration.
+# EIP-8025 testnet with zkboost backends via native ethereum-package integration.
 #
 # Run with:
 #   kurtosis run --enclave eip8025-zkboost \
@@ -51,15 +51,10 @@ additional_services:
   - prometheus
   - grafana
 
-# ── zkboost-server configuration ─────────────────────────────────────────────
+# ── zkboost configuration ─────────────────────────────────────────────────────
 # Processed natively by ethereum-package; see src/zkboost/zkboost_launcher.star.
 zkboost_params:
-  image: ghcr.io/eth-act/zkboost/zkboost-server:0.3.1
-  port: 3000
-  witness_timeout_secs: 12
-  proof_timeout_secs: 300
-  witness_cache_size: 128
-  proof_cache_size: 128
+  image: ghcr.io/eth-act/zkboost/zkboost:0.5.0
   env:
     RUST_LOG: info,zkboost=debug
   # Two instances: each connected to its own EL, serving one group of participants.
@@ -74,5 +69,5 @@ zkboost_params:
   zkvms:
     - kind: mock
       proof_type: reth-zisk
-      mock_proving_time_ms: 300
+      mock_proving_time: { kind: constant, ms: 300 }
       mock_proof_size: 1024

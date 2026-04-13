@@ -1,4 +1,4 @@
-# EIP-8025 testnet with zkboost-server backed by real GPU (ZisK) provers.
+# EIP-8025 testnet with zkboost backed by real GPU (ZisK) provers.
 #
 # Uses ere-server-zisk (CUDA) containers for reth-zisk and ethrex-zisk proving,
 # mirroring the docker-compose setup in:
@@ -58,14 +58,9 @@ additional_services:
   - prometheus
   - grafana
 
-# ── zkboost-server configuration ─────────────────────────────────────────────
+# ── zkboost configuration ─────────────────────────────────────────────────────
 zkboost_params:
-  image: ghcr.io/eth-act/zkboost/zkboost-server:0.3.1
-  port: 3000
-  witness_timeout_secs: 12
-  proof_timeout_secs: 300
-  witness_cache_size: 128
-  proof_cache_size: 128
+  image: ghcr.io/eth-act/zkboost/zkboost:0.5.0
   env:
     RUST_LOG: info,zkboost=debug
   instances:
@@ -73,7 +68,7 @@ zkboost_params:
       el_participant_index: 0
   zkvms:
     # reth-zisk GPU prover — uses GPUs 0-3 on the host
-    - kind: ere_server
+    - kind: ere
       proof_type: reth-zisk
       image: ghcr.io/eth-act/ere/ere-server-zisk:0.6.1-cuda
       program_url: https://github.com/eth-act/ere-guests/releases/download/v0.7.0/stateless-validator-reth-zisk
@@ -88,7 +83,7 @@ zkboost_params:
         ERE_ZISK_SETUP_ON_INIT: "1"
         ERE_ZISK_START_SERVER_TIMEOUT_SEC: "600"
     # ethrex-zisk GPU prover — uses GPUs 4-7 on the host
-    - kind: ere_server
+    - kind: ere
       proof_type: ethrex-zisk
       image: ghcr.io/eth-act/ere/ere-server-zisk:0.6.1-cuda
       program_url: https://github.com/eth-act/ere-guests/releases/download/v0.7.0/stateless-validator-ethrex-zisk
