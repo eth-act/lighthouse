@@ -17,7 +17,5 @@ image = "ghcr.io/cross-rs/riscv64gc-unknown-linux-gnu:main"
 # pages. See: https://github.com/sigp/lighthouse/issues/5244
 [build.env]
 passthrough = [
-    "CC",
-    "CXX",
     "JEMALLOC_SYS_WITH_LG_PAGE",
 ]

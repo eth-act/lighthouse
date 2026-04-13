@@ -18,8 +18,6 @@ env:
     # Enable self-hosted runners for the sigp repo only.
     SELF_HOSTED_RUNNERS: ${{ github.repository == 'sigp/lighthouse' }}
     REGISTRY: ghcr.io
-    CC: clang
-    CXX: clang++
 
 jobs:
     # Extract the VERSION which is either `latest` or `vX.Y.Z`, and the VERSION_SUFFIX
