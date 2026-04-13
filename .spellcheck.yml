@@ -5,7 +5,6 @@ matrix:
   - 'README.md'
   - 'CONTRIBUTING.md'
   - 'SECURITY.md'
-  - './scripts/local_testnet/README.md'
   default_encoding: utf-8
   aspell:
     lang: en
