@@ -3,7 +3,6 @@
 .config
 book
 md-docs
-testing
 testing/ef_tests/consensus-spec-tests
 testing/execution_engine_integration/execution_clients
 target/
