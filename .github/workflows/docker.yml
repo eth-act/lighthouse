@@ -8,6 +8,7 @@ on:
             - stable
         tags:
             - v*
+    workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -159,4 +160,9 @@ jobs:
                   docker buildx imagetools create -t ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.binary }}:${VERSION}${VERSION_SUFFIX} \
                       ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.binary }}:${VERSION}-arm64${VERSION_SUFFIX} \
                       ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.binary }}:${VERSION}-amd64${VERSION_SUFFIX};
-
+            - name: Tag optional-proofs image as latest
+              if: github.event.ref == 'refs/heads/optional-proofs'
+              run: |
+                  docker buildx imagetools create -t ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.binary }}:latest \
+                      ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.binary }}:${VERSION}-arm64${VERSION_SUFFIX} \
+                      ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.binary }}:${VERSION}-amd64${VERSION_SUFFIX};
