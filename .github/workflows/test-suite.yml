@@ -232,6 +232,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
+          cache-target: debug-clang
           bins: cargo-nextest
     - name: Run tests in debug
       run: make test-debug
