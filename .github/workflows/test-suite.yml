@@ -112,7 +112,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
-          cache-target: release
+          cache-target: release-clang
           bins: cargo-nextest
       env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -135,7 +135,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
-          cache-target: release
+          cache-target: release-clang
           bins: cargo-nextest
     - name: Run beacon_chain tests for all known forks
       run: make test-beacon-chain
@@ -152,7 +152,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
-          cache-target: release
+          cache-target: release-clang
           bins: cargo-nextest
     - name: Run http_api tests for all recent forks
       run: make test-http-api
@@ -169,7 +169,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
-          cache-target: release
+          cache-target: release-clang
           bins: cargo-nextest
     - name: Run operation_pool tests for all known forks
       run: make test-op-pool
@@ -186,7 +186,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
         channel: stable
-        cache-target: release
+        cache-target: release-clang
         bins: cargo-nextest
     - name: Create CI logger dir
       run: mkdir ${{ runner.temp }}/network_test_logs
@@ -215,7 +215,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
-          cache-target: release
+          cache-target: release-clang
           bins: cargo-nextest
     - name: Run slasher tests for all supported backends
       run: make test-slasher
@@ -246,7 +246,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
-          cache-target: release
+          cache-target: release-clang
     - name: Run state_transition_vectors in release.
       run: make run-state-transition-tests
   ef-tests-ubuntu:
@@ -262,7 +262,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
-          cache-target: release
+          cache-target: release-clang
           bins: cargo-nextest
     - name: Run consensus-spec-tests with blst and fake_crypto
       run: make test-ef
@@ -277,7 +277,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
-          cache-target: release
+          cache-target: release-clang
     - name: Create log dir
       run: mkdir ${{ runner.temp }}/basic_simulator_logs
     - name: Run a basic beacon chain sim that starts from Deneb
@@ -299,7 +299,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
-          cache-target: release
+          cache-target: release-clang
     - name: Create log dir
       run: mkdir ${{ runner.temp }}/fallback_simulator_logs
     - name: Run a beacon chain sim which tests VC fallback behaviour
@@ -321,7 +321,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
-          cache-target: release
+          cache-target: release-clang
           cache: false
       env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -338,7 +338,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
-          cache-target: release
+          cache-target: release-clang
           components: rustfmt,clippy
           bins: cargo-audit,cargo-deny
     - name: Check formatting with cargo fmt
@@ -427,7 +427,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
         channel: stable
-        cache-target: release
+        cache-target: release-clang
     - name: Run Makefile to trigger the bash script
       run: make cli-local
   cargo-sort:
@@ -441,7 +441,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
         channel: stable
-        cache-target: release
+        cache-target: release-clang
         bins: cargo-sort
     - name: Run cargo sort to check if Cargo.toml files are sorted
       run: cargo sort --check --workspace

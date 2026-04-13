@@ -62,7 +62,7 @@ jobs:
         uses: moonrepo/setup-rust@v1
         with:
           channel: stable
-          cache-target: release
+          cache-target: release-clang
           bins: cargo-nextest
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
