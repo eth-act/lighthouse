@@ -1,13 +1,6 @@
 name: docker
 
 on:
-    push:
-        branches:
-            - optional-proofs
-            - unstable
-            - stable
-        tags:
-            - v*
     workflow_dispatch:
 
 concurrency:

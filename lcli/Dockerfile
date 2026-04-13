@@ -2,7 +2,9 @@
 #  - from the `lighthouse` dir with the command: `docker build -f ./lcli/Dockerflie .`
 #  - from the current directory with the command: `docker build -f ./Dockerfile ../`
 FROM rust:1.88.0-bullseye AS builder
-RUN apt-get update && apt-get -y upgrade && apt-get install -y cmake libclang-dev
+RUN apt-get update && apt-get -y upgrade && apt-get install -y cmake libclang-dev clang
+ENV CC=clang
+ENV CXX=clang++
 COPY . lighthouse
 ARG FEATURES
 ENV FEATURES=$FEATURES
