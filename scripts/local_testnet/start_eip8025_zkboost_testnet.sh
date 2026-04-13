@@ -15,7 +15,7 @@ SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 ROOT_DIR="$SCRIPT_DIR/../.."
 ENCLAVE_NAME=eip8025-zkboost
 NETWORK_PARAMS_FILE=$SCRIPT_DIR/network_params_eip8025_zkboost.yaml
-ETHEREUM_PKG=github.com/frisitano/ethereum-package@feat/integrate-zkboost
+ETHEREUM_PKG=github.com/frisitano/ethereum-package@feat/gpu-ere
 
 BUILD_IMAGE=true
 KEEP_ENCLAVE=false
