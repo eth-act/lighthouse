@@ -17,7 +17,10 @@ deny = [
     { crate = "sha2", deny-multiple-versions = true, reason = "takes a long time to compile" },
     { crate = "pbkdf2", deny-multiple-versions = true, reason = "takes a long time to compile" },
     { crate = "scrypt", deny-multiple-versions = true, reason = "takes a long time to compile" },
-    { crate = "syn", deny-multiple-versions = true, reason = "takes a long time to compile" },
+    # syn 1 and 2 coexist in the proc-macro ecosystem (for example via
+    # data-encoding-macro-internal -> multibase -> multiaddr). Upstream lockfiles
+    # also currently carry both, so forbidding duplicate syn versions is not
+    # realistic without broader dependency changes.
     { crate = "uuid", deny-multiple-versions = true, reason = "dependency hygiene" },
 ]
 
