@@ -1,13 +1,7 @@
 name: docker
 
 on:
-    push:
-        branches:
-            - optional-proofs
-            - unstable
-            - stable
-        tags:
-            - v*
+    workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -17,6 +11,8 @@ env:
     # Enable self-hosted runners for the sigp repo only.
     SELF_HOSTED_RUNNERS: ${{ github.repository == 'sigp/lighthouse' }}
     REGISTRY: ghcr.io
+    CC: clang-5.0
+    CXX: clang++-5.0
 
 jobs:
     # Extract the VERSION which is either `latest` or `vX.Y.Z`, and the VERSION_SUFFIX
@@ -159,4 +155,9 @@ jobs:
                   docker buildx imagetools create -t ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.binary }}:${VERSION}${VERSION_SUFFIX} \
                       ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.binary }}:${VERSION}-arm64${VERSION_SUFFIX} \
                       ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.binary }}:${VERSION}-amd64${VERSION_SUFFIX};
-
+            - name: Tag optional-proofs image as latest
+              if: github.event.ref == 'refs/heads/optional-proofs'
+              run: |
+                  docker buildx imagetools create -t ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.binary }}:latest \
+                      ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.binary }}:${VERSION}-arm64${VERSION_SUFFIX} \
+                      ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.binary }}:${VERSION}-amd64${VERSION_SUFFIX};
