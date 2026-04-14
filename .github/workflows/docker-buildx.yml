@@ -111,8 +111,16 @@ jobs:
             } >> "$GITHUB_ENV"
           else
             {
-              echo "CC=aarch64-linux-gnu-gcc"
-              echo "CXX=aarch64-linux-gnu-g++"
+              echo "CC=clang-5.0"
+              echo "CXX=clang++-5.0"
+              # Generic CFLAGS/CXXFLAGS are read by cmake-based builds (e.g. leveldb-sys).
+              # Rust's cc-rs ignores these in favour of the target-specific vars below.
+              echo "CFLAGS=--target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-linux-gnu --gcc-toolchain=/usr -fuse-ld=lld"
+              echo "CXXFLAGS=--target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-linux-gnu --gcc-toolchain=/usr -fuse-ld=lld -nostdinc++ -cxx-isystem /usr/include/c++/5.4.0 -cxx-isystem /usr/include/aarch64-linux-gnu/c++/5.4.0 -cxx-isystem /usr/include/c++/5.4.0/backward"
+              # Explicitly empty so HOST (x86_64) cc-rs builds (e.g. ring as a build
+              # dependency) don't fall back to the aarch64 generic CFLAGS above.
+              echo "CFLAGS_x86_64_unknown_linux_gnu="
+              echo "CXXFLAGS_x86_64_unknown_linux_gnu="
               echo "CC_aarch64_unknown_linux_gnu=clang-5.0"
               echo "CXX_aarch64_unknown_linux_gnu=clang++-5.0"
               echo "CFLAGS_aarch64_unknown_linux_gnu=--target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-linux-gnu --gcc-toolchain=/usr -fuse-ld=lld"

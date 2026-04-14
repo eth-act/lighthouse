@@ -19,6 +19,8 @@ image = "ghcr.io/cross-rs/riscv64gc-unknown-linux-gnu:main"
 passthrough = [
     "CC",
     "CXX",
+    "CFLAGS",
+    "CXXFLAGS",
     "CC_x86_64_unknown_linux_gnu",
     "CXX_x86_64_unknown_linux_gnu",
     "CFLAGS_x86_64_unknown_linux_gnu",
