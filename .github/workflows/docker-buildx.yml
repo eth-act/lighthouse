@@ -16,6 +16,8 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
+  CC: clang-5.0
+  CXX: clang++-5.0
 
 jobs:
   prepare:
@@ -77,10 +79,8 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             short_arch: amd64
-            make_cmd: build-x86_64
           - target: aarch64-unknown-linux-gnu
             short_arch: arm64
-            make_cmd: build-aarch64
     steps:
       - uses: actions/checkout@v5
 
@@ -93,52 +93,20 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install cross
-        run: cargo install cross --locked --version 0.2.5
-
-      - name: Set target compiler environment
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-gnu" ]]; then
-            {
-              echo "CC=clang-5.0"
-              echo "CXX=clang++-5.0"
-              echo "CC_x86_64_unknown_linux_gnu=clang-5.0"
-              echo "CXX_x86_64_unknown_linux_gnu=clang++-5.0"
-              echo "CFLAGS_x86_64_unknown_linux_gnu=--target=x86_64-unknown-linux-gnu"
-              echo "CXXFLAGS_x86_64_unknown_linux_gnu=--target=x86_64-unknown-linux-gnu"
-            } >> "$GITHUB_ENV"
-          else
-            {
-              # CC/CXX (generic) are read by cmake-based builds (e.g. leveldb-sys).
-              # Using the GCC cross-compiler avoids the need to pass explicit sysroot /
-              # include-path flags; the cross-compiler already knows where aarch64
-              # headers live.
-              echo "CC=aarch64-linux-gnu-gcc"
-              echo "CXX=aarch64-linux-gnu-g++"
-              # Provide an explicit x86_64 compiler for HOST cc-rs builds (build
-              # dependencies such as ring, libsqlite3-sys, etc.).  Without this, cc-rs
-              # falls back to the generic CC (aarch64-linux-gnu-gcc) which does not
-              # support the -m64 flag that those x86_64 builds add.
-              echo "CC_x86_64_unknown_linux_gnu=clang-5.0"
-              echo "CXX_x86_64_unknown_linux_gnu=clang++-5.0"
-              echo "CC_aarch64_unknown_linux_gnu=clang-5.0"
-              echo "CXX_aarch64_unknown_linux_gnu=clang++-5.0"
-              echo "CFLAGS_aarch64_unknown_linux_gnu=--target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-linux-gnu --gcc-toolchain=/usr -fuse-ld=lld"
-              echo "CXXFLAGS_aarch64_unknown_linux_gnu=--target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-linux-gnu --gcc-toolchain=/usr -fuse-ld=lld -nostdinc++ -cxx-isystem /usr/include/c++/5.4.0 -cxx-isystem /usr/include/aarch64-linux-gnu/c++/5.4.0 -cxx-isystem /usr/include/c++/5.4.0/backward"
-              echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_gnu=--target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-linux-gnu --gcc-toolchain=/usr -fuse-ld=lld"
-              echo "JEMALLOC_SYS_WITH_LG_PAGE=16"
-            } >> "$GITHUB_ENV"
-          fi
+        run: cargo install cross
 
       - name: Cross build lighthouse
         env:
           RUSTC_WRAPPER: ""
           CARGO_BUILD_RUSTC_WRAPPER: ""
-          CROSS_PROFILE: maxperf
-          CROSS_FEATURES: gnosis,spec-minimal,slasher-lmdb,jemalloc
-        run: make ${{ matrix.make_cmd }}
+          JEMALLOC_SYS_WITH_LG_PAGE: 16
+        run: |
+          cross build --bin lighthouse \
+            --target ${{ matrix.target }} \
+            --no-default-features \
+            --features "portable,gnosis,spec-minimal,slasher-lmdb,jemalloc" \
+            --profile maxperf \
+            --locked
 
       - name: Prepare Docker context
         run: |
