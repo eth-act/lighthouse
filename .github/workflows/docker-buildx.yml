@@ -97,10 +97,33 @@ jobs:
       - name: Install cross
         run: cargo install cross --locked --version 0.2.5
 
+      - name: Set target compiler environment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-gnu" ]]; then
+            {
+              echo "CC=clang-5.0"
+              echo "CXX=clang++-5.0"
+              echo "CC_x86_64_unknown_linux_gnu=clang-5.0"
+              echo "CXX_x86_64_unknown_linux_gnu=clang++-5.0"
+              echo "CFLAGS_x86_64_unknown_linux_gnu=--target=x86_64-unknown-linux-gnu"
+              echo "CXXFLAGS_x86_64_unknown_linux_gnu=--target=x86_64-unknown-linux-gnu"
+            } >> "$GITHUB_ENV"
+          else
+            {
+              echo "CC=clang-5.0"
+              echo "CXX=clang++-5.0"
+              echo "CC_aarch64_unknown_linux_gnu=clang-5.0"
+              echo "CXX_aarch64_unknown_linux_gnu=clang++-5.0"
+              echo "CFLAGS_aarch64_unknown_linux_gnu=--target=aarch64-unknown-linux-gnu"
+              echo "CXXFLAGS_aarch64_unknown_linux_gnu=--target=aarch64-unknown-linux-gnu"
+            } >> "$GITHUB_ENV"
+          fi
+
       - name: Cross build lighthouse
         env:
-          CC: clang-5.0
-          CXX: clang++-5.0
           RUSTC_WRAPPER: ""
           CARGO_BUILD_RUSTC_WRAPPER: ""
           CROSS_PROFILE: maxperf

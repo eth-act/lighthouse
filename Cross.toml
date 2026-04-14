@@ -19,5 +19,13 @@ image = "ghcr.io/cross-rs/riscv64gc-unknown-linux-gnu:main"
 passthrough = [
     "CC",
     "CXX",
+    "CC_x86_64_unknown_linux_gnu",
+    "CXX_x86_64_unknown_linux_gnu",
+    "CFLAGS_x86_64_unknown_linux_gnu",
+    "CXXFLAGS_x86_64_unknown_linux_gnu",
+    "CC_aarch64_unknown_linux_gnu",
+    "CXX_aarch64_unknown_linux_gnu",
+    "CFLAGS_aarch64_unknown_linux_gnu",
+    "CXXFLAGS_aarch64_unknown_linux_gnu",
     "JEMALLOC_SYS_WITH_LG_PAGE",
 ]
