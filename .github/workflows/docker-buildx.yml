@@ -111,8 +111,8 @@ jobs:
             } >> "$GITHUB_ENV"
           else
             {
-              echo "CC=clang-5.0"
-              echo "CXX=clang++-5.0"
+              echo "CC=aarch64-linux-gnu-gcc"
+              echo "CXX=aarch64-linux-gnu-g++"
               echo "CC_aarch64_unknown_linux_gnu=clang-5.0"
               echo "CXX_aarch64_unknown_linux_gnu=clang++-5.0"
               echo "CFLAGS_aarch64_unknown_linux_gnu=--target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-linux-gnu --gcc-toolchain=/usr -fuse-ld=lld"
