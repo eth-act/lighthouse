@@ -78,11 +78,9 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             short_arch: amd64
             make_cmd: build-x86_64
-            page_size: ""
           - target: aarch64-unknown-linux-gnu
             short_arch: arm64
             make_cmd: build-aarch64
-            page_size: "16"
     steps:
       - uses: actions/checkout@v5
 
@@ -117,8 +115,10 @@ jobs:
               echo "CXX=clang++-5.0"
               echo "CC_aarch64_unknown_linux_gnu=clang-5.0"
               echo "CXX_aarch64_unknown_linux_gnu=clang++-5.0"
-              echo "CFLAGS_aarch64_unknown_linux_gnu=--target=aarch64-unknown-linux-gnu"
-              echo "CXXFLAGS_aarch64_unknown_linux_gnu=--target=aarch64-unknown-linux-gnu"
+              echo "CFLAGS_aarch64_unknown_linux_gnu=--target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-linux-gnu"
+              echo "CXXFLAGS_aarch64_unknown_linux_gnu=--target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-linux-gnu"
+              echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_gnu=--target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-linux-gnu"
+              echo "JEMALLOC_SYS_WITH_LG_PAGE=16"
             } >> "$GITHUB_ENV"
           fi
 
@@ -128,7 +128,6 @@ jobs:
           CARGO_BUILD_RUSTC_WRAPPER: ""
           CROSS_PROFILE: maxperf
           CROSS_FEATURES: gnosis,spec-minimal,slasher-lmdb,jemalloc
-          JEMALLOC_SYS_WITH_LG_PAGE: ${{ matrix.page_size }}
         run: make ${{ matrix.make_cmd }}
 
       - name: Prepare Docker context
