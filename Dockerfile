@@ -1,5 +1,7 @@
 FROM rust:1.88.0-bullseye AS builder
-RUN apt-get update && apt-get -y upgrade && apt-get install -y cmake libclang-dev clang
+RUN apt-get update && apt-get install -y --no-install-recommends cmake libclang-dev clang \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 ENV CC=clang
 ENV CXX=clang++
 ARG FEATURES
@@ -18,7 +20,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     make
 
 FROM ubuntu:22.04
-RUN apt-get update && apt-get -y upgrade && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get install -y --no-install-recommends \
   libssl-dev \
   ca-certificates \
   && apt-get clean \
