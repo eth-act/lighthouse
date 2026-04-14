@@ -89,7 +89,7 @@ jobs:
           push: true
           provenance: false
           build-args: |
-            FEATURES=gnosis,spec-minimal,slasher-lmdb,jemalloc
+            FEATURES=gnosis,spec-minimal,slasher-lmdb
             PROFILE=maxperf
           tags: ${{ needs.prepare.outputs.tags }}
           cache-from: type=gha,scope=docker-buildx-lighthouse
