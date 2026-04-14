@@ -115,9 +115,9 @@ jobs:
               echo "CXX=clang++-5.0"
               echo "CC_aarch64_unknown_linux_gnu=clang-5.0"
               echo "CXX_aarch64_unknown_linux_gnu=clang++-5.0"
-              echo "CFLAGS_aarch64_unknown_linux_gnu=--target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-linux-gnu --gcc-toolchain=/usr"
-              echo "CXXFLAGS_aarch64_unknown_linux_gnu=--target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-linux-gnu --gcc-toolchain=/usr"
-              echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_gnu=--target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-linux-gnu --gcc-toolchain=/usr"
+              echo "CFLAGS_aarch64_unknown_linux_gnu=--target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-linux-gnu --gcc-toolchain=/usr -fuse-ld=lld"
+              echo "CXXFLAGS_aarch64_unknown_linux_gnu=--target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-linux-gnu --gcc-toolchain=/usr -fuse-ld=lld"
+              echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_gnu=--target=aarch64-unknown-linux-gnu --sysroot=/usr/aarch64-linux-gnu --gcc-toolchain=/usr -fuse-ld=lld"
               echo "JEMALLOC_SYS_WITH_LG_PAGE=16"
             } >> "$GITHUB_ENV"
           fi
