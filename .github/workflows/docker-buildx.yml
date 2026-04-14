@@ -16,6 +16,11 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
+  # leveldb-sys uses cmake which adds -Wthread-safety; that flag is clang-only
+  # and causes GCC (Ubuntu's default /usr/bin/c++) to error. Use clang so the
+  # cmake build succeeds on both amd64 and arm64 native runners.
+  CC: clang
+  CXX: clang++
 
 jobs:
   prepare:
