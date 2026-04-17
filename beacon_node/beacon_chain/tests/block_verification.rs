@@ -1005,7 +1005,7 @@ async fn block_gossip_verification() {
     // Import the ancestors prior to the block we're testing.
     for (snapshot, blobs_opt) in chain_segment[0..block_index]
         .iter()
-        .zip(chain_segment_blobs.into_iter())
+        .zip(chain_segment_blobs)
     {
         let gossip_verified = harness
             .chain
