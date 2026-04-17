@@ -96,7 +96,17 @@ EIP-8025 introduces execution proofs into the Ethereum consensus layer. Three Ku
 | `network_params_eip8025_zkboost.yaml` | zkboost (mock zkVM) | Reth | Integration testing |
 | `network_params_eip8025_zkboost_gpu.yaml` | zkboost (GPU ZisK) | Reth | Full proving validation |
 
-All three configurations run 4 participants: 2 supernodes (with proof generation enabled) and 2 non-supernodes.
+All three configurations run 4 participants: 2 supernodes (with proof generation enabled) and 2 non-supernodes. They are all launched via the same `start_eip8025_testnet.sh` script; the `-n` flag selects the topology.
+
+### CLI options
+
+```
+-e: enclave name               (default: eip8025-testnet)
+-n: network params file path   (default: network_params_eip8025.yaml)
+-p: ethereum-package ref       (default: github.com/ethpandaops/ethereum-package)
+-b: skip building Lighthouse docker image
+-k: keep existing enclave (don't destroy first)
+```
 
 ### Mock proof engine testnet
 
@@ -107,15 +117,6 @@ cd ./scripts/local_testnet
 ./start_eip8025_testnet.sh
 ```
 
-CLI options:
-
-```
--e: enclave name               (default: eip8025-testnet)
--n: network params file path   (default: network_params_eip8025.yaml)
--b: skip building Docker image
--k: keep existing enclave (don't destroy first)
-```
-
 To skip rebuilding Lighthouse on subsequent runs:
 
 ```bash
@@ -124,21 +125,11 @@ To skip rebuilding Lighthouse on subsequent runs:
 
 ### zkboost testnet (mock provers)
 
-Starts a 4-node network backed by two `zkboost` instances, each connected to its own Reth execution client. Proving is handled by a mock zkVM (`reth-zisk` kind), so no GPU hardware is required. Uses a fork of the ethereum-package with native zkboost support.
+Starts a 4-node network backed by two `zkboost` instances, each connected to its own Reth execution client. Proving is handled by a mock zkVM (`reth-zisk` kind), so no GPU hardware is required.
 
 ```bash
 cd ./scripts/local_testnet
-./start_eip8025_zkboost_testnet.sh
-```
-
-CLI options:
-
-```
--e: enclave name               (default: eip8025-zkboost)
--n: network params file path   (default: network_params_eip8025_zkboost.yaml)
--p: ethereum-package ref       (default: github.com/frisitano/ethereum-package@feat/integrate-zkboost)
--b: skip building Docker image
--k: keep existing enclave (don't destroy first)
+./start_eip8025_testnet.sh -e eip8025-zkboost -n network_params_eip8025_zkboost.yaml
 ```
 
 To inspect running services and follow logs:
@@ -161,7 +152,7 @@ Starts the same 4-node topology but replaces the mock zkVM with real GPU-backed 
 
 ```bash
 cd ./scripts/local_testnet
-./start_eip8025_zkboost_testnet.sh -n network_params_eip8025_zkboost_gpu.yaml -e eip8025-zkboost-gpu
+./start_eip8025_testnet.sh -e eip8025-zkboost-gpu -n network_params_eip8025_zkboost_gpu.yaml
 ```
 
 ### Stopping an EIP-8025 enclave

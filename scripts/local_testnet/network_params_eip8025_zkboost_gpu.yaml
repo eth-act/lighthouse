@@ -1,12 +1,8 @@
 # EIP-8025 testnet with zkboost backed by real GPU (ZisK) provers.
 #
-# Uses ere-server-zisk (CUDA) containers for reth-zisk and ethrex-zisk proving,
-# mirroring the docker-compose setup in:
-#   https://github.com/eth-act/zkboost/blob/master/docker/example/testnet/docker-compose.yml
-#
 # Run with:
 #   kurtosis run --enclave eip8025-zkboost-gpu \
-#       github.com/frisitano/ethereum-package@feat/integrate-zkboost \
+#       github.com/ethpandaops/ethereum-package \
 #       --args-file scripts/local_testnet/network_params_eip8025_zkboost_gpu.yaml
 #
 # Prerequisites:
@@ -18,7 +14,7 @@
 participants:
   # Supernode participants
   - cl_type: lighthouse
-    cl_image: lighthouse:local
+    cl_image: ethpandaops/lighthouse:eth-act-optional-proofs
     el_type: reth
     el_image: ghcr.io/paradigmxyz/reth
     supernode: true
@@ -32,7 +28,7 @@ participants:
     count: 2
   # Non-supernode participants
   - cl_type: lighthouse
-    cl_image: lighthouse:local
+    cl_image: ethpandaops/lighthouse:eth-act-optional-proofs
     el_type: reth
     el_image: ghcr.io/paradigmxyz/reth
     supernode: false
@@ -57,6 +53,7 @@ additional_services:
   - dora
   - prometheus
   - grafana
+  - tempo
 
 # ── zkboost configuration ─────────────────────────────────────────────────────
 zkboost_params:
