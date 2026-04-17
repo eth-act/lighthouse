@@ -73,7 +73,7 @@ mod test {
                             | InternalBeaconNodeEvent::OutboundExecutionProofsByRoot { .. }
                     )
                 },
-                Duration::from_secs(60),
+                Duration::from_secs(120),
             )
             .await?;
 

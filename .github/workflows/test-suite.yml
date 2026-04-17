@@ -26,8 +26,7 @@ env:
   CARGO_INCREMENTAL: 0
   # Enable portable to prevent issues with caching `blst` for the wrong CPU type
   TEST_FEATURES: portable
-  # Use Clang for C/C++ compilation. Required because leveldb-sys uses
-  # -Wthread-safety which is a Clang-only flag unsupported by GCC.
+  # leveldb-sys emits -Wthread-safety, which requires clang rather than GCC.
   CC: clang
   CXX: clang++
 jobs:
@@ -76,6 +75,27 @@ jobs:
     steps:
         - name: Check that the pull request is not targeting the stable branch
           run: test ${{ github.base_ref }} != "stable"
+
+  forbidden-files-check:
+    name: forbidden-files-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for forbidden files
+        run: |
+          if [ -f .github/forbidden-files.txt ]; then
+            status=0
+            while IFS= read -r file || [ -n "$file" ]; do
+              # Skip comments and empty lines
+              [[ "$file" =~ ^#.*$ || -z "$file" ]] && continue
+              if [ -f "$file" ]; then
+                echo "::error::Forbidden file exists: $file"
+                status=1
+              fi
+            done < .github/forbidden-files.txt
+            exit $status
+          fi
+
   release-tests-ubuntu:
     name: release-tests-ubuntu
     needs: [check-labels]
@@ -96,10 +116,6 @@ jobs:
           bins: cargo-nextest
       env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    - name: Install Foundry (anvil)
-      uses: foundry-rs/foundry-toolchain@v1
-      with:
-        version: nightly-ca67d15f4abd46394b324c50e21e66f306a1162d
     - name: Run tests in release
       run: make test-release
     - name: Show cache stats
@@ -233,11 +249,8 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
+          cache-target: debug
           bins: cargo-nextest
-    - name: Install Foundry (anvil)
-      uses: foundry-rs/foundry-toolchain@v1
-      with:
-        version: nightly-ca67d15f4abd46394b324c50e21e66f306a1162d
     - name: Run tests in debug
       run: make test-debug
   state-transition-vectors-ubuntu:
@@ -348,6 +361,8 @@ jobs:
           bins: cargo-audit,cargo-deny
     - name: Check formatting with cargo fmt
       run: make cargo-fmt
+    - name: Check dependencies for unencrypted HTTP links
+      run: make insecure-deps
     - name: Lint code for quality and style with Clippy
       run: make lint-full
     - name: Certify Cargo.lock freshness
@@ -457,6 +472,7 @@ jobs:
     needs: [
       'check-labels',
       'target-branch-check',
+      'forbidden-files-check',
       'release-tests-ubuntu',
       'proof-engine-tests',
       'beacon-chain-tests',
