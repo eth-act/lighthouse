@@ -50,7 +50,6 @@ additional_services:
   - dora
   - prometheus
   - grafana
-  - tempo
 
 # ── zkboost configuration ─────────────────────────────────────────────────────
 # Processed natively by ethereum-package; see src/zkboost/zkboost_launcher.star.
