@@ -80,10 +80,7 @@ impl State {
         // (reached the tree or an unseen block).
         let mut result = Vec::new();
         let mut current = latest_fcs.head_block_hash;
-        loop {
-            let Some(req) = buffer_by_block_hash.get(&current) else {
-                break;
-            };
+        while let Some(req) = buffer_by_block_hash.get(&current) {
             result.push(MissingProofInfo {
                 root: req.metadata.request_root,
                 existing_proof_types: req.proofs.iter().map(|p| p.message.proof_type).collect(),

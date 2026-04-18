@@ -7,7 +7,7 @@
 participants:
   # Supernode participants with proof engine enabled
   - cl_type: lighthouse
-    cl_image: lighthouse:local
+    cl_image: ethpandaops/lighthouse:eth-act-optional-proofs
     el_type: geth
     el_image: ethereum/client-go:latest
     supernode: true
@@ -19,7 +19,7 @@ participants:
     count: 2
   # Non-supernode participants with proof engine enabled
   - cl_type: lighthouse
-    cl_image: lighthouse:local
+    cl_image: ethpandaops/lighthouse:eth-act-optional-proofs
     el_type: geth
     el_image: ethereum/client-go:latest
     supernode: false
@@ -36,4 +36,5 @@ snooper_enabled: false
 global_log_level: debug
 additional_services:
   - dora
-  - prometheus_grafana
+  - prometheus
+  - grafana

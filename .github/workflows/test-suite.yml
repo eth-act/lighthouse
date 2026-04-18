@@ -29,6 +29,9 @@ env:
   # leveldb-sys emits -Wthread-safety, which requires clang rather than GCC.
   CC: clang
   CXX: clang++
+  # leveldb-1.22's doc/bench/db_bench_sqlite3.cc uses time()/ctime() without
+  # including <ctime>; newer libc++ no longer pulls it in transitively.
+  CXXFLAGS: "-include ctime"
 jobs:
   check-labels:
     runs-on: ubuntu-latest

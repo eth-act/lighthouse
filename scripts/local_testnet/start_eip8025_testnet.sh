@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 
-# Start a local EIP-8025 testnet with mock proof engines using Kurtosis.
+# Start a local EIP-8025 testnet using Kurtosis.
 #
-# Requires: docker, kurtosis, yq
+# Requires: docker, kurtosis
 #
-# This script builds Lighthouse and launches a Kurtosis enclave using
-# network_params_eip8025.yaml. Mock proof engines are enabled via the
-# http://mock/0/ URL pattern (no special build feature required).
+# This script builds Lighthouse (optional) and launches a Kurtosis enclave via
+# the ethereum-package. The network params file selects the topology:
+#   network_params_eip8025.yaml              — mock proof engines (no zkboost)
+#   network_params_eip8025_zkboost.yaml      — zkboost backends (mock zkVM)
+#   network_params_eip8025_zkboost_gpu.yaml  — zkboost backends (GPU provers)
 
 set -Eeuo pipefail
 
@@ -14,16 +16,20 @@ SCRIPT_DIR="$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 ROOT_DIR="$SCRIPT_DIR/../.."
 ENCLAVE_NAME=eip8025-testnet
 NETWORK_PARAMS_FILE=$SCRIPT_DIR/network_params_eip8025.yaml
-ETHEREUM_PKG_VERSION=main
+ETHEREUM_PKG=github.com/ethpandaops/ethereum-package
+# Must match the `cl_image` in the network params yaml so a local build is
+# picked up by Kurtosis instead of pulling the remote image.
+LH_IMAGE_NAME=ethpandaops/lighthouse:eth-act-optional-proofs
 
 BUILD_IMAGE=true
 KEEP_ENCLAVE=false
 
 # Get options
-while getopts "e:n:bkh" flag; do
+while getopts "e:n:p:bkh" flag; do
   case "${flag}" in
     e) ENCLAVE_NAME=${OPTARG};;
     n) NETWORK_PARAMS_FILE=${OPTARG};;
+    p) ETHEREUM_PKG=${OPTARG};;
     b) BUILD_IMAGE=false;;
     k) KEEP_ENCLAVE=true;;
     h)
@@ -34,6 +40,7 @@ while getopts "e:n:bkh" flag; do
         echo "Options:"
         echo "   -e: enclave name                                default: $ENCLAVE_NAME"
         echo "   -n: kurtosis network params file path           default: $NETWORK_PARAMS_FILE"
+        echo "   -p: ethereum-package path or GitHub ref         default: $ETHEREUM_PKG"
         echo "   -b: skip building Lighthouse docker image"
         echo "   -k: keep existing enclave (don't destroy first)"
         echo "   -h: this help"
@@ -42,9 +49,7 @@ while getopts "e:n:bkh" flag; do
   esac
 done
 
-LH_IMAGE_NAME=$(yq eval ".participants[0].cl_image" "$NETWORK_PARAMS_FILE")
-
-for cmd in docker kurtosis yq; do
+for cmd in docker kurtosis; do
     if ! command -v "$cmd" &> /dev/null; then
         echo "$cmd is not installed. Please install $cmd and try again."
         exit 1
@@ -56,7 +61,7 @@ if [ "$KEEP_ENCLAVE" = false ]; then
 fi
 
 if [ "$BUILD_IMAGE" = true ]; then
-    echo "Building Lighthouse Docker image."
+    echo "Building Lighthouse Docker image ($LH_IMAGE_NAME)."
     docker build \
         --build-arg FEATURES=portable,spec-minimal \
         -f "$ROOT_DIR/Dockerfile" \
@@ -67,13 +72,16 @@ else
 fi
 
 echo "Starting EIP-8025 testnet enclave: $ENCLAVE_NAME"
+echo "  network params:   $NETWORK_PARAMS_FILE"
+echo "  ethereum-package: $ETHEREUM_PKG"
 kurtosis run --enclave "$ENCLAVE_NAME" \
-    "github.com/ethpandaops/ethereum-package@$ETHEREUM_PKG_VERSION" \
+    "$ETHEREUM_PKG" \
     --args-file "$NETWORK_PARAMS_FILE"
 
+echo
 echo "EIP-8025 testnet started!"
 echo
 echo "Useful commands:"
 echo "  kurtosis enclave inspect $ENCLAVE_NAME"
-echo "  kurtosis service logs $ENCLAVE_NAME cl-1-lighthouse-geth"
+echo "  kurtosis service logs $ENCLAVE_NAME <service-name>"
 echo "  kurtosis enclave rm -f $ENCLAVE_NAME"

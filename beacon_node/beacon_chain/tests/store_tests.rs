@@ -2042,12 +2042,12 @@ async fn prunes_fork_growing_past_youngest_finalized_checkpoint() {
     // Precondition: Ensure all stray_blocks blocks are still known
     let stray_blocks: HashMap<Slot, SignedBeaconBlockHash> = stray_blocks_first_epoch
         .into_iter()
-        .chain(stray_blocks_second_epoch.into_iter())
+        .chain(stray_blocks_second_epoch)
         .collect();
 
     let stray_states: HashMap<Slot, BeaconStateHash> = stray_states_first_epoch
         .into_iter()
-        .chain(stray_states_second_epoch.into_iter())
+        .chain(stray_states_second_epoch)
         .collect();
 
     for &block_hash in stray_blocks.values() {
@@ -2088,8 +2088,8 @@ async fn prunes_fork_growing_past_youngest_finalized_checkpoint() {
     // Postconditions
     let canonical_blocks: HashMap<Slot, SignedBeaconBlockHash> = canonical_blocks_zeroth_epoch
         .into_iter()
-        .chain(canonical_blocks_first_epoch.into_iter())
-        .chain(canonical_blocks.into_iter())
+        .chain(canonical_blocks_first_epoch)
+        .chain(canonical_blocks)
         .collect();
 
     // Postcondition: New blocks got finalized
@@ -2215,7 +2215,7 @@ async fn prunes_skipped_slots_states() {
     // Postconditions
     let canonical_blocks: HashMap<Slot, SignedBeaconBlockHash> = canonical_blocks_zeroth_epoch
         .into_iter()
-        .chain(canonical_blocks_post_finalization.into_iter())
+        .chain(canonical_blocks_post_finalization)
         .collect();
     assert_eq!(
         rig.get_finalized_checkpoints(),
@@ -2340,7 +2340,7 @@ async fn finalizes_non_epoch_start_slot() {
     // Postconditions
     let canonical_blocks: HashMap<Slot, SignedBeaconBlockHash> = canonical_blocks_zeroth_epoch
         .into_iter()
-        .chain(canonical_blocks_post_finalization.into_iter())
+        .chain(canonical_blocks_post_finalization)
         .collect();
     assert_eq!(
         rig.get_finalized_checkpoints(),

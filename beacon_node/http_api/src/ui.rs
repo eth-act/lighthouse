@@ -219,24 +219,18 @@ pub fn post_validator_monitor_metrics<T: BeaconChainTypes>(
             drop(val_metrics);
 
             let attestations = attestation_hits + attestation_misses;
-            let attestation_hit_percentage: f64 = if attestations == 0 {
-                0.0
-            } else {
-                (100 * attestation_hits / attestations) as f64
-            };
+            let attestation_hit_percentage: f64 = (100 * attestation_hits)
+                .checked_div(attestations)
+                .map_or(0.0, |v| v as f64);
             let head_attestations = attestation_head_hits + attestation_head_misses;
-            let attestation_head_hit_percentage: f64 = if head_attestations == 0 {
-                0.0
-            } else {
-                (100 * attestation_head_hits / head_attestations) as f64
-            };
+            let attestation_head_hit_percentage: f64 = (100 * attestation_head_hits)
+                .checked_div(head_attestations)
+                .map_or(0.0, |v| v as f64);
 
             let target_attestations = attestation_target_hits + attestation_target_misses;
-            let attestation_target_hit_percentage: f64 = if target_attestations == 0 {
-                0.0
-            } else {
-                (100 * attestation_target_hits / target_attestations) as f64
-            };
+            let attestation_target_hit_percentage: f64 = (100 * attestation_target_hits)
+                .checked_div(target_attestations)
+                .map_or(0.0, |v| v as f64);
 
             let metrics = ValidatorMetrics {
                 attestation_hits,

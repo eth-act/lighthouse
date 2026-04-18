@@ -478,8 +478,8 @@ pub fn downgrade_from_v24<T: BeaconChainTypes>(
     // Convert state summaries back to the old format.
     for (state_root, summary) in state_summaries_dag
         .summaries_by_slot_ascending()
-        .into_iter()
-        .flat_map(|(_, summaries)| summaries)
+        .into_values()
+        .flatten()
     {
         // No need to migrate any states prior to the split. The v22 schema does not need them, and
         // they would generate warnings about a disjoint DAG when re-upgrading to V24.

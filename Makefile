@@ -334,7 +334,10 @@ install-audit:
 	cargo install --force cargo-audit
 
 audit-CI:
-	cargo audit --ignore RUSTSEC-2026-0049
+	# RUSTSEC-2026-0098/0099: rustls-webpki 0.102.x (pulled via warp 0.3 → rustls 0.22)
+	# has no fix on that line; upgrading requires a warp major bump. The 0.103.x usage
+	# has been bumped to 0.103.12 which contains the fix.
+	cargo audit --ignore RUSTSEC-2026-0049 --ignore RUSTSEC-2026-0098 --ignore RUSTSEC-2026-0099
 
 # Runs cargo deny (check for banned crates, duplicate versions, and source restrictions)
 deny: install-deny deny-CI
