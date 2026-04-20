@@ -912,7 +912,6 @@ pub fn cli_app() -> Command {
                 .alias("payload-builder")
                 .alias("payload-builders")
                 .help("The URL of a service compatible with the MEV-boost API.")
-                .requires("execution-endpoint")
                 .action(ArgAction::Set)
                 .display_order(0)
         )
