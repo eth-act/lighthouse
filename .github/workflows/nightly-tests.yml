@@ -21,6 +21,14 @@ env:
   CARGO_INCREMENTAL: 0
   # Enable portable to prevent issues with caching `blst` for the wrong CPU type
   TEST_FEATURES: portable
+  # Must match test-suite.yml so both workflows populate the shared
+  # moonrepo/setup-rust cache with leveldb-sys artifacts built against the
+  # same toolchain. Mismatches force cmake to rebuild leveldb-sys on restore,
+  # which re-runs its install step and tries to write /usr/local/lib
+  # (permission denied).
+  CC: clang
+  CXX: clang++
+  CXXFLAGS: "-include ctime"
 
 jobs:
   setup-matrix:
