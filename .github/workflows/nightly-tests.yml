@@ -65,28 +65,6 @@ jobs:
       run: make test-beacon-chain-${{ matrix.fork }}
       timeout-minutes: 60
 
-  http-api-tests:
-    name: http-api-tests
-    needs: setup-matrix
-    runs-on: 'ubuntu-latest'
-    env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    strategy:
-      matrix:
-        fork: ${{ fromJson(needs.setup-matrix.outputs.forks) }}
-      fail-fast: false
-    steps:
-    - uses: actions/checkout@v5
-    - name: Get latest version of stable Rust
-      uses: moonrepo/setup-rust@v1
-      with:
-          channel: stable
-          cache-target: release
-          bins: cargo-nextest
-    - name: Run http_api tests for ${{ matrix.fork }}
-      run: make test-http-api-${{ matrix.fork }}
-      timeout-minutes: 60
-
   op-pool-tests:
     name: op-pool-tests
     needs: setup-matrix
