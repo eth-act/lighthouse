@@ -6,7 +6,6 @@
 
 use crate::block_id::BlockId;
 use beacon_chain::{BeaconChain, BeaconChainTypes};
-use lighthouse_network::rpc::methods::ExecutionProofStatus;
 use lighthouse_network::{NetworkGlobals, PubsubMessage};
 use network::NetworkMessage;
 use serde::{Deserialize, Serialize};
@@ -144,10 +143,10 @@ pub async fn submit_execution_proofs<T: BeaconChainTypes>(
         if status.is_valid()
             && let Some((block_root, slot)) = verified_block
         {
-            network_globals.set_local_execution_proof_status(ExecutionProofStatus {
-                slot: slot.as_u64(),
-                block_root,
-            });
+            let mut local_status = network_globals.local_execution_proof_status();
+            local_status.slot = slot.as_u64();
+            local_status.block_root = block_root;
+            network_globals.set_local_execution_proof_status(local_status);
         };
 
         // Only propagate proofs the execution engine accepted as valid or tentatively accepted.

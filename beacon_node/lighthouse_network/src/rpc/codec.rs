@@ -166,7 +166,7 @@ impl<E: EthSpec> Decoder for SSZSnappyInboundCodec<E> {
         if self.protocol.versioned_protocol == SupportedProtocol::MetaDataV3 {
             return Ok(Some(RequestType::MetaData(MetadataRequest::new_v3())));
         }
-        // ExecutionProofStatus now carries a 40-byte body; handled in the normal decode path below.
+        // ExecutionProofStatus carries a variable-length proof_types list; decode normally below.
         let Some(length) = handle_length(&mut self.inner, &mut self.len, src)? else {
             return Ok(None);
         };
@@ -595,12 +595,8 @@ fn handle_rpc_request<E: EthSpec>(
             )))
         }
         SupportedProtocol::ExecutionProofsByRangeV1 => {
-            let max_filters = spec.max_request_blocks(current_fork);
             Ok(Some(RequestType::ExecutionProofsByRange(
-                ExecutionProofsByRangeRequest::from_ssz_bytes_with_max(
-                    decoded_buffer,
-                    max_filters,
-                )?,
+                ExecutionProofsByRangeRequest::from_ssz_bytes(decoded_buffer)?,
             )))
         }
         SupportedProtocol::ExecutionProofsByRootV1 => Ok(Some(RequestType::ExecutionProofsByRoot(
@@ -952,11 +948,13 @@ mod tests {
     use crate::types::{EnrAttestationBitfield, EnrSyncCommitteeBitfield};
     use bls::Signature;
     use fixed_bytes::FixedBytesExtended;
+    use ssz_types::typenum::Unsigned;
     use types::{
         BeaconBlock, BeaconBlockAltair, BeaconBlockBase, BeaconBlockBellatrix, BeaconBlockHeader,
         DataColumnsByRootIdentifier, EmptyBlock, Epoch, FullPayload, KzgCommitment, KzgProof,
         SignedBeaconBlockHeader, Slot,
         data::{BlobIdentifier, Cell},
+        execution::eip8025::MaxExecutionProofsPerPayload,
     };
 
     type Spec = types::MainnetEthSpec;
@@ -1118,6 +1116,26 @@ mod tests {
             start_slot: 0,
             count: 10,
             columns: vec![1, 2, 3],
+        }
+    }
+
+    fn execution_proofs_by_range_request() -> ExecutionProofsByRangeRequest {
+        ExecutionProofsByRangeRequest {
+            start_slot: 0,
+            count: 10,
+            proof_types: RuntimeVariableList::new(
+                vec![0, 1],
+                MaxExecutionProofsPerPayload::to_usize(),
+            )
+            .unwrap(),
+        }
+    }
+
+    fn execution_proof_status() -> ExecutionProofStatus {
+        ExecutionProofStatus {
+            block_root: Hash256::zero(),
+            slot: 10,
+            proof_types: VariableList::new(vec![0, 1]).unwrap(),
         }
     }
 
@@ -1372,6 +1390,20 @@ mod tests {
                 &chain_spec,
             ),
             Ok(Some(RpcSuccessResponse::Pong(ping_message())))
+        );
+
+        assert_eq!(
+            encode_then_decode_response(
+                SupportedProtocol::ExecutionProofStatusV1,
+                RpcResponse::Success(RpcSuccessResponse::ExecutionProofStatus(
+                    execution_proof_status(),
+                )),
+                ForkName::Base,
+                &chain_spec,
+            ),
+            Ok(Some(RpcSuccessResponse::ExecutionProofStatus(
+                execution_proof_status()
+            )))
         );
 
         assert_eq!(
@@ -2041,6 +2073,8 @@ mod tests {
             RequestType::MetaData(MetadataRequest::new_v1()),
             RequestType::BlobsByRange(blbrange_request()),
             RequestType::DataColumnsByRange(dcbrange_request()),
+            RequestType::ExecutionProofsByRange(execution_proofs_by_range_request()),
+            RequestType::ExecutionProofStatus(execution_proof_status()),
             RequestType::MetaData(MetadataRequest::new_v2()),
         ];
         for req in requests.iter() {

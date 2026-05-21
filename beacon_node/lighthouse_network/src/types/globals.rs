@@ -196,7 +196,7 @@ impl<E: EthSpec> NetworkGlobals<E> {
 
     /// Returns the local execution proof status.
     pub fn local_execution_proof_status(&self) -> ExecutionProofStatus {
-        *self.local_execution_proof_status.read()
+        self.local_execution_proof_status.read().clone()
     }
 
     /// Updates the local execution proof status.

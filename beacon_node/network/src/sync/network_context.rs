@@ -48,7 +48,7 @@ use requests::{
 };
 #[cfg(test)]
 use slot_clock::SlotClock;
-use ssz_types::{RuntimeVariableList, VariableList};
+use ssz_types::{RuntimeVariableList, VariableList, typenum::Unsigned};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
@@ -61,7 +61,8 @@ use tracing::{Span, debug, debug_span, error, warn};
 use types::data::FixedBlobSidecarList;
 use types::{
     BlobSidecar, BlockImportSource, ColumnIndex, DataColumnSidecar, DataColumnSidecarList, EthSpec,
-    ForkContext, Hash256, SignedBeaconBlock, Slot, execution::eip8025::ProofByRootIdentifier,
+    ForkContext, Hash256, SignedBeaconBlock, Slot,
+    execution::eip8025::{MaxExecutionProofsPerPayload, ProofByRootIdentifier},
 };
 
 pub mod custody;
@@ -415,65 +416,27 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             .custody_peers_for_column(column_index)
     }
 
-    /// Send a `ExecutionProofsByRange` request to the given proof-capable peer.
+    /// Send an `ExecutionProofsByRange` request to the given proof-capable peer.
     ///
-    /// `filter_entries` contains `MissingProofInfo` entries for blocks within the requested slot
-    /// range that should appear in `proof_filters`:
-    /// - entries with non-empty `existing_proof_types` → peer returns only the missing types
-    /// - entries with all types already present (`needed` is empty) → peer skips the block
-    ///   entirely (requester already holds all proofs for it)
-    ///
-    /// Blocks with no existing proofs at all are excluded from `filter_entries`; the peer
-    /// will return all known proof types for them by default.
-    ///
-    /// Callers should use `find_best_proof_capable_peer` to select the peer first.
+    /// The request uses the spec's flat `proof_types` filter across the whole slot range.
     pub fn request_execution_proofs_by_range(
         &mut self,
         peer_id: PeerId,
         start_slot: Slot,
         count: u64,
-        filter_entries: &[MissingProofInfo],
     ) -> Result<ExecutionProofsByRangeRequestId, RpcRequestSendError> {
         let id = ExecutionProofsByRangeRequestId { id: self.next_id() };
 
-        // Build proof_filters from filter_entries:
-        //   - partial blocks: proof_types = types still needed (non-empty)
-        //   - complete blocks: proof_types = [] → peer skips the block entirely
-        //   - fully-missing blocks (existing empty): excluded — peer returns all types by default
-        let max_request_blocks = self
-            .chain
-            .spec
-            .max_request_blocks(self.fork_context.current_fork_name());
-        let mut filter_items: Vec<ProofByRootIdentifier> = Vec::new();
-        for info in filter_entries {
-            if info.existing_proof_types.is_empty() {
-                // Fully missing: no filter entry; peer returns all proof types by default.
-                continue;
-            }
-            let needed: Vec<u8> = self
-                .proof_types
-                .iter()
-                .map(|t| t.to_u8())
-                .filter(|t| !info.existing_proof_types.contains(t))
-                .collect();
-            // needed may be empty for complete blocks — that is intentional.
-            // An empty proof_types list tells the peer to skip this block entirely.
-            let proof_types = VariableList::new(needed)
-                .map_err(|e| RpcRequestSendError::InternalError(format!("proof_types: {e:?}")))?;
-            filter_items.push(ProofByRootIdentifier {
-                block_root: info.root,
-                proof_types,
-            });
-        }
-        let proof_filters =
-            RuntimeVariableList::new(filter_items, max_request_blocks).map_err(|e| {
-                RpcRequestSendError::InternalError(format!("proof_filters too long: {e:?}"))
-            })?;
+        let proof_types = RuntimeVariableList::new(
+            self.proof_types.iter().map(|t| t.to_u8()).collect(),
+            MaxExecutionProofsPerPayload::to_usize(),
+        )
+        .map_err(|e| RpcRequestSendError::InternalError(format!("proof_types: {e:?}")))?;
 
         let request = ExecutionProofsByRangeRequest {
             start_slot: start_slot.as_u64(),
             count,
-            proof_filters,
+            proof_types,
         };
         self.network_send
             .send(NetworkMessage::SendRequest {
@@ -596,6 +559,10 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
     /// full `ProofTypes` set.
     pub fn configured_proof_types_count(&self) -> usize {
         self.proof_types.len()
+    }
+
+    pub fn configured_proof_types(&self) -> impl Iterator<Item = u8> + '_ {
+        self.proof_types.iter().map(|t| t.to_u8())
     }
 
     /// Returns `true` if the peer has `execution_proof_enabled()` in their ENR.

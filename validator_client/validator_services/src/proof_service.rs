@@ -1,18 +1,13 @@
 //! EIP-8025 Execution Proof Service
 //!
-//! This service handles execution proof requests, signing and resigning workflows.
+//! This service requests execution proofs, signs local completions, and submits them.
 //!
-//! Three concurrent tasks:
-//! 1. **Beacon event monitor**: subscribes to beacon node SSE for new blocks and
-//!    validated-proof events — requests proofs and resigns validated proofs.
-//! 2. **Proof engine event monitor**: subscribes to proof engine SSE for proof
-//!    completion/failure events — fetches completed proofs, signs them, and
-//!    submits to the beacon node.
-//! 3. **Reactive HTTP handler**: receives proofs from proof engine callbacks.
+//! A single background task monitors beacon-node block events and proof-engine
+//! completion/failure events. New blocks trigger proof requests; completed proofs
+//! are fetched, signed, and submitted to the beacon node.
 
 use beacon_node_fallback::BeaconNodeFallback;
-use bls::PublicKey;
-use eth2::types::{BlockId, EventKind, EventTopic, SseExecutionProofValidated};
+use eth2::types::{BlockId, EventKind, EventTopic};
 use execution_layer::NewPayloadRequest;
 use execution_layer::eip8025::types::ProofTypes;
 use execution_layer::eip8025::{HttpProofEngine, ProofEvent};
@@ -25,7 +20,7 @@ use std::time::{Duration, Instant};
 use task_executor::TaskExecutor;
 use tracing::{debug, error, info, warn};
 use types::execution::eip8025::{ProofAttributes, ProofData, PublicInput};
-use types::{Epoch, EthSpec, ExecutionProof, Hash256};
+use types::{EthSpec, ExecutionProof, Hash256};
 use validator_store::{DoppelgangerStatus, ValidatorStore};
 
 /// Discard tracking entries older than this.
@@ -50,7 +45,6 @@ struct Inner<S: ValidatorStore, T: SlotClock> {
     validator_store: Arc<S>,
     beacon_nodes: Arc<BeaconNodeFallback<T>>,
     proof_engine: Arc<HttpProofEngine>,
-    slot_clock: T,
     executor: TaskExecutor,
     proof_types: Vec<u8>,
     /// Outstanding proof requests keyed by `new_payload_request_root`.
@@ -63,7 +57,7 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> ProofService<S
         validator_store: Arc<S>,
         beacon_nodes: Arc<BeaconNodeFallback<T>>,
         proof_engine: Arc<HttpProofEngine>,
-        slot_clock: T,
+        _slot_clock: T,
         executor: TaskExecutor,
         proof_types: ProofTypes,
     ) -> Self {
@@ -74,7 +68,6 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> ProofService<S
                 validator_store,
                 beacon_nodes,
                 proof_engine,
-                slot_clock,
                 executor,
                 proof_types,
                 outstanding_requests: RwLock::new(HashMap::new()),
@@ -82,44 +75,23 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> ProofService<S
         }
     }
 
-    /// Start the proof service background tasks
+    /// Start the proof service background task.
     pub fn start_service(self: Arc<Self>) -> Result<(), String> {
         let inner = self.inner.clone();
         self.inner.executor.spawn(
-            async move { inner.monitor_events_task().await },
+            async move { inner.monitor_task().await },
             "proof_service_monitor",
         );
 
-        let inner = self.inner.clone();
-        self.inner.executor.spawn(
-            async move { inner.monitor_proof_engine_events_task().await },
-            "proof_service_proof_engine_monitor",
-        );
-
-        info!("Proof service started - monitoring beacon events and proof engine events");
+        info!("Proof service started - monitoring beacon and proof engine events");
         Ok(())
-    }
-
-    /// Public method called by HTTP API when proof engine callbacks with unsigned proof
-    ///
-    /// This is the reactive endpoint that receives proofs from the proof engine
-    /// and signs them with validator keys before submitting to beacon nodes.
-    pub async fn handle_proof_request(
-        &self,
-        pubkey: PublicKey,
-        execution_proof: ExecutionProof,
-        epoch: Option<Epoch>,
-    ) -> Result<(), String> {
-        self.inner
-            .sign_and_submit_proof(pubkey, execution_proof, epoch)
-            .await
     }
 }
 
 impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> Inner<S, T> {
-    // ─── Beacon node event monitoring (existing) ────────────────────────
+    // ─── Event monitoring ───────────────────────────────────────────────
 
-    /// Subscribe to both `Block` and `ExecutionProofValidated` events via a single SSE stream.
+    /// Subscribe to `Block` events via SSE.
     async fn subscribe_to_events(
         &self,
     ) -> Result<
@@ -127,26 +99,39 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> Inner<S, T> {
         String,
     > {
         self.beacon_nodes
-            .first_success(|node| async move {
-                node.get_events::<S::E>(&[EventTopic::Block, EventTopic::ExecutionProofValidated])
-                    .await
-            })
+            .first_success(
+                |node| async move { node.get_events::<S::E>(&[EventTopic::Block]).await },
+            )
             .await
             .map_err(|e| format!("All beacon nodes failed to provide event stream: {}", e))
     }
 
-    /// Monitor block and validated-proof events over a single SSE connection.
-    async fn monitor_events_task(self: Arc<Self>) {
+    /// Monitor beacon-node block events and proof-engine events over SSE.
+    async fn monitor_task(self: Arc<Self>) {
         info!("Starting proof service event monitoring via SSE");
 
         loop {
-            match self.subscribe_to_events().await {
-                Ok(mut stream) => {
-                    info!("Successfully subscribed to block and execution proof events");
+            let mut beacon_stream = match self.subscribe_to_events().await {
+                Ok(stream) => {
+                    info!("Successfully subscribed to block events");
+                    stream
+                }
+                Err(e) => {
+                    error!(error = %e, "Failed to subscribe to block events, retrying...");
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+            };
+            let mut proof_stream = self.proof_engine.subscribe_proof_events(None);
+            let mut cleanup_interval = tokio::time::interval(PROOF_REQUEST_STALE_TIMEOUT);
+            cleanup_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            cleanup_interval.tick().await;
 
-                    while let Some(event_result) = stream.next().await {
+            loop {
+                tokio::select! {
+                    event_result = beacon_stream.next() => {
                         match event_result {
-                            Ok(EventKind::Block(sse_block)) => {
+                            Some(Ok(EventKind::Block(sse_block))) => {
                                 if sse_block.execution_optimistic {
                                     debug!(
                                         slot = sse_block.slot.as_u64(),
@@ -154,24 +139,37 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> Inner<S, T> {
                                     );
                                     continue;
                                 }
-                                self.handle_block_event(sse_block.block, sse_block.slot)
-                                    .await;
+                                self.handle_block_event(sse_block.block, sse_block.slot).await;
                             }
-                            Ok(EventKind::ExecutionProofValidated(proof_event)) => {
-                                self.handle_validated_proof(proof_event).await;
+                            Some(Ok(_)) => {}
+                            Some(Err(e)) => {
+                                warn!(error = %e, "Beacon event stream error, will reconnect");
+                                break;
                             }
-                            Ok(_) => {}
-                            Err(e) => {
-                                warn!(error = %e, "Error receiving event, will reconnect");
+                            None => {
+                                warn!("Beacon event stream ended, reconnecting...");
                                 break;
                             }
                         }
                     }
-
-                    warn!("Event stream ended, reconnecting...");
-                }
-                Err(e) => {
-                    error!(error = %e, "Failed to subscribe to events, retrying...");
+                    event = proof_stream.next() => {
+                        match event {
+                            Some(Ok(proof_event)) => {
+                                self.handle_proof_engine_event(proof_event).await;
+                            }
+                            Some(Err(e)) => {
+                                warn!(error = %e, "Proof engine SSE error, will reconnect");
+                                break;
+                            }
+                            None => {
+                                warn!("Proof engine SSE stream ended, reconnecting...");
+                                break;
+                            }
+                        }
+                    }
+                    _ = cleanup_interval.tick() => {
+                        self.cleanup_stale_requests();
+                    }
                 }
             }
 
@@ -244,85 +242,6 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> Inner<S, T> {
             Err(e) => {
                 error!(block = %block_root, error = ?e, "Failed to request proofs from proof engine");
             }
-        }
-    }
-
-    /// Handle a validated proof event by resigning with the first local validator key.
-    async fn handle_validated_proof(&self, event: SseExecutionProofValidated) {
-        let execution_proof = event.execution_proof;
-        let epoch = Epoch::new(event.epoch);
-
-        let Some(pubkey) = self
-            .validator_store
-            .voting_pubkeys::<Vec<_>, _>(DoppelgangerStatus::ignored)
-            .first()
-            .cloned()
-        else {
-            warn!("No local validators available to resign proof");
-            return;
-        };
-
-        match self
-            .validator_store
-            .sign_execution_proof(pubkey, execution_proof, epoch)
-            .await
-        {
-            Ok(signed_proof) => {
-                match self
-                    .beacon_nodes
-                    .first_success(move |node| {
-                        let proof = signed_proof.clone();
-                        async move { node.post_beacon_execution_proofs(&[proof]).await }
-                    })
-                    .await
-                {
-                    Ok(_) => {
-                        info!(?pubkey, "Resigned proof submitted");
-                    }
-                    Err(e) => {
-                        warn!(?pubkey, error = %e, "Failed to submit resigned proof");
-                    }
-                }
-            }
-            Err(e) => {
-                warn!(?pubkey, error = ?e, "Failed to sign proof for validator");
-            }
-        }
-    }
-
-    // ─── Proof engine event monitoring (new) ────────────────────────────
-
-    /// Monitor proof engine SSE events for proof completion, failure, and timeouts.
-    async fn monitor_proof_engine_events_task(self: Arc<Self>) {
-        info!("Starting proof engine event monitoring via SSE");
-
-        loop {
-            let mut stream = self.proof_engine.subscribe_proof_events(None);
-
-            loop {
-                tokio::select! {
-                    event = stream.next() => {
-                        match event {
-                            Some(Ok(proof_event)) => {
-                                self.handle_proof_engine_event(proof_event).await;
-                            }
-                            Some(Err(e)) => {
-                                warn!(error = %e, "Proof engine SSE error, will reconnect");
-                                break;
-                            }
-                            None => {
-                                warn!("Proof engine SSE stream ended, reconnecting...");
-                                break;
-                            }
-                        }
-                    }
-                    _ = tokio::time::sleep(PROOF_REQUEST_STALE_TIMEOUT) => {
-                        self.cleanup_stale_requests();
-                    }
-                }
-            }
-
-            tokio::time::sleep(Duration::from_secs(2)).await;
         }
     }
 
@@ -479,54 +398,5 @@ impl<S: ValidatorStore + 'static, T: 'static + SlotClock + Clone> Inner<S, T> {
         if removed > 0 {
             info!(removed, "Cleaned up stale proof requests");
         }
-    }
-
-    // ─── Reactive signing (existing) ────────────────────────────────────
-
-    /// Reactive: Sign and submit proof (called by HTTP API)
-    async fn sign_and_submit_proof(
-        &self,
-        pubkey: PublicKey,
-        execution_proof: ExecutionProof,
-        epoch: Option<Epoch>,
-    ) -> Result<(), String> {
-        // Determine epoch for signing context
-        let epoch = epoch.unwrap_or_else(|| {
-            self.slot_clock
-                .now()
-                .map(|slot| slot.epoch(S::E::slots_per_epoch()))
-                .unwrap_or(Epoch::new(0))
-        });
-
-        let pubkey_bytes = pubkey.clone();
-        info!(
-            validator = %pubkey,
-            %epoch,
-            "Signing execution proof"
-        );
-
-        // Sign the proof
-        let signed_proof = self
-            .validator_store
-            .sign_execution_proof(pubkey_bytes.into(), execution_proof, epoch)
-            .await
-            .map_err(|e| format!("Failed to sign execution proof: {:?}", e))?;
-
-        // Submit to beacon node
-        let signed_proof_for_submission = signed_proof.clone();
-        self.beacon_nodes
-            .first_success(move |node| {
-                let proof_clone = signed_proof_for_submission.clone();
-                async move { node.post_beacon_execution_proofs(&[proof_clone]).await }
-            })
-            .await
-            .map_err(|e| format!("Failed to submit proof to beacon node: {}", e))?;
-
-        info!(
-            validator = %pubkey,
-            "Successfully submitted signed execution proof to beacon node"
-        );
-
-        Ok(())
     }
 }

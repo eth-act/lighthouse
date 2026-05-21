@@ -1317,6 +1317,7 @@ dependencies = [
  "strum",
  "task_executor",
  "tracing",
+ "typenum",
  "types",
 ]
 
@@ -9799,6 +9800,7 @@ dependencies = [
  "slot_clock",
  "tokio",
  "tracing",
+ "typenum",
  "types",
  "validator_http_api",
  "validator_http_metrics",

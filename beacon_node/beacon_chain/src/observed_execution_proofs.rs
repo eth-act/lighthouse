@@ -1,13 +1,15 @@
 //! Deduplication cache for execution proofs received via gossip.
 //!
-//! Implements IGNORE-2 and IGNORE-3 from the EIP-8025 p2p-interface spec:
+//! Implements gossip IGNORE rules from the EIP-8025 p2p-interface spec:
 //! - IGNORE-2: No valid proof already received for `(request_root, proof_type)`
 //! - IGNORE-3: First proof from validator for `(request_root, proof_type, validator_index)`
 //!
-//! Entries are evicted at finalization: proofs for finalized blocks are irrelevant.
+//! Request-root scoped entries are evicted at finalization: proofs for finalized blocks are
+//! irrelevant. Invalid proof-data entries are process-local and retained until restart.
 
-use bls::PublicKeyBytes;
 use std::collections::{HashMap, HashSet};
+use tree_hash::TreeHash;
+use types::execution::eip8025::ProofData;
 use types::{Hash256, ProofType, Slot};
 
 /// Gossip deduplication cache for execution proofs.
@@ -19,9 +21,13 @@ pub struct ObservedExecutionProofs {
     /// Used to implement IGNORE-2.
     valid_proofs: HashMap<(Hash256, ProofType), ()>,
 
-    /// Tracks `(request_root, proof_type, validator_pubkey)` triples we have already attempted
+    /// Tracks `(request_root, proof_type, validator_index)` triples we have already attempted
     /// to verify (regardless of outcome). Used to implement IGNORE-3.
-    seen_from_validator: HashSet<(Hash256, ProofType, PublicKeyBytes)>,
+    seen_from_validator: HashSet<(Hash256, ProofType, u64)>,
+
+    /// Tracks `(proof_type, hash_tree_root(proof_data))` pairs for proofs already rejected by the
+    /// proof engine.
+    invalid_proofs: HashSet<(ProofType, Hash256)>,
 
     /// Maps slot → set of request roots observed at that slot. Populated when a valid/accepted
     /// proof is observed. Used to prune `valid_proofs` and `seen_from_validator` at finalization.
@@ -31,6 +37,8 @@ pub struct ObservedExecutionProofs {
 /// Result of checking the dedup cache.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProofObservation {
+    /// We already rejected this `(proof_type, proof_data)` pair.
+    AlreadyRejectedProof,
     /// We already have a valid proof for this `(request_root, proof_type)` — IGNORE-2.
     AlreadyHaveValidProof,
     /// We already saw a proof from this validator for this `(request_root, proof_type)` — IGNORE-3.
@@ -43,12 +51,13 @@ impl ObservedExecutionProofs {
     /// Check whether a proof should be processed or ignored based on the dedup rules.
     ///
     /// This does *not* insert the proof into the cache; call [`observe_verification_attempt`]
-    /// and [`observe_valid_proof`] after verification completes.
+    /// and then [`observe_invalid_proof`] or [`observe_valid_proof`] after verification completes.
     pub fn check(
         &self,
         request_root: Hash256,
         proof_type: ProofType,
-        validator_pubkey: &PublicKeyBytes,
+        proof_data: &ProofData,
+        validator_index: u64,
     ) -> ProofObservation {
         // IGNORE-2: already have a valid proof for this (root, type)
         if self.valid_proofs.contains_key(&(request_root, proof_type)) {
@@ -58,9 +67,16 @@ impl ObservedExecutionProofs {
         // IGNORE-3: already saw a proof from this validator for this (root, type)
         if self
             .seen_from_validator
-            .contains(&(request_root, proof_type, *validator_pubkey))
+            .contains(&(request_root, proof_type, validator_index))
         {
             return ProofObservation::DuplicateFromValidator;
+        }
+
+        if self
+            .invalid_proofs
+            .contains(&(proof_type, proof_data.tree_hash_root()))
+        {
+            return ProofObservation::AlreadyRejectedProof;
         }
 
         ProofObservation::New
@@ -72,10 +88,17 @@ impl ObservedExecutionProofs {
         &mut self,
         request_root: Hash256,
         proof_type: ProofType,
-        validator_pubkey: PublicKeyBytes,
+        validator_index: u64,
     ) {
         self.seen_from_validator
-            .insert((request_root, proof_type, validator_pubkey));
+            .insert((request_root, proof_type, validator_index));
+    }
+
+    /// Record that the proof engine rejected this `(proof_type, proof_data)` pair.
+    /// Returns `true` if this is the first rejection recorded for the pair.
+    pub fn observe_invalid_proof(&mut self, proof_type: ProofType, proof_data: &ProofData) -> bool {
+        self.invalid_proofs
+            .insert((proof_type, proof_data.tree_hash_root()))
     }
 
     /// Record that a valid proof was received for `(request_root, proof_type)` at `slot`.
@@ -96,7 +119,7 @@ impl ObservedExecutionProofs {
     ///
     /// Call at finalization. Any proof for a finalized block will never need dedup again.
     /// Entries in `seen_from_validator` without a known slot (e.g. for proofs that failed
-    /// BLS or engine verification) are retained — those validators are typically banned anyway.
+    /// BLS or engine verification) are retained until restart.
     pub fn prune(&mut self, finalized_slot: Slot) {
         let pruned_roots: HashSet<Hash256> = self
             .slot_to_request_roots
@@ -118,64 +141,116 @@ impl ObservedExecutionProofs {
     pub fn seen_from_validator_count(&self) -> usize {
         self.seen_from_validator.len()
     }
+
+    /// Number of invalid proof-data entries (for metrics / tests).
+    pub fn invalid_proof_count(&self) -> usize {
+        self.invalid_proofs.len()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Generate a deterministic pubkey from a seed index using the standard test utility.
-    fn test_pubkey(index: usize) -> PublicKeyBytes {
-        types::test_utils::generate_deterministic_keypair(index)
-            .pk
-            .compress()
+    fn make_proof_data(bytes: &[u8]) -> ProofData {
+        ProofData::new(bytes.to_vec()).expect("proof data should fit")
     }
 
     #[test]
     fn new_proof_is_observed() {
         let cache = ObservedExecutionProofs::default();
         let root = Hash256::repeat_byte(0x01);
-        let pk = test_pubkey(42);
-        assert_eq!(cache.check(root, 1, &pk), ProofObservation::New);
+        let proof_data = make_proof_data(&[1, 2, 3]);
+        assert_eq!(cache.check(root, 1, &proof_data, 42), ProofObservation::New);
     }
 
     #[test]
     fn ignore_2_valid_proof_dedup() {
         let mut cache = ObservedExecutionProofs::default();
         let root = Hash256::repeat_byte(0x01);
-        let pk = test_pubkey(99);
+        let proof_data = make_proof_data(&[1, 2, 3]);
 
         cache.observe_valid_proof(root, 1, Slot::new(1));
 
         // Same (root, type) from a different validator → still IGNORE
         assert_eq!(
-            cache.check(root, 1, &pk),
+            cache.check(root, 1, &proof_data, 99),
             ProofObservation::AlreadyHaveValidProof
         );
 
         // Different type → New
-        assert_eq!(cache.check(root, 2, &pk), ProofObservation::New);
+        assert_eq!(cache.check(root, 2, &proof_data, 99), ProofObservation::New);
+    }
+
+    #[test]
+    fn invalid_proof_data_dedup_uses_type_and_data_root() {
+        let mut cache = ObservedExecutionProofs::default();
+        let root = Hash256::repeat_byte(0x01);
+        let other_root = Hash256::repeat_byte(0x02);
+        let proof_data = make_proof_data(&[1, 2, 3]);
+        let other_proof_data = make_proof_data(&[4, 5, 6]);
+
+        assert!(cache.observe_invalid_proof(1, &proof_data));
+        assert!(!cache.observe_invalid_proof(1, &proof_data));
+
+        assert_eq!(
+            cache.check(other_root, 1, &proof_data, 99),
+            ProofObservation::AlreadyRejectedProof
+        );
+
+        // Same proof data with a different type is a distinct cache key.
+        assert_eq!(cache.check(root, 2, &proof_data, 42), ProofObservation::New);
+
+        // Same type with different proof data is a distinct cache key.
+        assert_eq!(
+            cache.check(root, 1, &other_proof_data, 42),
+            ProofObservation::New
+        );
+
+        assert_eq!(cache.invalid_proof_count(), 1);
+    }
+
+    #[test]
+    fn cheap_dedup_checks_precede_invalid_proof_data_rooting() {
+        let mut cache = ObservedExecutionProofs::default();
+        let root = Hash256::repeat_byte(0x01);
+        let proof_data = make_proof_data(&[1, 2, 3]);
+
+        cache.observe_valid_proof(root, 1, Slot::new(1));
+        cache.observe_invalid_proof(1, &proof_data);
+
+        assert_eq!(
+            cache.check(root, 1, &proof_data, 42),
+            ProofObservation::AlreadyHaveValidProof
+        );
+
+        let other_root = Hash256::repeat_byte(0x02);
+        cache.observe_verification_attempt(other_root, 1, 42);
+
+        assert_eq!(
+            cache.check(other_root, 1, &proof_data, 42),
+            ProofObservation::DuplicateFromValidator
+        );
     }
 
     #[test]
     fn ignore_3_validator_dedup() {
         let mut cache = ObservedExecutionProofs::default();
         let root = Hash256::repeat_byte(0x01);
-        let pk_42 = test_pubkey(42);
-        let pk_43 = test_pubkey(43);
+        let proof_data = make_proof_data(&[1, 2, 3]);
 
-        cache.observe_verification_attempt(root, 1, pk_42);
+        cache.observe_verification_attempt(root, 1, 42);
 
         assert_eq!(
-            cache.check(root, 1, &pk_42),
+            cache.check(root, 1, &proof_data, 42),
             ProofObservation::DuplicateFromValidator
         );
 
         // Same validator, different type → New
-        assert_eq!(cache.check(root, 2, &pk_42), ProofObservation::New);
+        assert_eq!(cache.check(root, 2, &proof_data, 42), ProofObservation::New);
 
         // Different validator, same type → New
-        assert_eq!(cache.check(root, 1, &pk_43), ProofObservation::New);
+        assert_eq!(cache.check(root, 1, &proof_data, 43), ProofObservation::New);
     }
 
     #[test]
@@ -183,15 +258,13 @@ mod tests {
         let mut cache = ObservedExecutionProofs::default();
         let root_a = Hash256::repeat_byte(0x01);
         let root_b = Hash256::repeat_byte(0x02);
-        let pk_42 = test_pubkey(42);
-        let pk_43 = test_pubkey(43);
-        let pk_99 = test_pubkey(99);
+        let proof_data = make_proof_data(&[1, 2, 3]);
 
         // root_a at slot 10 (will be finalized), root_b at slot 20 (will be retained).
         cache.observe_valid_proof(root_a, 1, Slot::new(10));
         cache.observe_valid_proof(root_b, 1, Slot::new(20));
-        cache.observe_verification_attempt(root_a, 1, pk_42);
-        cache.observe_verification_attempt(root_b, 1, pk_43);
+        cache.observe_verification_attempt(root_a, 1, 42);
+        cache.observe_verification_attempt(root_b, 1, 43);
 
         cache.prune(Slot::new(15));
 
@@ -199,10 +272,13 @@ mod tests {
         assert_eq!(cache.seen_from_validator_count(), 1);
         // root_b still tracked
         assert_eq!(
-            cache.check(root_b, 1, &pk_99),
+            cache.check(root_b, 1, &proof_data, 99),
             ProofObservation::AlreadyHaveValidProof
         );
         // root_a gone → New
-        assert_eq!(cache.check(root_a, 1, &pk_42), ProofObservation::New);
+        assert_eq!(
+            cache.check(root_a, 1, &proof_data, 42),
+            ProofObservation::New
+        );
     }
 }

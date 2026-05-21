@@ -19,7 +19,9 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 use tracing::{info, warn};
+use typenum::Unsigned;
 use types::GRAFFITI_BYTES_LEN;
+use types::execution::eip8025::MaxExecutionProofsPerPayload;
 use validator_http_api::{self, PK_FILENAME};
 use validator_http_metrics;
 
@@ -309,6 +311,12 @@ impl Config {
                 .map(ProofType::from_u8)
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| format!("Invalid --proof-types value: {e:?}"))?;
+            if types.len() > MaxExecutionProofsPerPayload::to_usize() {
+                return Err(format!(
+                    "--proof-types supports at most {} values",
+                    MaxExecutionProofsPerPayload::to_usize()
+                ));
+            }
             ProofTypes::from(types)
         } else {
             ProofTypes::default()
