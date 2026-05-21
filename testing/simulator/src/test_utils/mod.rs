@@ -9,7 +9,10 @@ pub use crate::local_network::{LocalNetwork, LocalNetworkParams, NodeType};
 pub use beacon_chain::internal_events::InternalBeaconNodeEvent;
 pub use environment::LoggerConfig;
 pub use environment::test_utils::TestEnvironment;
-pub use eth2::{BeaconNodeHttpClient, types::StateId};
+pub use eth2::{
+    BeaconNodeHttpClient,
+    types::{AdminPeer, StateId},
+};
 pub use execution_layer::test_utils::{MockClientEvent, MockEventStream};
 mod event_stream;
 pub use event_stream::EventStream;

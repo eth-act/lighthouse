@@ -334,10 +334,12 @@ install-audit:
 	cargo install --force cargo-audit
 
 audit-CI:
-	# RUSTSEC-2026-0098/0099: rustls-webpki 0.102.x (pulled via warp 0.3 → rustls 0.22)
-	# has no fix on that line; upgrading requires a warp major bump. The 0.103.x usage
-	# has been bumped to 0.103.12 which contains the fix.
-	cargo audit --ignore RUSTSEC-2026-0049 --ignore RUSTSEC-2026-0098 --ignore RUSTSEC-2026-0099
+	# RUSTSEC-2026-0098/0099/0104: rustls-webpki 0.102.x is pulled via
+	# warp 0.3 -> rustls 0.22; fixing that line requires a warp major bump.
+	# The 0.103.x usage is bumped to 0.103.13, which contains the 0104 fix.
+	# RUSTSEC-2026-0118/0119: hickory-proto 0.25.x is pulled via
+	# libp2p 0.56 -> libp2p-dns 0.44; fixing requires a libp2p/hickory upgrade.
+	cargo audit --ignore RUSTSEC-2026-0049 --ignore RUSTSEC-2026-0098 --ignore RUSTSEC-2026-0099 --ignore RUSTSEC-2026-0104 --ignore RUSTSEC-2026-0118 --ignore RUSTSEC-2026-0119
 
 # Runs cargo deny (check for banned crates, duplicate versions, and source restrictions)
 deny: install-deny deny-CI

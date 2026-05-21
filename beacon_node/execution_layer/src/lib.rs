@@ -84,6 +84,21 @@ fn prefer_ok<T, E>(a: Option<Result<T, E>>, b: Option<Result<T, E>>) -> Option<R
     }
 }
 
+fn payload_status_syncing() -> PayloadStatusV1 {
+    PayloadStatusV1 {
+        status: PayloadStatusV1Status::Syncing,
+        latest_valid_hash: None,
+        validation_error: None,
+    }
+}
+
+fn forkchoice_updated_syncing() -> ForkchoiceUpdatedResponse {
+    ForkchoiceUpdatedResponse {
+        payload_status: payload_status_syncing(),
+        payload_id: None,
+    }
+}
+
 /// Indicates the default jwt authenticated execution endpoint.
 pub const DEFAULT_EXECUTION_ENDPOINT: &str = "http://localhost:8551/";
 
@@ -1486,6 +1501,7 @@ impl<E: EthSpec> ExecutionLayer<E> {
         let block_hash = new_payload_request.block_hash();
         let parent_hash = new_payload_request.parent_hash();
 
+        let has_engine = self.engine().is_some();
         let engine_result = if let Some(engine) = self.engine() {
             Some(
                 engine
@@ -1501,7 +1517,7 @@ impl<E: EthSpec> ExecutionLayer<E> {
                 Ok(status) => Some(Ok(status)),
                 Err(e) => {
                     debug!(error = ?e, "Proof engine new_payload error (non-fatal)");
-                    None
+                    (!has_engine).then(|| Ok(payload_status_syncing()))
                 }
             }
         } else {
@@ -1644,6 +1660,7 @@ impl<E: EthSpec> ExecutionLayer<E> {
             finalized_block_hash,
         };
 
+        let has_engine = self.engine().is_some();
         let engine_result = if let Some(engine) = self.engine() {
             engine.set_latest_forkchoice_state(forkchoice_state).await;
 
@@ -1665,7 +1682,7 @@ impl<E: EthSpec> ExecutionLayer<E> {
                 Ok(response) => Some(Ok(response)),
                 Err(e) => {
                     debug!(error = ?e, "Proof engine forkchoice_updated error (non-fatal)");
-                    None
+                    (!has_engine).then(|| Ok(forkchoice_updated_syncing()))
                 }
             }
         } else {

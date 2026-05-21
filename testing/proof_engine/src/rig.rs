@@ -5,8 +5,8 @@
 
 use anyhow::anyhow;
 use simulator::test_utils::{
-    BeaconNodeHttpClient, Epoch, EventStream, InternalBeaconNodeEvent, LocalNetworkParams,
-    NodeType, TestNetworkFixture, TestNetworkFixtureBuilder,
+    AdminPeer, BeaconNodeHttpClient, Epoch, EventStream, InternalBeaconNodeEvent,
+    LocalNetworkParams, NodeType, TestNetworkFixture, TestNetworkFixtureBuilder,
 };
 use types::MinimalEthSpec;
 
@@ -163,8 +163,23 @@ impl ProofEngineTestRig {
     pub async fn add_proof_verifier_and_subscribe(
         &self,
     ) -> anyhow::Result<(MockEventStream, EventStream<InternalBeaconNodeEvent>)> {
-        let client_config = self.fixture.config.client.clone();
+        let mut client_config = self.fixture.config.client.clone();
         let exec_config = self.fixture.config.execution.clone();
+
+        // The late verifier needs a direct route to the proof generator in this tiny topology.
+        // Relying on discovery via the default node is too slow for the sync test on CI.
+        let existing_enrs: Vec<_> = self
+            .fixture
+            .network
+            .beacon_nodes
+            .read()
+            .iter()
+            .filter_map(|bn| bn.client.enr())
+            .collect();
+        client_config
+            .network
+            .boot_nodes_enr
+            .extend(existing_enrs.iter().cloned());
 
         // Await the node start so we know its index in beacon_nodes before subscribing.
         // Spawning + sleeping is unreliable on slow CI runners where node startup takes
@@ -195,6 +210,21 @@ impl ProofEngineTestRig {
             .node_subscribe_internal_events(idx)
             .map(EventStream::from)
             .ok_or_else(|| anyhow!("newly added verifier node has no beacon chain"))?;
+
+        let verifier = self
+            .fixture
+            .network
+            .remote_node(idx)
+            .ok_or_else(|| anyhow!("newly added verifier node has no HTTP client"))?;
+        for enr in existing_enrs {
+            verifier
+                .post_lighthouse_add_peer(AdminPeer {
+                    enr: enr.to_string(),
+                })
+                .await
+                .map_err(|e| anyhow!("failed to add trusted proof-sync peer: {e:?}"))?;
+        }
+
         Ok((mock, chain))
     }
 
