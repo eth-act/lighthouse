@@ -79,13 +79,15 @@ mod test {
 
         // The late verifier must then observe proof data, either as an RPC response or as a
         // verified proof received after its direct proof-generator peer connection is established.
+        // `Accepted` means the proof content is verified, but the block is not yet canonical
+        // enough to mark as fully valid.
         verifier_chain
             .collect_n(
                 1,
                 |e| match e {
                     InternalBeaconNodeEvent::RpcExecutionProof(_) => true,
                     InternalBeaconNodeEvent::ExecutionProofVerified { status, .. } => {
-                        status.is_valid()
+                        status.is_valid() || status.is_accepted()
                     }
                     _ => false,
                 },
