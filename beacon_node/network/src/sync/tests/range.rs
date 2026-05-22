@@ -75,10 +75,18 @@ fn filter() -> RequestFilter {
 }
 
 fn execution_proof_status(slot: u64, block_root: Hash256) -> ExecutionProofStatus {
+    execution_proof_status_with_types(slot, block_root, &[0, 1, 2, 3])
+}
+
+fn execution_proof_status_with_types(
+    slot: u64,
+    block_root: Hash256,
+    proof_types: &[u8],
+) -> ExecutionProofStatus {
     ExecutionProofStatus {
         block_root,
         slot,
-        proof_types: VariableList::new(vec![0, 1, 2, 3])
+        proof_types: VariableList::new(proof_types.to_vec())
             .expect("test proof types fit the execution proof status bound"),
     }
 }
@@ -1502,7 +1510,81 @@ fn test_proof_sync_no_request_when_missing_slot_ahead_of_peer() {
     rig.expect_empty_network();
 }
 
-/// Test 25: Non-consecutive fully-missing slots are covered by a single range request whose
+/// Test 25: A peer whose `ExecutionProofStatus.proof_types` has no overlap with
+/// the locally missing proof types must not be selected for proof sync.
+#[test]
+fn test_proof_sync_ignores_peer_with_disjoint_proof_types() {
+    let mut rig = TestRig::test_setup();
+    let proof_peer = rig.new_connected_proof_capable_peer();
+    let genesis_root = rig
+        .harness
+        .chain
+        .canonical_head
+        .cached_head()
+        .head_block_root();
+
+    // Local default proof types are [0, 1, 2, 3]. This peer advertises only type 4.
+    rig.send_sync_message(SyncMessage::RpcExecutionProofStatus {
+        peer_id: proof_peer,
+        request_id: None,
+        status: execution_proof_status_with_types(0, genesis_root, &[4]),
+    });
+
+    rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(vec![MissingProofInfo {
+        root: Hash256::random(),
+        existing_proof_types: vec![],
+        slot: Slot::new(0),
+    }]);
+
+    rig.sync_manager.start_proof_sync();
+    rig.drain_execution_proof_status_requests();
+    rig.sync_manager.poll_proof_sync();
+
+    rig.expect_no_execution_proof_range_request();
+    rig.expect_empty_network();
+}
+
+/// Test 26: When one cached peer advertises a matching proof type and another does not,
+/// proof sync must select the matching peer.
+#[test]
+fn test_proof_sync_selects_peer_with_matching_proof_types() {
+    let mut rig = TestRig::test_setup();
+    let disjoint_peer = rig.new_connected_proof_capable_peer();
+    let matching_peer = rig.new_connected_proof_capable_peer();
+    let genesis_root = rig
+        .harness
+        .chain
+        .canonical_head
+        .cached_head()
+        .head_block_root();
+
+    rig.send_sync_message(SyncMessage::RpcExecutionProofStatus {
+        peer_id: disjoint_peer,
+        request_id: None,
+        status: execution_proof_status_with_types(0, genesis_root, &[4]),
+    });
+    rig.send_sync_message(SyncMessage::RpcExecutionProofStatus {
+        peer_id: matching_peer,
+        request_id: None,
+        status: execution_proof_status_with_types(0, genesis_root, &[1]),
+    });
+
+    rig.sync_manager.proof_sync_mut().test_missing_proofs = Some(vec![MissingProofInfo {
+        root: Hash256::random(),
+        existing_proof_types: vec![],
+        slot: Slot::new(0),
+    }]);
+
+    rig.sync_manager.start_proof_sync();
+    rig.drain_execution_proof_status_requests();
+    rig.sync_manager.poll_proof_sync();
+
+    let (_, peer_id) = rig.find_execution_proofs_by_range_request();
+    assert_eq!(peer_id, matching_peer);
+    rig.expect_empty_network();
+}
+
+/// Test 27: Non-consecutive fully-missing slots are covered by a single range request whose
 /// `count` spans from the first slot to the last (inclusive), bridging any gaps.
 ///
 /// The span is still dense enough for the flat by-range request.
@@ -1541,7 +1623,7 @@ fn test_proof_sync_range_spans_non_consecutive_slots() {
     );
 }
 
-/// Test 26: Sparse partial proofs use by-root, while dense mixed proofs use by-range.
+/// Test 28: Sparse partial proofs use by-root, while dense mixed proofs use by-range.
 #[test]
 fn test_proof_sync_range_vs_root_size_decision() {
     // Sparse partial proofs → root chosen.
