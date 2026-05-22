@@ -382,9 +382,6 @@ pub enum DBColumn {
     /// For persisting ProofEngine state (EIP-8025).
     #[strum(serialize = "prf")]
     ProofEngine,
-    /// For persisting banned validators that signed invalid execution proofs (EIP-8025).
-    #[strum(serialize = "ipt")]
-    InvalidProofTracker,
 }
 
 /// A block from the database, which might have an execution payload or not.
@@ -428,8 +425,7 @@ impl DBColumn {
             | Self::DhtEnrs
             | Self::CustodyContext
             | Self::OptimisticTransitionBlock
-            | Self::ProofEngine
-            | Self::InvalidProofTracker => 32,
+            | Self::ProofEngine => 32,
             Self::BeaconBlockRoots
             | Self::BeaconDataColumnCustodyInfo
             | Self::BeaconBlockRootsChunked

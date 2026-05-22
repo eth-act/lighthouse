@@ -38,6 +38,7 @@ store = { workspace = true }
 strum = { workspace = true }
 task_executor = { workspace = true }
 tracing = { workspace = true }
+typenum = { workspace = true }
 types = { workspace = true }
 
 [dev-dependencies]

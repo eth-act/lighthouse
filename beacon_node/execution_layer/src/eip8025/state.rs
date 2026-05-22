@@ -67,6 +67,11 @@ impl State {
             return vec![];
         };
 
+        let finalized_number = (!latest_fcs.finalized_block_hash.is_zero())
+            .then_some(latest_fcs.finalized_block_hash)
+            .and_then(|finalized| self.block_number_for_hash(finalized))
+            .or_else(|| self.block_number_for_hash(self.last_valid_fcs.finalized_block_hash));
+
         // Build block_hash → &PayloadRequest for O(1) lookup during the walk.
         let buffer_by_block_hash: HashMap<ExecutionBlockHash, &PayloadRequest> = self
             .buffer
@@ -81,6 +86,10 @@ impl State {
         let mut result = Vec::new();
         let mut current = latest_fcs.head_block_hash;
         while let Some(req) = buffer_by_block_hash.get(&current) {
+            if finalized_number.is_some_and(|number| req.metadata.block_number <= number) {
+                break;
+            }
+
             result.push(MissingProofInfo {
                 root: req.metadata.request_root,
                 existing_proof_types: req.proofs.iter().map(|p| p.message.proof_type).collect(),
@@ -154,6 +163,10 @@ impl State {
 
             tracing::info!(target: "execution_layer", ?finalized, "Updated last_valid_fcs to finalized block (tree empty)");
 
+            if self.block_number_for_hash(finalized).is_some() {
+                self.prune_finalized_sidechains(finalized)?;
+            }
+
             // Check if any buffered requests can be promoted based on the new last_valid_fcs.
             let mut promote_requests = Vec::new();
             for request in self.buffer.proofs.keys() {
@@ -187,6 +200,9 @@ impl State {
         // If we have not observed the head block hash yet, we cannot validate the forkchoice
         if !self.tree.proofs_by_block_hash.contains_key(&head) {
             tracing::debug!(target: "execution_layer", ?head, "Forkchoice update head not found in tree state, marking as syncing");
+            if self.block_number_for_hash(finalized).is_some() {
+                self.prune_finalized_sidechains(finalized)?;
+            }
             self.latest_fcs = Some(forkchoice_state);
             return Ok(self.forkchoice_response_syncing());
         }
@@ -482,6 +498,13 @@ impl State {
             .proofs_by_block_hash
             .get(&block_hash)
             .map(|p| p.metadata.block_number)
+            .or_else(|| {
+                self.buffer
+                    .proofs
+                    .values()
+                    .find(|entry| entry.metadata.block_hash == block_hash)
+                    .map(|entry| entry.metadata.block_number)
+            })
     }
 
     // TODO: We should also prune buffered requests that are associated with sidechains that have been removed using parent to children mapping.
@@ -489,17 +512,21 @@ impl State {
         &mut self,
         finalized_hash: ExecutionBlockHash,
     ) -> Result<(), ProofEngineStateError> {
+        let finalized_in_tree = self.tree.proofs_by_block_hash.contains_key(&finalized_hash);
+
         // Get the finalized block number.
-        // TODO: Maybe this should just return SYNCING instead.
         let finalized_number = self
             .block_number_for_hash(finalized_hash)
             .ok_or(ProofEngineStateError::BlockNumberNotFound(finalized_hash))?;
 
+        if !finalized_in_tree {
+            self.tree.current_canonical_head = finalized_hash;
+        }
+
         // Remove buffered proofs below or at the finalized block number.
-        self.buffer.proofs.retain(|_root, entry| {
-            (entry.metadata.block_number > finalized_number)
-                || (entry.metadata.block_hash == finalized_hash)
-        });
+        self.buffer
+            .proofs
+            .retain(|_root, entry| entry.metadata.block_number > finalized_number);
 
         // Remove all blocks with a block number below the finalized number.
         let mut block_hashes_to_remove = self
@@ -518,17 +545,26 @@ impl State {
             let _ = self.remove_request(hashes)?;
         }
 
-        // Remove all block hashes at the finalized block number except the finalized hash.
-        let mut to_remove: Vec<_> = if let Some(hashes) = self
-            .tree
-            .block_number_to_block_hash
-            .get_mut(&finalized_number)
-        {
-            let mut to_remove = mem::replace(hashes, HashSet::from([finalized_hash]));
-            to_remove.remove(&finalized_hash);
-            to_remove.into_iter().collect()
+        let mut to_remove: Vec<_> = if finalized_in_tree {
+            // Remove all block hashes at the finalized block number except the finalized hash.
+            if let Some(hashes) = self
+                .tree
+                .block_number_to_block_hash
+                .get_mut(&finalized_number)
+            {
+                let mut to_remove = mem::replace(hashes, HashSet::from([finalized_hash]));
+                to_remove.remove(&finalized_hash);
+                to_remove.into_iter().collect()
+            } else {
+                return Ok(());
+            }
         } else {
-            return Ok(());
+            // If the finalized block is only buffered, all tree entries at this height are stale.
+            self.tree
+                .block_number_to_block_hash
+                .remove(&finalized_number)
+                .map(|hashes| hashes.into_iter().collect())
+                .unwrap_or_default()
         };
 
         // Recursively remove children of the removed block hashes.
@@ -1375,6 +1411,127 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn test_forkchoice_syncing_prunes_finalized_buffer_entries() -> anyhow::Result<()> {
+        let mut state = State::with_min_required_proofs(4);
+        let fixture = TestStateFixtureBuilder::new()
+            .with_proofs_per_block(4)
+            .with_canonical_chain(5)
+            .build();
+
+        state.forkchoice_updated(fixture.genesis_fcs())?;
+        fixture.insert_canonical(&mut state, Some(0))?;
+
+        for index in 1..=4 {
+            state.buffer_request(fixture.canonical_metadata(index));
+        }
+
+        assert!(
+            state
+                .buffer
+                .proofs
+                .contains_key(&fixture.canonical_request_root(1)),
+            "block 1 should start in the buffer"
+        );
+        assert!(
+            state
+                .buffer
+                .proofs
+                .contains_key(&fixture.canonical_request_root(2)),
+            "block 2 should start in the buffer"
+        );
+
+        let finalized = fixture.canonical_block_hash(2);
+        let fcs = create_forkchoice_state(fixture.canonical_block_hash(4), finalized, finalized);
+        let response = state.forkchoice_updated(fcs)?;
+
+        assert_eq!(
+            response.payload_status.status,
+            PayloadStatusV1Status::Syncing,
+            "unknown head should still return SYNCING"
+        );
+        assert_eq!(
+            state.tree.current_canonical_head, finalized,
+            "buffer-only finalized block should become the promotion anchor"
+        );
+        assert!(
+            !state
+                .buffer
+                .proofs
+                .contains_key(&fixture.canonical_request_root(1)),
+            "pre-finalized buffered request should be pruned"
+        );
+        assert!(
+            !state
+                .buffer
+                .proofs
+                .contains_key(&fixture.canonical_request_root(2)),
+            "finalized buffered request should be pruned"
+        );
+        assert!(
+            state
+                .buffer
+                .proofs
+                .contains_key(&fixture.canonical_request_root(3)),
+            "post-finalized buffered request should remain"
+        );
+        assert!(
+            state
+                .buffer
+                .proofs
+                .contains_key(&fixture.canonical_request_root(4)),
+            "head buffered request should remain"
+        );
+
+        let missing_roots: Vec<_> = state
+            .missing_proofs()
+            .into_iter()
+            .map(|info| info.root)
+            .collect();
+        assert_eq!(
+            missing_roots,
+            vec![
+                fixture.canonical_request_root(4),
+                fixture.canonical_request_root(3)
+            ],
+            "missing proofs should be bounded above finalized history"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_missing_proofs_filters_finalized_buffer_entries() {
+        let mut state = State::new();
+        let fixture = TestStateFixtureBuilder::new()
+            .with_canonical_chain(5)
+            .build();
+
+        for index in 0..=4 {
+            state.buffer_request(fixture.canonical_metadata(index));
+        }
+
+        state.latest_fcs = Some(create_forkchoice_state(
+            fixture.canonical_block_hash(4),
+            fixture.canonical_block_hash(2),
+            fixture.canonical_block_hash(2),
+        ));
+
+        let missing_roots: Vec<_> = state
+            .missing_proofs()
+            .into_iter()
+            .map(|info| info.root)
+            .collect();
+        assert_eq!(
+            missing_roots,
+            vec![
+                fixture.canonical_request_root(4),
+                fixture.canonical_request_root(3)
+            ],
+            "missing proofs should not include finalized or pre-finalized buffered requests"
+        );
     }
 
     #[test]

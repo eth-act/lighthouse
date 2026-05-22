@@ -34,6 +34,7 @@ slashing_protection = { workspace = true }
 slot_clock = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+typenum = { workspace = true }
 types  = { workspace = true }
 validator_http_api = { workspace = true }
 validator_http_metrics = { workspace = true }

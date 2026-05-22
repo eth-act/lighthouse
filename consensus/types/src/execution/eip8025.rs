@@ -26,9 +26,6 @@ pub type ProofData = VariableList<u8, MaxProofSize>;
 /// Maximum execution proofs per payload
 pub type MaxExecutionProofsPerPayload = typenum::U4;
 
-/// Proof generation identifier (8 bytes)
-pub type ProofGenId = [u8; 8];
-
 /// Proof type identifier
 pub type ProofType = u8;
 
@@ -161,18 +158,6 @@ impl std::fmt::Display for ProofStatus {
     }
 }
 
-/// A generated proof with its tracking ID.
-///
-/// Used when receiving proofs from the proof engine via the beacon API.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GeneratedProof {
-    /// The proof generation ID for tracking
-    #[serde(with = "serde_utils::bytes_8_hex")]
-    pub proof_gen_id: ProofGenId,
-    /// The generated execution proof
-    pub execution_proof: ExecutionProof,
-}
-
 // =============================================================================
 // Utility Implementations
 // =============================================================================
@@ -186,6 +171,11 @@ impl ExecutionProof {
     /// Returns the size of the proof data in bytes.
     pub fn proof_size(&self) -> usize {
         self.proof_data.len()
+    }
+
+    /// Returns the hash tree root of this execution proof.
+    pub fn hash_tree_root(&self) -> Hash256 {
+        tree_hash::TreeHash::tree_hash_root(self)
     }
 }
 
@@ -338,24 +328,6 @@ mod tests {
         assert!(!ProofStatus::Valid.is_syncing());
         assert!(!ProofStatus::Invalid.is_syncing());
         assert!(!ProofStatus::NotSupported.is_syncing());
-    }
-
-    #[test]
-    fn generated_proof_json_round_trip() {
-        let proof = GeneratedProof {
-            proof_gen_id: [1, 2, 3, 4, 5, 6, 7, 8],
-            execution_proof: ExecutionProof {
-                proof_data: VariableList::new(vec![0xaa, 0xbb, 0xcc]).unwrap(),
-                proof_type: 1,
-                public_input: PublicInput {
-                    new_payload_request_root: Hash256::repeat_byte(0xde),
-                },
-            },
-        };
-
-        let json = serde_json::to_string(&proof).unwrap();
-        let decoded: GeneratedProof = serde_json::from_str(&json).unwrap();
-        assert_eq!(proof, decoded);
     }
 
     #[test]

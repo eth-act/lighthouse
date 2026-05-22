@@ -1,4 +1,5 @@
 use crate::NetworkConfig;
+use crate::execution_proofs::ExecutionProofStatusProofTypes;
 use crate::metrics;
 use crate::nat;
 use crate::network_beacon_processor::InvalidBlockStorage;
@@ -48,6 +49,7 @@ mod tests;
 
 /// The interval (in seconds) that various network metrics will update.
 const METRIC_UPDATE_INTERVAL: u64 = 5;
+
 /// Number of slots before the fork when we should subscribe to the new fork topics.
 const SUBSCRIBE_DELAY_SLOTS: u64 = 2;
 /// Delay after a fork where we unsubscribe from pre-fork topics.
@@ -292,9 +294,23 @@ impl<T: BeaconChainTypes> NetworkService<T> {
         )
         .await?;
 
+        let proof_types = config
+            .proof_types
+            .as_deref()
+            .map(|types| {
+                ProofTypes::from(
+                    types
+                        .iter()
+                        .filter_map(|&t| ProofType::from_u8(t).ok())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .unwrap_or_default();
+
         network_globals.set_local_execution_proof_status(ExecutionProofStatus {
             slot: 0,
             block_root: beacon_chain.genesis_block_root,
+            proof_types: ExecutionProofStatusProofTypes(&proof_types).into(),
         });
 
         // Repopulate the DHT with stored ENR's if discovery is not disabled.
@@ -318,18 +334,6 @@ impl<T: BeaconChainTypes> NetworkService<T> {
         // launch derived network services
 
         // router task
-        let proof_types = config
-            .proof_types
-            .as_deref()
-            .map(|types| {
-                ProofTypes::from(
-                    types
-                        .iter()
-                        .filter_map(|&t| ProofType::from_u8(t).ok())
-                        .collect::<Vec<_>>(),
-                )
-            })
-            .unwrap_or_default();
         let router_send = Router::spawn(
             beacon_chain.clone(),
             network_globals.clone(),
