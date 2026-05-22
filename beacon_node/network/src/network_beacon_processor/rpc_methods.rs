@@ -1326,12 +1326,8 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
 
     /// Handle an `ExecutionProofsByRange` request from the peer (EIP-8025).
     ///
-    /// Streams `SignedExecutionProof` objects known for the requested slot range, filtered by
-    /// `proof_filters` when present. For blocks listed in `proof_filters`:
-    /// - a non-empty `proof_types` list → serve only those types
-    /// - an empty `proof_types` list → skip the block entirely (requester already has all proofs)
-    ///
-    /// Blocks absent from `proof_filters` receive all known proof types.
+    /// Streams `SignedExecutionProof` objects known for the requested slot range, filtered by the
+    /// request's flat `proof_types` list. An empty list returns all known proof types.
     pub fn handle_execution_proofs_by_range_request(
         &self,
         peer_id: PeerId,
@@ -1356,17 +1352,11 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
             %peer_id,
             start_slot = req.start_slot,
             count = req.count,
-            num_filters = req.proof_filters.len(),
+            num_proof_types = req.proof_types.len(),
             "Received ExecutionProofsByRange Request"
         );
 
-        // Build a lookup map: block_root → requested proof types from proof_filters.
-        // Blocks not listed in proof_filters will have all known proof types served.
-        let filter_map: std::collections::HashMap<_, _> = req
-            .proof_filters
-            .iter()
-            .map(|id| (id.block_root, &id.proof_types))
-            .collect();
+        self.check_execution_proofs_by_range_window(req.start_slot, req.count)?;
 
         let block_roots = self.get_block_roots_for_slot_range(
             req.start_slot,
@@ -1376,14 +1366,9 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
 
         let mut proofs_sent = 0usize;
         for block_root in block_roots {
-            let allowed_types = filter_map.get(&block_root);
             for proof in self.chain.get_execution_proofs_by_block_root(block_root) {
-                // If this block has a filter entry:
-                //   - empty proof_types  → skip the block entirely (requester already complete)
-                //   - non-empty          → serve only the listed types
-                // An absent entry means "return all types".
-                if let Some(types) = allowed_types
-                    && (types.is_empty() || !types.contains(&proof.message.proof_type))
+                if !req.proof_types.is_empty()
+                    && !req.proof_types.contains(&proof.message.proof_type)
                 {
                     continue;
                 }
@@ -1405,6 +1390,94 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         );
 
         Ok(())
+    }
+
+    fn proof_serve_range(&self) -> (Slot, Slot) {
+        let finalized_slot = self
+            .chain
+            .canonical_head
+            .cached_head()
+            .finalized_checkpoint()
+            .epoch
+            .start_slot(T::EthSpec::slots_per_epoch());
+        let current_slot = self
+            .chain
+            .slot()
+            .unwrap_or_else(|_| self.chain.slot_clock.genesis_slot());
+        (finalized_slot, current_slot)
+    }
+
+    fn check_execution_proofs_by_range_window(
+        &self,
+        start_slot: u64,
+        count: u64,
+    ) -> Result<(), (RpcErrorResponse, &'static str)> {
+        if count == 0 {
+            return Ok(());
+        }
+
+        let Some(end_slot) = start_slot.checked_add(count - 1) else {
+            return Err((
+                RpcErrorResponse::InvalidRequest,
+                "ExecutionProofsByRange range overflows",
+            ));
+        };
+
+        let (serve_start_slot, current_slot) = self.proof_serve_range();
+        if Slot::new(start_slot) < serve_start_slot || Slot::new(end_slot) > current_slot {
+            debug!(
+                start_slot,
+                end_slot,
+                %serve_start_slot,
+                %current_slot,
+                "ExecutionProofsByRange outside proof_serve_range"
+            );
+            return Err((
+                RpcErrorResponse::ResourceUnavailable,
+                "ExecutionProofsByRange outside proof_serve_range",
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn canonical_block_slot(
+        &self,
+        block_root: Hash256,
+    ) -> Result<Option<Slot>, (RpcErrorResponse, &'static str)> {
+        let Some(block) = self.chain.get_blinded_block(&block_root).map_err(|e| {
+            error!(
+                ?block_root,
+                error = ?e,
+                "Error loading block for ExecutionProofsByRoot proof_serve_range check"
+            );
+            (
+                RpcErrorResponse::ServerError,
+                "Failed loading block for ExecutionProofsByRoot",
+            )
+        })?
+        else {
+            return Ok(None);
+        };
+
+        let slot = block.slot();
+        let canonical_root = self
+            .chain
+            .block_root_at_slot(slot, WhenSlotSkipped::None)
+            .map_err(|e| {
+                error!(
+                    ?block_root,
+                    %slot,
+                    error = ?e,
+                    "Error checking canonical block root for ExecutionProofsByRoot"
+                );
+                (
+                    RpcErrorResponse::ServerError,
+                    "Failed checking canonical block root for ExecutionProofsByRoot",
+                )
+            })?;
+
+        Ok((canonical_root == Some(block_root)).then_some(slot))
     }
 
     /// Handle an `ExecutionProofsByRoot` request from the peer (EIP-8025).
@@ -1436,8 +1509,37 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
             "Received ExecutionProofsByRoot Request"
         );
 
+        let (serve_start_slot, current_slot) = self.proof_serve_range();
+        let mut has_canonical_requested_root = false;
+        let mut in_range_roots = HashSet::new();
+        for identifier in req.identifiers.iter() {
+            let Some(slot) = self.canonical_block_slot(identifier.block_root)? else {
+                continue;
+            };
+            has_canonical_requested_root = true;
+            if slot >= serve_start_slot && slot <= current_slot {
+                in_range_roots.insert(identifier.block_root);
+            }
+        }
+
+        if has_canonical_requested_root && in_range_roots.is_empty() {
+            debug!(
+                %serve_start_slot,
+                %current_slot,
+                num_identifiers = req.identifiers.len(),
+                "ExecutionProofsByRoot outside proof_serve_range"
+            );
+            return Err((
+                RpcErrorResponse::ResourceUnavailable,
+                "ExecutionProofsByRoot outside proof_serve_range",
+            ));
+        }
+
         let mut proofs_sent = 0usize;
         for identifier in req.identifiers.iter() {
+            if has_canonical_requested_root && !in_range_roots.contains(&identifier.block_root) {
+                continue;
+            }
             for proof in self
                 .chain
                 .get_execution_proofs_by_block_root(identifier.block_root)

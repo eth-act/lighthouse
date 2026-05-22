@@ -1,4 +1,5 @@
 use crate::{
+    execution_proofs::ExecutionProofStatusProofTypes,
     metrics::{self, register_process_result_metrics},
     network_beacon_processor::{InvalidBlockStorage, NetworkBeaconProcessor},
     service::NetworkMessage,
@@ -7,7 +8,6 @@ use crate::{
 use beacon_chain::blob_verification::{GossipBlobError, GossipVerifiedBlob};
 use beacon_chain::block_verification_types::AsBlock;
 use beacon_chain::data_column_verification::{GossipDataColumnError, GossipVerifiedDataColumn};
-use beacon_chain::events::{EventKind, SseExecutionProofValidated};
 use beacon_chain::internal_events::InternalBeaconNodeEvent;
 use beacon_chain::store::Error;
 use beacon_chain::{
@@ -30,7 +30,6 @@ use beacon_processor::{
         QueuedUnaggregate, ReprocessQueueMessage,
     },
 };
-use bls::PublicKeyBytes;
 use execution_layer::eip8025::ProofEngineError;
 use lighthouse_network::rpc::methods::ExecutionProofStatus;
 use lighthouse_network::{Client, MessageAcceptance, MessageId, PeerAction, PeerId, ReportSource};
@@ -48,6 +47,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use store::hot_cold_store::HotColdDBError;
 use tracing::{Instrument, Span, debug, error, info, instrument, trace, warn};
+use types::execution::eip8025::ProofData;
 use types::{
     Attestation, AttestationData, AttestationRef, AttesterSlashing, BlobSidecar, DataColumnSidecar,
     DataColumnSubnetId, EthSpec, Hash256, IndexedAttestation, LightClientFinalityUpdate,
@@ -1869,16 +1869,16 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
 
     /// Process a signed execution proof received from the gossip network.
     ///
-    /// Steps (EIP-8025 peer scoring & validator tracking):
+    /// Steps (EIP-8025 peer scoring & dedup):
     /// 1. **Dedup check**: ignore if we already hold a valid proof for this request root
-    ///    (`IGNORE-2`), or if this validator has already submitted a proof (`IGNORE-3`).
-    /// 2. **Validator ban check**: ignore proofs from validators that have previously submitted
-    ///    an invalid proof.
-    /// 3. **Verification**: runs BLS signature verification and proof engine validation via
+    ///    (`IGNORE-2`), if this validator index has already submitted a proof (`IGNORE-3`), or
+    ///    if this proof type and proof data were already rejected.
+    /// 2. **Verification**: runs BLS signature verification and proof engine validation via
     ///    `BeaconChain::verify_execution_proof`. Errors are classified and translated into gossip
     ///    acceptance decisions and peer penalties (see `classify_execution_proof_error`).
-    /// 4. **Post-verification**: on success the proof is recorded for future dedup; on
-    ///    `ProofStatus::Invalid` the signing validator is banned and the relay peer is penalised.
+    /// 3. **Post-verification**: on success the proof is recorded for future dedup; on
+    ///    `ProofStatus::Invalid` the proof data is recorded for future dedup and the relay peer
+    ///    is penalised.
     pub async fn process_gossip_execution_proof(
         self: &Arc<Self>,
         message_id: MessageId,
@@ -1908,8 +1908,17 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                 ));
         }
 
-        // Resolve the validator's public key from the pubkey cache.
-        // This is needed because tracking structures use pubkeys, not indices.
+        if !self.should_process_execution_proof(
+            request_root,
+            proof_type,
+            execution_proof.proof_data(),
+            validator_index,
+        ) {
+            self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Ignore);
+            return;
+        }
+
+        // Resolve the validator's public key from the pubkey cache for BLS verification.
         let Ok(Some(validator_pubkey)) =
             self.chain.validator_pubkey_bytes(validator_index as usize)
         else {
@@ -1925,21 +1934,6 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
             );
             return;
         };
-
-        if !self.should_process_execution_proof(
-            request_root,
-            proof_type,
-            &validator_pubkey,
-            validator_index,
-        ) {
-            self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Ignore);
-            return;
-        }
-
-        // Clone the inner message before `execution_proof` is consumed by verification below.
-        // The clone only reaches the SSE handler when there are active subscribers, so the
-        // allocation is rare on the common (no-subscriber) path.
-        let execution_proof_message = execution_proof.message.clone();
 
         // ── Verify the execution proof (BLS + proof engine) ─────────────────
         let verification_result = self
@@ -1960,26 +1954,6 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                 },
             });
         }
-
-        // Determine gossip propagation behaviour for valid/accepted proofs.
-        // If we have an execution proof subscriber we assume a validator will re-sign the proof
-        // and therefore we do not propagate this proof to peers.
-        let gossip_behaviour = if let Ok((proof_status, block)) = &verification_result
-            && (proof_status.is_valid() || proof_status.is_accepted())
-            && let Some(event_handler) = self.chain.event_handler.as_ref()
-            && event_handler.has_execution_proof_validated_subscribers()
-            && let Some((_block_root, slot)) = block
-        {
-            event_handler.register(EventKind::ExecutionProofValidated(
-                SseExecutionProofValidated {
-                    execution_proof: execution_proof_message,
-                    epoch: slot.epoch(T::EthSpec::slots_per_epoch()).as_u64(),
-                },
-            ));
-            MessageAcceptance::Ignore
-        } else {
-            MessageAcceptance::Accept
-        };
 
         // ── Error-differentiated peer scoring ────────────────────────────────
         match verification_result {
@@ -2031,9 +2005,10 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                         .set_local_execution_proof_status(ExecutionProofStatus {
                             slot: slot.as_u64(),
                             block_root,
+                            proof_types: ExecutionProofStatusProofTypes(&self.proof_types).into(),
                         });
                 }
-                self.propagate_validation_result(message_id, peer_id, gossip_behaviour);
+                self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Accept);
             }
             Ok((ProofStatus::Invalid, _)) => {
                 warn!(
@@ -2041,7 +2016,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     %peer_id,
                     validator_index,
                     proof_type,
-                    "Execution proof is invalid — banning validator, penalizing relay peer"
+                    "Execution proof is invalid, penalizing relay peer"
                 );
 
                 self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Reject);
@@ -2059,7 +2034,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     proof_type,
                     "Execution proof is accepted but not fully verified"
                 );
-                self.propagate_validation_result(message_id, peer_id, gossip_behaviour);
+                self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Accept);
             }
             Ok((ProofStatus::Syncing, _)) => {
                 debug!(
@@ -2115,6 +2090,15 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                 ));
         }
 
+        if !self.should_process_execution_proof(
+            request_root,
+            proof_type,
+            execution_proof.proof_data(),
+            validator_index,
+        ) {
+            return;
+        }
+
         let Ok(Some(validator_pubkey)) =
             self.chain.validator_pubkey_bytes(validator_index as usize)
         else {
@@ -2124,15 +2108,6 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
             );
             return;
         };
-
-        if !self.should_process_execution_proof(
-            request_root,
-            proof_type,
-            &validator_pubkey,
-            validator_index,
-        ) {
-            return;
-        }
 
         let verification_result = self
             .chain
@@ -2164,6 +2139,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                         .set_local_execution_proof_status(ExecutionProofStatus {
                             slot: slot.as_u64(),
                             block_root,
+                            proof_types: ExecutionProofStatusProofTypes(&self.proof_types).into(),
                         });
                 }
             }
@@ -2173,7 +2149,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     validator_index,
                     ?request_root,
                     proof_type,
-                    "RPC execution proof invalid — banning validator, penalizing peer"
+                    "RPC execution proof invalid, penalizing peer"
                 );
                 self.send_network_message(NetworkMessage::ReportPeer {
                     peer_id,
@@ -2279,19 +2255,27 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
     /// Returns `true` if the proof should proceed to verification, `false` if it should be
     /// dropped. Covers two cases:
     /// - **Dedup**: we already hold a valid proof for this request root (`IGNORE-2`), or this
-    ///   validator has already submitted a proof for it (`IGNORE-3`).
-    /// - **Validator ban**: the validator has previously submitted an invalid proof.
+    ///   validator index has already submitted a proof for it (`IGNORE-3`).
+    /// - **Rejected proof cache**: this `(proof_type, hash_tree_root(proof_data))` pair was
+    ///   already rejected by the proof engine.
     fn should_process_execution_proof(
         &self,
         request_root: Hash256,
         proof_type: ProofType,
-        validator_pubkey: &PublicKeyBytes,
+        proof_data: &ProofData,
         validator_index: u64,
     ) -> bool {
         // Scoped to drop the read lock before returning.
         {
             let dedup = self.chain.observed_execution_proofs.read();
-            match dedup.check(request_root, proof_type, validator_pubkey) {
+            match dedup.check(request_root, proof_type, proof_data, validator_index) {
+                ProofObservation::AlreadyRejectedProof => {
+                    debug!(
+                        ?request_root,
+                        proof_type, "Ignoring execution proof: proof data already rejected"
+                    );
+                    return false;
+                }
                 ProofObservation::AlreadyHaveValidProof => {
                     debug!(
                         ?request_root,
@@ -2310,18 +2294,6 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     return false;
                 }
                 ProofObservation::New => {}
-            }
-        }
-
-        // Scoped to drop the read lock before returning.
-        {
-            let tracker = self.chain.invalid_proof_tracker.read();
-            if tracker.is_banned(validator_pubkey) {
-                debug!(
-                    ?request_root,
-                    validator_index, "Ignoring execution proof from banned validator"
-                );
-                return false;
             }
         }
 

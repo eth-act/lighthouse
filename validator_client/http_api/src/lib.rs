@@ -32,7 +32,7 @@ use eth2::lighthouse_vc::{
     std_types::{AuthResponse, GetFeeRecipientResponse, GetGasLimitResponse},
     types::{
         self as api_types, GenericResponse, GetGraffitiResponse, Graffiti, SetGraffitiRequest,
-        SignExecutionProofRequest, UpdateCandidatesRequest, UpdateCandidatesResponse,
+        UpdateCandidatesRequest, UpdateCandidatesResponse,
     },
 };
 use health_metrics::observe::Observe;
@@ -250,19 +250,6 @@ pub fn serve<T: 'static + SlotClock + Clone, E: EthSpec>(
 
     let inner_spec = ctx.spec.clone();
     let spec_filter = warp::any().map(move || inner_spec.clone());
-
-    let inner_proof_service = ctx.proof_service.clone();
-    let proof_service_filter = warp::any()
-        .map(move || inner_proof_service.clone())
-        .and_then(
-            |service: Option<Arc<ProofService<LighthouseValidatorStore<T, E>, T>>>| async move {
-                service.ok_or_else(|| {
-                    warp_utils::reject::custom_not_found(
-                        "proof service is not initialized.".to_string(),
-                    )
-                })
-            },
-        );
 
     let api_token_path_inner = api_token_path.clone();
     let api_token_path_filter = warp::any().map(move || api_token_path_inner.clone());
@@ -1172,38 +1159,6 @@ pub fn serve<T: 'static + SlotClock + Clone, E: EthSpec>(
             },
         );
 
-    let post_execution_proofs = warp::path("lighthouse")
-        .and(warp::path("validators"))
-        .and(warp::path::param::<PublicKey>())
-        .and(warp::path("execution_proofs"))
-        .and(warp::path::end())
-        .and(warp::body::json())
-        .and(proof_service_filter.clone())
-        .and(task_executor_filter.clone())
-        .then(
-            |pubkey: PublicKey,
-             request: SignExecutionProofRequest,
-             proof_service: Arc<ProofService<LighthouseValidatorStore<T, E>, T>>,
-             task_executor: TaskExecutor| {
-                blocking_json_task(move || {
-                    if let Some(handle) = task_executor.handle() {
-                        handle
-                            .block_on(proof_service.handle_proof_request(
-                                pubkey,
-                                request.execution_proof,
-                                request.epoch,
-                            ))
-                            .map_err(warp_utils::reject::custom_server_error)
-                    } else {
-                        Err(warp_utils::reject::custom_server_error(
-                            "Lighthouse shutting down".into(),
-                        ))
-                    }
-                })
-            },
-        )
-        .map(|reply| warp::reply::with_status(reply, warp::http::StatusCode::ACCEPTED));
-
     // GET /eth/v1/validator/{pubkey}/graffiti
     let get_graffiti = eth_v1
         .and(warp::path("validator"))
@@ -1424,7 +1379,6 @@ pub fn serve<T: 'static + SlotClock + Clone, E: EthSpec>(
                         .or(post_std_remotekeys)
                         .or(post_graffiti)
                         .or(post_lighthouse_beacon_update)
-                        .or(post_execution_proofs)
                         .recover(warp_utils::reject::handle_rejection),
                 ))
                 .or(warp::patch()

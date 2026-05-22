@@ -6,11 +6,10 @@
 //! decide the most bandwidth-efficient request strategy:
 //!
 //! - The SSZ-encoded sizes of an `ExecutionProofsByRange` request (20-byte fixed header
-//!   plus `proof_filters` for partially-held blocks) and an `ExecutionProofsByRoot` request
-//!   (one identifier per missing block) are compared over the full set of servable missing
-//!   proofs. Whichever encoding is smaller is used.
-//! - `proof_filters` lets the server skip proof types the requester already holds, so
-//!   partially-covered blocks do not waste bandwidth even in a range request.
+//!   plus a flat `proof_types` list) and an `ExecutionProofsByRoot` request (one identifier per
+//!   missing block) are compared over the full set of servable missing proofs.
+//! - Since `ExecutionProofsByRange` can no longer skip per-block proof types, dense ranges are
+//!   preferred and sparse requests fall back to by-root.
 //!
 //! The protocol is driven entirely by what the proof engine reports as missing, not by
 //! the distance between peer and local verified heads.
@@ -24,11 +23,11 @@ use lighthouse_network::rpc::methods::ExecutionProofStatus;
 use lighthouse_network::service::api_types::{
     ExecutionProofStatusRequestId, ExecutionProofsByRangeRequestId, ExecutionProofsByRootRequestId,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, info};
-use types::{Hash256, Slot};
+use types::Slot;
 
 /// Tracks the single in-flight `ExecutionProofsByRange` request.
 ///
@@ -164,9 +163,8 @@ impl<T: BeaconChainTypes> ProofSync<T> {
     ///
     /// - Finds the consecutive run of missing slots with the highest byte savings over
     ///   an equivalent `ExecutionProofsByRoot` request.
-    /// - If a run's savings are positive it sends `ExecutionProofsByRange` for that run
-    ///   (with `proof_filters` covering partially-held blocks so the peer skips redundant
-    ///   proof types).
+    /// - If the missing run is dense and request-size savings are positive it sends
+    ///   `ExecutionProofsByRange` for that run.
     /// - Otherwise sends a single `ExecutionProofsByRoot` batch for all servable missing
     ///   proofs.
     ///
@@ -201,7 +199,18 @@ impl<T: BeaconChainTypes> ProofSync<T> {
             return;
         }
 
-        let Some((peer_id, peer_slot)) = self.best_peer(cx) else {
+        let needed_types: HashSet<u8> = missing
+            .iter()
+            .flat_map(|info| {
+                cx.configured_proof_types()
+                    .filter(|proof_type| !info.existing_proof_types.contains(proof_type))
+            })
+            .collect();
+        if needed_types.is_empty() {
+            return;
+        }
+
+        let Some((peer_id, peer_slot)) = self.best_peer(cx, &needed_types) else {
             return;
         };
 
@@ -231,47 +240,31 @@ impl<T: BeaconChainTypes> ProofSync<T> {
 
         let num_types = cx.configured_proof_types_count();
 
-        // Partition into blocks still needing at least one proof type and blocks
-        // that are already complete in the proof engine buffer.
-        let (actually_missing, complete_in_window): (Vec<MissingProofInfo>, Vec<MissingProofInfo>) =
-            servable
-                .into_iter()
-                .partition(|m| m.existing_proof_types.len() < num_types);
+        let missing: Vec<MissingProofInfo> = servable
+            .into_iter()
+            .filter(|m| m.existing_proof_types.len() < num_types)
+            .collect();
 
-        if actually_missing.is_empty() {
+        if missing.is_empty() {
             return;
         }
 
-        // Build filter_entries for the range request:
-        //   - partial entries (some types present, some missing) → peer returns only needed types
-        //   - complete entries → peer skips the block entirely (empty proof_types in filter)
-        // Fully-missing entries are excluded from the filter; the peer returns all types for them.
-        let filter_entries: Vec<MissingProofInfo> = actually_missing
-            .iter()
-            .filter(|m| !m.existing_proof_types.is_empty())
-            .cloned()
-            .chain(complete_in_window)
-            .collect();
+        let range_bytes = by_range_request_size(&missing, num_types);
+        let root_bytes = by_root_request_size(&missing, num_types);
 
-        let range_bytes = by_range_request_size(&filter_entries, num_types);
-        let root_bytes = by_root_request_size(&actually_missing, num_types);
+        let start_slot = missing[0].slot;
+        // count spans from first to last missing slot inclusive.
+        let count = (missing.last().expect("non-empty").slot - start_slot).as_u64() + 1;
+        let dense_enough = count as usize <= missing.len().saturating_mul(2);
 
-        // A single range request covers all servable slots with a fixed 20-byte header plus
-        // proof_filters for partial and complete blocks. If cheaper than naming every block
-        // individually in a root request, use range; otherwise use root.
-        if range_bytes < root_bytes {
-            let start_slot = actually_missing[0].slot;
-            // count spans from first to last missing slot inclusive.
-            let count =
-                (actually_missing.last().expect("non-empty").slot - start_slot).as_u64() + 1;
-
-            match cx.request_execution_proofs_by_range(peer_id, start_slot, count, &filter_entries)
-            {
+        // A range request is compact, but it can over-fetch for skipped slots or blocks whose
+        // proofs we already hold. Only use it for dense runs; sparse requests stay by-root.
+        if dense_enough && range_bytes < root_bytes {
+            match cx.request_execution_proofs_by_range(peer_id, start_slot, count) {
                 Ok(id) => {
                     debug!(
                         start_slot = %start_slot,
                         count,
-                        num_filters = filter_entries.len(),
                         range_bytes,
                         root_bytes,
                         "ProofSync: range request sent"
@@ -296,10 +289,10 @@ impl<T: BeaconChainTypes> ProofSync<T> {
             return;
         }
 
-        match cx.request_execution_proofs_by_root(peer_id, &actually_missing) {
+        match cx.request_execution_proofs_by_root(peer_id, &missing) {
             Ok(id) => {
                 debug!(
-                    num_roots = actually_missing.len(),
+                    num_roots = missing.len(),
                     root_bytes, range_bytes, "ProofSync: by-root batch sent"
                 );
                 self.root_request = Some(ByRootRequest { id, peer_id });
@@ -499,10 +492,7 @@ impl<T: BeaconChainTypes> ProofSync<T> {
             .entry(peer_id)
             .and_modify(|entry| entry.timestamp = Instant::now())
             .or_insert_with(|| CachedExecutionProofStatus {
-                status: ExecutionProofStatus {
-                    slot: 0,
-                    block_root: Hash256::ZERO,
-                },
+                status: ExecutionProofStatus::default(),
                 timestamp: Instant::now(),
                 verified: false,
             });
@@ -530,13 +520,31 @@ impl<T: BeaconChainTypes> ProofSync<T> {
     /// Verified peers are preferred (their slot is confirmed on-chain), but unverified
     /// peers (whose announced slot is ahead of our head) are also eligible — the proofs
     /// they serve are validated independently on receipt.
-    fn best_peer(&mut self, cx: &mut SyncNetworkContext<T>) -> Option<(PeerId, Slot)> {
+    fn best_peer(
+        &mut self,
+        cx: &mut SyncNetworkContext<T>,
+        needed_types: &HashSet<u8>,
+    ) -> Option<(PeerId, Slot)> {
         self.refresh_peer_statuses(cx);
 
         let result = self
             .peer_statuses
             .iter()
-            .max_by_key(|(_, c)| (c.verified, c.status.slot))
+            .filter(|(_, c)| {
+                c.status
+                    .proof_types
+                    .iter()
+                    .any(|proof_type| needed_types.contains(proof_type))
+            })
+            .max_by_key(|(_, c)| {
+                let supported_needed_types = c
+                    .status
+                    .proof_types
+                    .iter()
+                    .filter(|proof_type| needed_types.contains(proof_type))
+                    .count();
+                (c.verified, supported_needed_types, c.status.slot)
+            })
             .map(|(peer_id, c)| (*peer_id, Slot::new(c.status.slot)));
 
         match result {
@@ -589,19 +597,11 @@ pub(crate) fn by_root_request_size(
 /// Byte size of an `ExecutionProofsByRange` request.
 ///
 /// Layout:
-/// - 20 bytes — fixed header: `start_slot` (8) + `count` (8) + `proof_filters` offset (4)
-/// - `proof_filters` — partial entries (some types held, some needed) and complete entries
-///   (empty `proof_types` list tells the peer to skip the block). Fully-missing blocks are
-///   absent; the peer returns all proof types for them by default.
-///
-/// `filter_entries` should contain partial and complete entries only (not fully-missing ones).
+/// - 20 bytes — fixed header: `start_slot` (8) + `count` (8) + `proof_types` offset (4)
+/// - `proof_types` — flat list of configured proof types
 pub(crate) fn by_range_request_size(
-    filter_entries: &[MissingProofInfo],
+    _missing: &[MissingProofInfo],
     num_configured_types: usize,
 ) -> usize {
-    let filter_bytes: usize = filter_entries
-        .iter()
-        .map(|m| per_identifier_ssz_bytes(m, num_configured_types))
-        .sum();
-    20 + filter_bytes
+    20 + num_configured_types
 }

@@ -35,7 +35,6 @@ use crate::fetch_blobs::EngineGetBlobsOutput;
 use crate::fork_choice_signal::{ForkChoiceSignalRx, ForkChoiceSignalTx, ForkChoiceWaitResult};
 use crate::graffiti_calculator::{GraffitiCalculator, GraffitiSettings};
 use crate::internal_events::InternalBeaconNodeEvent;
-use crate::invalid_proof_tracker::{InvalidProofRecord, InvalidProofTracker};
 use crate::kzg_utils::reconstruct_blobs;
 use crate::light_client_finality_update_verification::{
     Error as LightClientFinalityUpdateError, VerifiedLightClientFinalityUpdate,
@@ -437,8 +436,6 @@ pub struct BeaconChain<T: BeaconChainTypes> {
         Mutex<ObservedOperations<SignedBlsToExecutionChange, T::EthSpec>>,
     /// Deduplication cache for execution proofs.
     pub observed_execution_proofs: RwLock<ObservedExecutionProofs>,
-    /// Persistent tracker of validators that signed invalid execution proofs.
-    pub invalid_proof_tracker: RwLock<InvalidProofTracker>,
     /// Interfaces with the execution client.
     pub execution_layer: Option<ExecutionLayer<T::EthSpec>>,
     /// Stores information about the canonical head and finalized/justified checkpoints of the
@@ -688,14 +685,6 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         )?;
 
         Ok(())
-    }
-
-    /// Persists the custody information to disk.
-    pub fn persist_invalid_proof_tracker(&self) -> Result<(), Error> {
-        self.invalid_proof_tracker
-            .read()
-            .persist_to_store(&self.store)
-            .map_err(Error::DBError)
     }
 
     pub fn persist_custody_context(&self) -> Result<(), Error> {
@@ -7601,7 +7590,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             .observe_verification_attempt(
                 signed_proof.request_root(),
                 signed_proof.message.proof_type,
-                validator_pubkey,
+                signed_proof.validator_index,
             );
 
         // Step 2: ProofEngine verification
@@ -7687,15 +7676,10 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             return Ok((verification_result, Some((block_root, slot))));
         }
 
-        // Ban the validator if the proof engine explicitly rejected the proof.
         if verification_result == ProofStatus::Invalid {
-            self.invalid_proof_tracker
+            self.observed_execution_proofs
                 .write()
-                .record_invalid_proof(InvalidProofRecord {
-                    validator_pubkey,
-                    request_root: signed_proof.request_root(),
-                    proof_type: signed_proof.message.proof_type,
-                });
+                .observe_invalid_proof(signed_proof.message.proof_type, signed_proof.proof_data());
         }
 
         Ok((verification_result, None))
@@ -7709,7 +7693,7 @@ impl<T: BeaconChainTypes> Drop for BeaconChain<T> {
             self.persist_op_pool()?;
             self.persist_custody_context()?;
             self.persist_proof_engine()?;
-            self.persist_invalid_proof_tracker()
+            Ok(())
         };
 
         if let Err(e) = drop() {

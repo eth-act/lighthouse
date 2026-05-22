@@ -1174,17 +1174,6 @@ impl<'de> ContextDeserialize<'de, ForkName> for SseExtendedPayloadAttributes {
     }
 }
 
-/// SSE event payload for a validated execution proof (EIP-8025).
-///
-/// Emitted by the beacon node when an `ExecutionProof` passes verification,
-/// allowing validator clients to resign the proof with their own key.
-#[derive(PartialEq, Debug, Serialize, Deserialize, Clone)]
-pub struct SseExecutionProofValidated {
-    pub execution_proof: ExecutionProof,
-    #[serde(with = "serde_utils::quoted_u64")]
-    pub epoch: u64,
-}
-
 #[derive(PartialEq, Debug, Serialize, Clone)]
 #[serde(bound = "E: EthSpec", untagged)]
 pub enum EventKind<E: EthSpec> {
@@ -1208,7 +1197,6 @@ pub enum EventKind<E: EthSpec> {
     AttesterSlashing(Box<AttesterSlashing<E>>),
     BlsToExecutionChange(Box<SignedBlsToExecutionChange>),
     BlockGossip(Box<BlockGossip>),
-    ExecutionProofValidated(SseExecutionProofValidated),
 }
 
 impl<E: EthSpec> EventKind<E> {
@@ -1234,7 +1222,6 @@ impl<E: EthSpec> EventKind<E> {
             EventKind::AttesterSlashing(_) => "attester_slashing",
             EventKind::BlsToExecutionChange(_) => "bls_to_execution_change",
             EventKind::BlockGossip(_) => "block_gossip",
-            EventKind::ExecutionProofValidated(_) => "execution_proof_validated",
         }
     }
 
@@ -1328,14 +1315,6 @@ impl<E: EthSpec> EventKind<E> {
             "block_gossip" => Ok(EventKind::BlockGossip(serde_json::from_str(data).map_err(
                 |e| ServerError::InvalidServerSentEvent(format!("Block Gossip: {:?}", e)),
             )?)),
-            "execution_proof_validated" => Ok(EventKind::ExecutionProofValidated(
-                serde_json::from_str(data).map_err(|e| {
-                    ServerError::InvalidServerSentEvent(format!(
-                        "Execution Proof Validated: {:?}",
-                        e
-                    ))
-                })?,
-            )),
             _ => Err(ServerError::InvalidServerSentEvent(
                 "Could not parse event tag".to_string(),
             )),
@@ -1373,7 +1352,6 @@ pub enum EventTopic {
     ProposerSlashing,
     BlsToExecutionChange,
     BlockGossip,
-    ExecutionProofValidated,
 }
 
 impl FromStr for EventTopic {
@@ -1401,7 +1379,6 @@ impl FromStr for EventTopic {
             "proposer_slashing" => Ok(EventTopic::ProposerSlashing),
             "bls_to_execution_change" => Ok(EventTopic::BlsToExecutionChange),
             "block_gossip" => Ok(EventTopic::BlockGossip),
-            "execution_proof_validated" => Ok(EventTopic::ExecutionProofValidated),
             _ => Err("event topic cannot be parsed.".to_string()),
         }
     }
@@ -1430,7 +1407,6 @@ impl fmt::Display for EventTopic {
             EventTopic::ProposerSlashing => write!(f, "proposer_slashing"),
             EventTopic::BlsToExecutionChange => write!(f, "bls_to_execution_change"),
             EventTopic::BlockGossip => write!(f, "block_gossip"),
-            EventTopic::ExecutionProofValidated => write!(f, "execution_proof_validated"),
         }
     }
 }

@@ -195,6 +195,7 @@ impl ProofEngineTestRig {
             .node_subscribe_internal_events(idx)
             .map(EventStream::from)
             .ok_or_else(|| anyhow!("newly added verifier node has no beacon chain"))?;
+
         Ok((mock, chain))
     }
 

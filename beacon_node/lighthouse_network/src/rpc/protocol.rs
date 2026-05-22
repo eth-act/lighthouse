@@ -588,14 +588,14 @@ impl ProtocolId {
             Protocol::MetaData => RpcLimits::new(0, 0),
             Protocol::ExecutionProofsByRange => RpcLimits::new(
                 ExecutionProofsByRangeRequest::ssz_min_len(),
-                ExecutionProofsByRangeRequest::ssz_max_len(spec.max_request_blocks_upper_bound()),
+                ExecutionProofsByRangeRequest::ssz_max_len(),
             ),
             // ExecutionProofsByRoot request is List[ProofByRootIdentifier, MAX_BLOCKS_BY_ROOT.
             Protocol::ExecutionProofsByRoot => RpcLimits::new(0, spec.max_blocks_by_root_request),
             // ExecutionProofStatus request carries the local node's status.
             Protocol::ExecutionProofStatus => RpcLimits::new(
-                ExecutionProofStatus::ssz_fixed_len(),
-                ExecutionProofStatus::ssz_fixed_len(),
+                ExecutionProofStatus::ssz_min_len(),
+                ExecutionProofStatus::ssz_max_len(),
             ),
         }
     }
@@ -642,10 +642,10 @@ impl ProtocolId {
                 SIGNED_EXECUTION_PROOF_MIN_SIZE,
                 SIGNED_EXECUTION_PROOF_MAX_SIZE,
             ),
-            // ExecutionProofStatus response is fixed-size SSZ.
+            // ExecutionProofStatus response is a variable-length SSZ container.
             Protocol::ExecutionProofStatus => RpcLimits::new(
-                ExecutionProofStatus::ssz_fixed_len(),
-                ExecutionProofStatus::ssz_fixed_len(),
+                ExecutionProofStatus::ssz_min_len(),
+                ExecutionProofStatus::ssz_max_len(),
             ),
         }
     }
@@ -771,7 +771,7 @@ where
                 SupportedProtocol::LightClientFinalityUpdateV1 => {
                     Ok((RequestType::LightClientFinalityUpdate, socket))
                 }
-                // ExecutionProofStatus now carries a 40-byte body; fall through to normal decoder.
+                // ExecutionProofStatus carries a variable-length body; fall through to normal decoder.
                 _ => {
                     match tokio::time::timeout(
                         Duration::from_secs(REQUEST_TIMEOUT),

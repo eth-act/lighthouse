@@ -1641,8 +1641,11 @@ impl<E: EthSpec> Network<E> {
                     }
                     RequestType::ExecutionProofStatus(peer_status) => {
                         // Respond immediately with our local status.
-                        let local_status =
-                            *self.network_globals.local_execution_proof_status.read();
+                        let local_status = self
+                            .network_globals
+                            .local_execution_proof_status
+                            .read()
+                            .clone();
                         let response = RpcResponse::Success(
                             RpcSuccessResponse::ExecutionProofStatus(local_status),
                         );

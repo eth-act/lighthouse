@@ -30,6 +30,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Duration;
 use tracing::{error, info, warn};
+use typenum::Unsigned;
+use types::execution::eip8025::MaxExecutionProofsPerPayload;
 use types::graffiti::GraffitiString;
 use types::{Checkpoint, Epoch, EthSpec, Hash256};
 
@@ -362,6 +364,12 @@ pub fn get_config<E: EthSpec>(
             .map(ProofType::from_u8)
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("Invalid --proof-types value: {e:?}"))?;
+        if types.len() > MaxExecutionProofsPerPayload::to_usize() {
+            return Err(format!(
+                "--proof-types supports at most {} values",
+                MaxExecutionProofsPerPayload::to_usize()
+            ));
+        }
         ProofTypes::from(types)
     } else {
         ProofTypes::default()
