@@ -204,6 +204,11 @@ pub enum FailureReason {
     ProvingTimeout,
     /// A general error occurred during proving.
     ProvingError,
+    /// An internal error occurred in the proof engine.
+    InternalError,
+    /// Unknown failure reason
+    #[serde(other)]
+    Unknown,
 }
 
 /// Deserialize `proof_type` from either a string (`"reth-sp1"`) or a
