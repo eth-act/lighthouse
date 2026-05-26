@@ -66,6 +66,15 @@ pub fn custom_bad_request(msg: String) -> warp::reject::Rejection {
 }
 
 #[derive(Debug)]
+pub struct CustomNotImplemented(pub String);
+
+impl Reject for CustomNotImplemented {}
+
+pub fn custom_not_implemented(msg: String) -> warp::reject::Rejection {
+    warp::reject::custom(CustomNotImplemented(msg))
+}
+
+#[derive(Debug)]
 pub struct CustomDeserializeError(pub String);
 
 impl Reject for CustomDeserializeError {}
@@ -183,6 +192,9 @@ pub async fn handle_rejection(err: warp::Rejection) -> Result<impl warp::Reply, 
     } else if let Some(e) = err.find::<crate::reject::CustomBadRequest>() {
         code = StatusCode::BAD_REQUEST;
         message = format!("BAD_REQUEST: {}", e.0);
+    } else if let Some(e) = err.find::<crate::reject::CustomNotImplemented>() {
+        code = StatusCode::NOT_IMPLEMENTED;
+        message = format!("NOT_IMPLEMENTED: {}", e.0);
     } else if let Some(e) = err.find::<crate::reject::CustomServerError>() {
         code = StatusCode::INTERNAL_SERVER_ERROR;
         message = format!("INTERNAL_SERVER_ERROR: {}", e.0);
@@ -241,5 +253,31 @@ pub async fn convert_rejection<T: Reply>(res: Result<T, warp::Rejection>) -> Res
             let Ok(reply) = handle_rejection(e).await;
             reply.into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use eth2::types::ErrorMessage;
+    use warp::Reply;
+    use warp::hyper::body;
+
+    #[tokio::test]
+    async fn custom_not_implemented_maps_to_501() {
+        let message =
+            "Proof engine not configured. Start with --proof-engine-endpoint to enable EIP-8025.";
+
+        let reply = handle_rejection(custom_not_implemented(message.to_string()))
+            .await
+            .unwrap()
+            .into_response();
+
+        assert_eq!(reply.status(), StatusCode::NOT_IMPLEMENTED);
+
+        let body = body::to_bytes(reply.into_body()).await.unwrap();
+        let error: ErrorMessage = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error.code, StatusCode::NOT_IMPLEMENTED.as_u16());
+        assert_eq!(error.message, format!("NOT_IMPLEMENTED: {message}"));
     }
 }

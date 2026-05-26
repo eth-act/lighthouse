@@ -13,14 +13,17 @@ use tree_hash_derive::TreeHash;
 #[cfg(feature = "arbitrary")]
 use arbitrary::Arbitrary;
 
-/// Maximum proof size: 400 KiB (409600 bytes)
+/// Maximum proof size: 1344 KiB (1,376,256 bytes).
 ///
-/// Product of U100 * U4096
-pub type MaxProofSize = typenum::Prod<typenum::U100, typenum::U4096>;
+/// Product of (U21 * U64) * U1024.
+pub type MaxProofSize = typenum::Prod<MaxProofSizeKiB, typenum::U1024>;
+
+/// Maximum proof size in KiB.
+pub type MaxProofSizeKiB = typenum::Prod<typenum::U21, typenum::U64>;
 
 /// Proof data type
 ///
-/// VariableList of bytes with max length [`MaxProofSize`]`
+/// VariableList of bytes with max length [`MaxProofSize`].
 pub type ProofData = VariableList<u8, MaxProofSize>;
 
 /// Maximum execution proofs per payload
@@ -339,5 +342,13 @@ mod tests {
             proof_types: vec![1, 2, 3],
         };
         assert_eq!(attrs_with_types.proof_types.len(), 3);
+    }
+
+    #[test]
+    fn max_proof_size_is_1344_kib() {
+        use typenum::Unsigned;
+
+        assert_eq!(MaxProofSizeKiB::USIZE, 1344);
+        assert_eq!(MaxProofSize::USIZE, 1_376_256);
     }
 }

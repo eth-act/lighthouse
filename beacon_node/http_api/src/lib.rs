@@ -72,7 +72,7 @@ pub use publish_blocks::{
 };
 use serde::{Deserialize, Serialize};
 use slot_clock::SlotClock;
-use ssz::Encode;
+use ssz::{Decode, Encode};
 pub use state_id::StateId;
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -91,7 +91,7 @@ use tokio_stream::{
 use tracing::{debug, info, warn};
 use types::{
     BeaconStateError, Checkpoint, ConfigAndPreset, Epoch, EthSpec, ForkName, Hash256,
-    SignedBlindedBeaconBlock, Slot,
+    SignedBlindedBeaconBlock, Slot, execution::ExecutionProofList,
 };
 use version::{
     ResponseIncludesVersion, V1, V2, add_consensus_version_header, add_ssz_content_type_header,
@@ -1817,18 +1817,42 @@ pub fn serve<T: BeaconChainTypes>(
         .clone()
         .and(block_id_or_err)
         .and(warp::path::end())
+        .and(warp::header::optional::<api_types::Accept>("accept"))
         .then(
             |task_spawner: TaskSpawner<T::EthSpec>,
              chain: Arc<BeaconChain<T>>,
-             block_id: BlockId| {
-                task_spawner.blocking_json_task(Priority::P1, move || {
-                    eip8025::get_execution_proofs(block_id, chain)
+             block_id: BlockId,
+             accept_header: Option<api_types::Accept>| {
+                task_spawner.blocking_response_task(Priority::P1, move || {
+                    let response = eip8025::get_execution_proofs(block_id, chain)?;
+
+                    match accept_header {
+                        Some(api_types::Accept::Ssz) => {
+                            let proofs =
+                                ExecutionProofList::try_from(response.data).map_err(|e| {
+                                    warp_utils::reject::custom_server_error(format!(
+                                        "failed to create response: {e:?}"
+                                    ))
+                                })?;
+                            Response::builder()
+                                .status(200)
+                                .body(proofs.as_ssz_bytes().into())
+                                .map(|res: Response<Body>| add_ssz_content_type_header(res))
+                                .map_err(|e| {
+                                    warp_utils::reject::custom_server_error(format!(
+                                        "failed to create response: {}",
+                                        e
+                                    ))
+                                })
+                        }
+                        _ => Ok(warp::reply::json(&response).into_response()),
+                    }
                 })
             },
         );
 
     // POST beacon/execution_proofs
-    let post_prover_execution_proofs = beacon_proofs_path
+    let post_execution_proofs = beacon_proofs_path
         .clone()
         .and(warp::path::end())
         .and(warp_utils::json::json())
@@ -1843,6 +1867,35 @@ pub fn serve<T: BeaconChainTypes>(
                 task_spawner.spawn_async_with_rejection(Priority::P1, async move {
                     eip8025::submit_execution_proofs(proofs, chain, network_globals, network_send)
                         .await
+                })
+            },
+        );
+
+    let post_execution_proofs_ssz = beacon_proofs_path
+        .clone()
+        .and(warp::path::end())
+        .and(warp::body::bytes())
+        .and(network_globals.clone())
+        .and(network_tx_filter.clone())
+        .then(
+            |task_spawner: TaskSpawner<T::EthSpec>,
+             chain: Arc<BeaconChain<T>>,
+             proof_bytes: Bytes,
+             network_globals: Arc<NetworkGlobals<T::EthSpec>>,
+             network_send: UnboundedSender<NetworkMessage<T::EthSpec>>| {
+                task_spawner.spawn_async_with_rejection(Priority::P1, async move {
+                    let proofs = ExecutionProofList::from_ssz_bytes(&proof_bytes).map_err(|e| {
+                        warp_utils::reject::custom_bad_request(format!("invalid SSZ: {e:?}"))
+                    })?;
+                    eip8025::submit_execution_proofs(
+                        eip8025::SubmitExecutionProofsRequest {
+                            proofs: Vec::from(proofs),
+                        },
+                        chain,
+                        network_globals,
+                        network_send,
+                    )
+                    .await
                 })
             },
         );
@@ -3406,7 +3459,8 @@ pub fn serve<T: BeaconChainTypes>(
                         post_beacon_blocks_ssz
                             .uor(post_beacon_blocks_v2_ssz)
                             .uor(post_beacon_blinded_blocks_ssz)
-                            .uor(post_beacon_blinded_blocks_v2_ssz),
+                            .uor(post_beacon_blinded_blocks_v2_ssz)
+                            .uor(post_execution_proofs_ssz),
                     )
                     .uor(post_beacon_blocks)
                     .uor(post_beacon_blinded_blocks)
@@ -3442,7 +3496,7 @@ pub fn serve<T: BeaconChainTypes>(
                     .uor(post_lighthouse_add_peer)
                     .uor(post_lighthouse_remove_peer)
                     .uor(post_lighthouse_custody_backfill)
-                    .uor(post_prover_execution_proofs)
+                    .uor(post_execution_proofs)
                     .recover(warp_utils::reject::handle_rejection),
             ),
         )

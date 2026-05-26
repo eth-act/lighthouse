@@ -1,7 +1,7 @@
 //! EIP-8025: Optional Execution Proofs - HTTP API Endpoints
 //!
 //! This module provides HTTP API endpoints for:
-//! - GET `/eth/v1/beacon/proofs/execution_proofs/{block_id}` - Retrieve execution proofs for a block
+//! - GET `/eth/v1/beacon/execution_proofs/{block_id}` - Retrieve execution proofs for a block
 //! - POST `/eth/v1/beacon/execution_proofs` - Submit pre-signed execution proofs
 
 use crate::block_id::BlockId;
@@ -16,9 +16,9 @@ use types::{ProofStatus, SignedExecutionProof};
 use warp::Reply;
 use warp::http::Response;
 use warp::hyper::Body;
-use warp_utils::reject::{custom_bad_request, custom_server_error};
+use warp_utils::reject::{custom_bad_request, custom_not_implemented, custom_server_error};
 
-/// Response for GET /eth/v1/beacon/proofs/execution_proofs/{block_id}
+/// Response for GET /eth/v1/beacon/execution_proofs/{block_id}
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ExecutionProofsResponse {
     pub execution_optimistic: bool,
@@ -48,7 +48,7 @@ pub fn get_execution_proofs<T: BeaconChainTypes>(
         .ok_or_else(|| custom_server_error("Execution layer not available".to_string()))?;
 
     let proof_engine = execution_layer.proof_engine().ok_or_else(|| {
-        custom_bad_request(
+        custom_not_implemented(
             "Proof engine not configured. Start with --proof-engine-endpoint to enable EIP-8025."
                 .to_string(),
         )
@@ -97,7 +97,7 @@ pub async fn submit_execution_proofs<T: BeaconChainTypes>(
         .and_then(|el| el.proof_engine())
         .is_none()
     {
-        return Err(custom_bad_request(
+        return Err(custom_not_implemented(
             "Proof engine not configured. Start with --proof-engine-endpoint to enable EIP-8025."
                 .to_string(),
         ));
