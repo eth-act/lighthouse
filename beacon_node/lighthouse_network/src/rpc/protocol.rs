@@ -17,7 +17,7 @@ use tokio_util::{
     compat::{Compat, FuturesAsyncReadCompatExt},
 };
 use typenum::Unsigned;
-use types::execution::eip8025::MaxExecutionProofsPerPayload;
+use types::execution::eip8025::{MaxExecutionProofsPerPayload, MaxProofSize};
 use types::{
     BeaconBlock, BeaconBlockAltair, BeaconBlockBase, BlobSidecar, ChainSpec, DataColumnSidecar,
     EmptyBlock, Epoch, EthSpec, EthSpecId, ForkContext, ForkName, LightClientBootstrap,
@@ -127,11 +127,11 @@ pub static LIGHT_CLIENT_UPDATES_BY_RANGE_ELECTRA_MAX: LazyLock<usize> =
 /// - ExecutionProof fixed header (proof_data offset + proof_type + public_input): 4 + 1 + 32 = 37
 pub const SIGNED_EXECUTION_PROOF_MIN_SIZE: usize = 4 + 8 + 96 + 37;
 
-/// Maximum SSZ size of a `SignedExecutionProof` (MaxProofSize = 409600 bytes):
+/// Maximum SSZ size of a `SignedExecutionProof` (MaxProofSize = 1,376,256 bytes):
 /// - SignedExecutionProof fixed header: 4 + 8 + 96 = 108 bytes
 /// - ExecutionProof fixed header: 4 + 1 + 32 = 37 bytes
-/// - proof_data: MaxProofSize = 100 * 4096 = 409600 bytes
-pub const SIGNED_EXECUTION_PROOF_MAX_SIZE: usize = 4 + 8 + 96 + 37 + 409600;
+/// - proof_data: MaxProofSize = 1344 * 1024 = 1,376,256 bytes
+pub const SIGNED_EXECUTION_PROOF_MAX_SIZE: usize = 4 + 8 + 96 + 37 + MaxProofSize::USIZE;
 
 /// The protocol prefix the RPC protocol id.
 const PROTOCOL_PREFIX: &str = "/eth2/beacon_chain/req";
@@ -1140,5 +1140,19 @@ impl RPCError {
             RPCError::ErrorResponse(code, ..) => code.into(),
             e => e.into(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn signed_execution_proof_max_size_includes_max_proof_size() {
+        assert_eq!(MaxProofSize::USIZE, 1_376_256);
+        assert_eq!(
+            SIGNED_EXECUTION_PROOF_MAX_SIZE,
+            SIGNED_EXECUTION_PROOF_MIN_SIZE + 1_376_256
+        );
     }
 }
