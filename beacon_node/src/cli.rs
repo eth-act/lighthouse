@@ -928,6 +928,24 @@ pub fn cli_app() -> Command {
                 .display_order(0)
         )
         .arg(
+            Arg::new("proof-engine-endpoint")
+                .long("proof-engine-endpoint")
+                .value_name("PROOF-ENGINE-ENDPOINT")
+                .help("Server endpoint for the optional EIP-8025 proof engine HTTP API.")
+                .requires("execution-endpoint")
+                .action(ArgAction::Set)
+                .display_order(0)
+        )
+        .arg(
+            Arg::new("proof-types")
+                .long("proof-types")
+                .value_name("PROOF-TYPES")
+                .help("Comma-separated EIP-8025 proof types to request from the proof engine.")
+                .requires("proof-engine-endpoint")
+                .action(ArgAction::Set)
+                .display_order(0)
+        )
+        .arg(
             Arg::new("disable-get-blobs")
                 .long("disable-get-blobs")
                 .help("Disables the getBlobs optimisation to fetch blobs from the EL mempool")
@@ -1521,6 +1539,15 @@ pub fn cli_app() -> Command {
                 .help("Force Lighthouse to verify every execution block hash with the execution \
                        client during finalized sync. By default block hashes will be checked in \
                        Lighthouse and only passed to the EL if initial verification fails.")
+                .display_order(0)
+        )
+        .arg(
+            Arg::new("execution-proof-quorum")
+                .long("execution-proof-quorum")
+                .value_name("K")
+                .help("Non-default: mark a Gloas payload envelope as proof-valid after K distinct valid EIP-8025 proof types for the same new-payload request root.")
+                .requires("proof-engine-endpoint")
+                .action(ArgAction::Set)
                 .display_order(0)
         )
         .arg(

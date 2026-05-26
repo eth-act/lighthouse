@@ -15,14 +15,14 @@ use std::io::{Read, Write};
 use std::marker::PhantomData;
 use std::sync::Arc;
 use tokio_util::codec::{Decoder, Encoder};
-use types::SignedExecutionPayloadEnvelope;
 use types::{
     BlobSidecar, ChainSpec, DataColumnSidecar, DataColumnsByRootIdentifier, EthSpec, ForkContext,
     ForkName, ForkVersionDecode, Hash256, LightClientBootstrap, LightClientFinalityUpdate,
     LightClientOptimisticUpdate, LightClientUpdate, SignedBeaconBlock, SignedBeaconBlockAltair,
     SignedBeaconBlockBase, SignedBeaconBlockBellatrix, SignedBeaconBlockCapella,
     SignedBeaconBlockDeneb, SignedBeaconBlockElectra, SignedBeaconBlockFulu,
-    SignedBeaconBlockGloas,
+    SignedBeaconBlockGloas, SignedExecutionPayloadEnvelope,
+    execution::eip8025::SignedExecutionProof,
 };
 use unsigned_varint::codec::Uvi;
 
@@ -88,6 +88,9 @@ impl<E: EthSpec> SSZSnappyInboundCodec<E> {
                 RpcSuccessResponse::LightClientOptimisticUpdate(res) => res.as_ssz_bytes(),
                 RpcSuccessResponse::LightClientFinalityUpdate(res) => res.as_ssz_bytes(),
                 RpcSuccessResponse::LightClientUpdatesByRange(res) => res.as_ssz_bytes(),
+                RpcSuccessResponse::ExecutionProofsByRange(res) => res.as_ssz_bytes(),
+                RpcSuccessResponse::ExecutionProofsByRoot(res) => res.as_ssz_bytes(),
+                RpcSuccessResponse::ExecutionProofStatus(res) => res.as_ssz_bytes(),
                 RpcSuccessResponse::Pong(res) => res.data.as_ssz_bytes(),
                 RpcSuccessResponse::MetaData(res) =>
                 // Encode the correct version of the MetaData response based on the negotiated version.
@@ -370,6 +373,9 @@ impl<E: EthSpec> Encoder<RequestType<E>> for SSZSnappyOutboundCodec<E> {
             RequestType::Ping(req) => req.as_ssz_bytes(),
             RequestType::LightClientBootstrap(req) => req.as_ssz_bytes(),
             RequestType::LightClientUpdatesByRange(req) => req.as_ssz_bytes(),
+            RequestType::ExecutionProofsByRange(req) => req.as_ssz_bytes(),
+            RequestType::ExecutionProofsByRoot(req) => req.identifiers.as_ssz_bytes(),
+            RequestType::ExecutionProofStatus(req) => req.as_ssz_bytes(),
             // no metadata to encode
             RequestType::MetaData(_)
             | RequestType::LightClientOptimisticUpdate
@@ -613,6 +619,22 @@ fn handle_rpc_request<E: EthSpec>(
                 LightClientUpdatesByRangeRequest::from_ssz_bytes(decoded_buffer)?,
             )))
         }
+        SupportedProtocol::ExecutionProofsByRangeV1 => {
+            Ok(Some(RequestType::ExecutionProofsByRange(
+                ExecutionProofsByRangeRequest::from_ssz_bytes(decoded_buffer)?,
+            )))
+        }
+        SupportedProtocol::ExecutionProofsByRootV1 => Ok(Some(RequestType::ExecutionProofsByRoot(
+            ExecutionProofsByRootRequest {
+                identifiers: RuntimeVariableList::from_ssz_bytes(
+                    decoded_buffer,
+                    spec.max_request_blocks(current_fork),
+                )?,
+            },
+        ))),
+        SupportedProtocol::ExecutionProofStatusV1 => Ok(Some(RequestType::ExecutionProofStatus(
+            ExecutionProofStatus::from_ssz_bytes(decoded_buffer)?,
+        ))),
         // MetaData requests return early from InboundUpgrade and do not reach the decoder.
         // Handle this case just for completeness.
         SupportedProtocol::MetaDataV3 => {
@@ -862,6 +884,21 @@ fn handle_rpc_response<E: EthSpec>(
                 ),
             )),
         },
+        SupportedProtocol::ExecutionProofsByRangeV1 => {
+            Ok(Some(RpcSuccessResponse::ExecutionProofsByRange(Arc::new(
+                SignedExecutionProof::from_ssz_bytes(decoded_buffer)?,
+            ))))
+        }
+        SupportedProtocol::ExecutionProofsByRootV1 => {
+            Ok(Some(RpcSuccessResponse::ExecutionProofsByRoot(Arc::new(
+                SignedExecutionProof::from_ssz_bytes(decoded_buffer)?,
+            ))))
+        }
+        SupportedProtocol::ExecutionProofStatusV1 => {
+            Ok(Some(RpcSuccessResponse::ExecutionProofStatus(
+                ExecutionProofStatus::from_ssz_bytes(decoded_buffer)?,
+            )))
+        }
         // MetaData V2/V3 responses have no context bytes, so behave similarly to V1 responses
         SupportedProtocol::MetaDataV3 => Ok(Some(RpcSuccessResponse::MetaData(Arc::new(
             MetaData::V3(MetaDataV3::from_ssz_bytes(decoded_buffer)?),

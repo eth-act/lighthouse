@@ -21,6 +21,7 @@ use beacon_chain::{
     GossipVerifiedBlock, NotifyExecutionLayer,
     attestation_verification::{self, Error as AttnError, VerifiedAttestation},
     data_availability_checker::AvailabilityCheckErrorCategory,
+    eip8025::ExecutionProofError,
     light_client_finality_update_verification::Error as LightClientFinalityUpdateError,
     light_client_optimistic_update_verification::Error as LightClientOptimisticUpdateError,
     observed_operations::ObservationOutcome,
@@ -50,11 +51,11 @@ use types::{
     Attestation, AttestationData, AttestationRef, AttesterSlashing, ColumnIndex, DataColumnSidecar,
     DataColumnSubnetId, EthSpec, Hash256, IndexedAttestation, LightClientFinalityUpdate,
     LightClientOptimisticUpdate, PartialDataColumn, PartialDataColumnHeader,
-    PayloadAttestationMessage, ProposerSlashing, SignedAggregateAndProof, SignedBeaconBlock,
-    SignedBlsToExecutionChange, SignedContributionAndProof, SignedExecutionPayloadBid,
-    SignedExecutionPayloadEnvelope, SignedProposerPreferences, SignedVoluntaryExit,
-    SingleAttestation, Slot, SubnetId, SyncCommitteeMessage, SyncSubnetId,
-    block::BlockImportSource,
+    PayloadAttestationMessage, ProofStatus, ProposerSlashing, SignedAggregateAndProof,
+    SignedBeaconBlock, SignedBlsToExecutionChange, SignedContributionAndProof,
+    SignedExecutionPayloadBid, SignedExecutionPayloadEnvelope, SignedExecutionProof,
+    SignedProposerPreferences, SignedVoluntaryExit, SingleAttestation, Slot, SubnetId,
+    SyncCommitteeMessage, SyncSubnetId, block::BlockImportSource,
 };
 
 use beacon_processor::work_reprocessing_queue::QueuedColumnReconstruction;
@@ -182,6 +183,19 @@ fn clone_message_acceptance(a: &MessageAcceptance) -> MessageAcceptance {
     }
 }
 
+fn is_invalid_execution_proof_error(error: &BeaconChainError) -> bool {
+    matches!(
+        error,
+        BeaconChainError::ExecutionProofError(
+            ExecutionProofError::InvalidSignature
+                | ExecutionProofError::EmptyProofData
+                | ExecutionProofError::InvalidValidatorIndex
+                | ExecutionProofError::InvalidValidatorPubkey
+                | ExecutionProofError::InvalidSignatureFormat
+        )
+    )
+}
+
 impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
     /* Auxiliary functions */
 
@@ -212,6 +226,101 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
             message_id,
             validation_result,
         })
+    }
+
+    pub async fn process_gossip_execution_proof(
+        self: Arc<Self>,
+        message_id: MessageId,
+        peer_id: PeerId,
+        execution_proof: Arc<SignedExecutionProof>,
+    ) {
+        match self
+            .chain
+            .verify_and_observe_execution_proof(&execution_proof, None)
+            .await
+        {
+            Ok(observation) => match observation.status {
+                ProofStatus::Valid | ProofStatus::Accepted => {
+                    self.propagate_validation_result(
+                        message_id,
+                        peer_id,
+                        MessageAcceptance::Accept,
+                    );
+                }
+                ProofStatus::Syncing | ProofStatus::NotSupported => {
+                    self.propagate_validation_result(
+                        message_id,
+                        peer_id,
+                        MessageAcceptance::Ignore,
+                    );
+                }
+                ProofStatus::Invalid => {
+                    self.gossip_penalize_peer(
+                        peer_id,
+                        PeerAction::LowToleranceError,
+                        "invalid execution proof",
+                    );
+                    self.propagate_validation_result(
+                        message_id,
+                        peer_id,
+                        MessageAcceptance::Reject,
+                    );
+                }
+            },
+            Err(error) if is_invalid_execution_proof_error(&error) => {
+                self.gossip_penalize_peer(
+                    peer_id,
+                    PeerAction::LowToleranceError,
+                    "invalid execution proof",
+                );
+                self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Reject);
+            }
+            Err(error) => {
+                debug!(?error, %peer_id, "Could not verify gossip execution proof");
+                self.propagate_validation_result(message_id, peer_id, MessageAcceptance::Ignore);
+            }
+        }
+    }
+
+    pub async fn process_rpc_execution_proof(
+        self: Arc<Self>,
+        peer_id: PeerId,
+        execution_proof: Arc<SignedExecutionProof>,
+    ) {
+        match self
+            .chain
+            .verify_and_observe_execution_proof(&execution_proof, None)
+            .await
+        {
+            Ok(observation) if observation.status == ProofStatus::Invalid => {
+                self.send_network_message(NetworkMessage::ReportPeer {
+                    peer_id,
+                    action: PeerAction::LowToleranceError,
+                    source: ReportSource::SyncService,
+                    msg: "invalid execution proof",
+                });
+            }
+            Ok(observation) => {
+                debug!(
+                    %peer_id,
+                    status = %observation.status,
+                    request_root = %observation.request_root,
+                    block_root = ?observation.block_root,
+                    "Observed RPC execution proof"
+                );
+            }
+            Err(error) if is_invalid_execution_proof_error(&error) => {
+                self.send_network_message(NetworkMessage::ReportPeer {
+                    peer_id,
+                    action: PeerAction::LowToleranceError,
+                    source: ReportSource::SyncService,
+                    msg: "invalid execution proof",
+                });
+            }
+            Err(error) => {
+                debug!(?error, %peer_id, "Could not verify RPC execution proof");
+            }
+        }
     }
 
     /// Send a message on `message_tx` that `peer_id` has sent an invalid partial message and should

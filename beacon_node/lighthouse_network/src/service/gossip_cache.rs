@@ -254,6 +254,7 @@ impl GossipCache {
             GossipKind::ExecutionPayloadBid => self.execution_payload_bid,
             GossipKind::PayloadAttestation => self.payload_attestation,
             GossipKind::ProposerPreferences => self.proposer_preferences,
+            GossipKind::ExecutionProof => None,
             GossipKind::LightClientFinalityUpdate => self.light_client_finality_update,
             GossipKind::LightClientOptimisticUpdate => self.light_client_optimistic_update,
         };

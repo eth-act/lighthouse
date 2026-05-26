@@ -21,19 +21,25 @@ use crate::sync::block_sidecar_coupling::CouplingError;
 use crate::sync::range_data_column_batch_request::RangeDataColumnBatchRequest;
 use beacon_chain::block_verification_types::LookupBlock;
 use beacon_chain::block_verification_types::{AsBlock, RangeSyncBlock};
+use beacon_chain::eip8025::MissingExecutionProofInfo;
 use beacon_chain::{BeaconChain, BeaconChainTypes, BlockProcessStatus, EngineState};
 use custody::CustodyRequestResult;
+use execution_layer::eip8025::types::ProofTypes;
 use fnv::FnvHashMap;
-use lighthouse_network::rpc::methods::{BlobsByRangeRequest, DataColumnsByRangeRequest};
+use lighthouse_network::rpc::methods::{
+    BlobsByRangeRequest, DataColumnsByRangeRequest, ExecutionProofStatus,
+    ExecutionProofsByRangeRequest, ExecutionProofsByRootRequest,
+};
 use lighthouse_network::rpc::{BlocksByRangeRequest, GoodbyeReason, RPCError, RequestType};
 pub use lighthouse_network::service::api_types::RangeRequestId;
 use lighthouse_network::service::api_types::{
     AppRequestId, BlobsByRangeRequestId, BlocksByRangeRequestId, ComponentsByRangeRequestId,
     CustodyBackFillBatchRequestId, CustodyBackfillBatchId, CustodyId, CustodyRequester,
     DataColumnsByRangeRequestId, DataColumnsByRangeRequester, DataColumnsByRootRequestId,
-    DataColumnsByRootRequester, Id, SingleLookupReqId, SyncRequestId,
+    DataColumnsByRootRequester, ExecutionProofStatusRequestId, ExecutionProofsByRangeRequestId,
+    ExecutionProofsByRootRequestId, Id, SingleLookupReqId, SyncRequestId,
 };
-use lighthouse_network::{Client, NetworkGlobals, PeerAction, PeerId, ReportSource};
+use lighthouse_network::{Client, Eth2Enr, NetworkGlobals, PeerAction, PeerId, ReportSource};
 use parking_lot::RwLock;
 pub use requests::LookupVerifyError;
 use requests::{
@@ -43,6 +49,7 @@ use requests::{
 };
 #[cfg(test)]
 use slot_clock::SlotClock;
+use ssz_types::{RuntimeVariableList, VariableList, typenum::Unsigned};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
@@ -55,6 +62,7 @@ use tracing::{Span, debug, debug_span, error, warn};
 use types::{
     BlobSidecar, BlockImportSource, ColumnIndex, DataColumnSidecar, DataColumnSidecarList, EthSpec,
     ForkContext, Hash256, SignedBeaconBlock, SignedExecutionPayloadEnvelope, Slot,
+    execution::eip8025::{MaxExecutionProofsPerPayload, ProofByRootIdentifier, ProofType},
 };
 
 pub mod custody;
@@ -119,6 +127,25 @@ pub enum RpcRequestSendError {
 pub enum NoPeerError {
     BlockPeer,
     CustodyPeer(ColumnIndex),
+    /// No connected peer with execution proof support advertised in its ENR.
+    ProofPeer,
+}
+
+/// Age threshold for considering a cached `ExecutionProofStatus` stale enough to re-query.
+pub const EXECUTION_PROOF_STATUS_REFRESH_THRESHOLD: std::time::Duration =
+    std::time::Duration::from_secs(300);
+
+/// A peer's `ExecutionProofStatus`, plus freshness and whether its anchor was verified locally.
+pub struct CachedExecutionProofStatus {
+    pub status: ExecutionProofStatus,
+    pub timestamp: std::time::Instant,
+    pub verified: bool,
+}
+
+impl CachedExecutionProofStatus {
+    pub fn needs_refresh(&self) -> bool {
+        !self.verified || self.timestamp.elapsed() > EXECUTION_PROOF_STATUS_REFRESH_THRESHOLD
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -237,6 +264,9 @@ pub struct SyncNetworkContext<T: BeaconChainTypes> {
     pub chain: Arc<BeaconChain<T>>,
 
     fork_context: Arc<ForkContext>,
+
+    /// Proof types to request from peers.
+    proof_types: ProofTypes,
 }
 
 /// Small enumeration to make dealing with block and blob requests easier.
@@ -280,6 +310,7 @@ impl<E: EthSpec> SyncNetworkContext<TestBeaconChainType<E>> {
             Arc::new(beacon_processor),
             beacon_chain,
             fork_context,
+            ProofTypes::default(),
         )
     }
 }
@@ -290,6 +321,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
         network_beacon_processor: Arc<NetworkBeaconProcessor<T>>,
         chain: Arc<BeaconChain<T>>,
         fork_context: Arc<ForkContext>,
+        proof_types: ProofTypes,
     ) -> Self {
         SyncNetworkContext {
             network_send,
@@ -307,6 +339,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             network_beacon_processor,
             chain,
             fork_context,
+            proof_types,
         }
     }
 
@@ -338,6 +371,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             network_beacon_processor: _,
             chain: _,
             fork_context: _,
+            proof_types: _,
         } = self;
 
         let blocks_by_root_ids = blocks_by_root_requests
@@ -376,6 +410,157 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
     pub fn get_custodial_peers(&self, column_index: ColumnIndex) -> Vec<PeerId> {
         self.network_globals()
             .custody_peers_for_column(column_index)
+    }
+
+    /// Send an `ExecutionProofsByRange` request to the given proof-capable peer.
+    pub fn request_execution_proofs_by_range(
+        &mut self,
+        peer_id: PeerId,
+        start_slot: Slot,
+        count: u64,
+    ) -> Result<ExecutionProofsByRangeRequestId, RpcRequestSendError> {
+        let id = ExecutionProofsByRangeRequestId { id: self.next_id() };
+        let proof_types = RuntimeVariableList::new(
+            self.configured_proof_types().collect(),
+            MaxExecutionProofsPerPayload::to_usize(),
+        )
+        .map_err(|e| RpcRequestSendError::InternalError(format!("proof_types: {e:?}")))?;
+
+        self.send_network_msg(NetworkMessage::SendRequest {
+            peer_id,
+            request: RequestType::ExecutionProofsByRange(ExecutionProofsByRangeRequest {
+                start_slot: start_slot.as_u64(),
+                count,
+                proof_types,
+            }),
+            app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofsByRange(id)),
+        })
+        .map_err(|e| RpcRequestSendError::InternalError(e.to_owned()))?;
+
+        debug!(
+            method = "ExecutionProofsByRange",
+            %start_slot,
+            count,
+            peer = %peer_id,
+            %id,
+            "Sync RPC request sent"
+        );
+        Ok(id)
+    }
+
+    /// Send an `ExecutionProofsByRoot` request for all missing proofs to `peer_id`.
+    pub fn request_execution_proofs_by_root(
+        &mut self,
+        peer_id: PeerId,
+        missing: &[MissingExecutionProofInfo],
+    ) -> Result<ExecutionProofsByRootRequestId, RpcRequestSendError> {
+        let mut identifiers = Vec::with_capacity(missing.len());
+        for info in missing {
+            let needed = self
+                .configured_proof_types()
+                .filter(|proof_type| !info.existing_proof_types.contains(proof_type))
+                .collect::<Vec<_>>();
+            let proof_types = VariableList::new(needed)
+                .map_err(|e| RpcRequestSendError::InternalError(format!("proof_types: {e:?}")))?;
+            identifiers.push(ProofByRootIdentifier {
+                block_root: info.root,
+                proof_types,
+            });
+        }
+
+        let max_request_blocks = self
+            .chain
+            .spec
+            .max_request_blocks(self.fork_context.current_fork_name());
+        let request = ExecutionProofsByRootRequest::new(identifiers, max_request_blocks)
+            .map_err(RpcRequestSendError::InternalError)?;
+        let id = ExecutionProofsByRootRequestId { id: self.next_id() };
+
+        self.send_network_msg(NetworkMessage::SendRequest {
+            peer_id,
+            request: RequestType::ExecutionProofsByRoot(request),
+            app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofsByRoot(id)),
+        })
+        .map_err(|e| RpcRequestSendError::InternalError(e.to_owned()))?;
+
+        debug!(
+            method = "ExecutionProofsByRoot",
+            num_roots = missing.len(),
+            peer = %peer_id,
+            %id,
+            "Sync RPC request sent"
+        );
+        Ok(id)
+    }
+
+    /// Send an `ExecutionProofStatus` request to `peer_id`.
+    pub fn request_execution_proof_status(
+        &mut self,
+        peer_id: PeerId,
+    ) -> Result<ExecutionProofStatusRequestId, RpcRequestSendError> {
+        let id = ExecutionProofStatusRequestId { id: self.next_id() };
+        self.send_network_msg(NetworkMessage::SendRequest {
+            peer_id,
+            request: RequestType::ExecutionProofStatus(self.local_execution_proof_status()),
+            app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofStatus(id)),
+        })
+        .map_err(|e| RpcRequestSendError::InternalError(e.to_owned()))?;
+
+        debug!(
+            method = "ExecutionProofStatus",
+            peer = %peer_id,
+            %id,
+            "Sync RPC request sent"
+        );
+        Ok(id)
+    }
+
+    pub fn local_execution_proof_status(&self) -> ExecutionProofStatus {
+        let head = self.chain.canonical_head.cached_head();
+        let configured_proof_types = self.configured_proof_types_vec();
+        let (block_root, slot, mut available_proof_types) = self
+            .chain
+            .latest_execution_proof_status(&configured_proof_types)
+            .map(|status| {
+                let proof_types = status
+                    .valid_proof_types()
+                    .filter(|proof_type| configured_proof_types.contains(proof_type))
+                    .collect::<Vec<_>>();
+                (status.block_root, status.slot.as_u64(), proof_types)
+            })
+            .unwrap_or_else(|| (head.head_block_root(), head.head_slot().as_u64(), vec![]));
+        available_proof_types.sort_unstable();
+
+        let proof_types = VariableList::new(available_proof_types).unwrap_or_else(|error| {
+            debug!(?error, "Local execution proof types exceed status limit");
+            VariableList::default()
+        });
+        ExecutionProofStatus {
+            block_root,
+            slot,
+            proof_types,
+        }
+    }
+
+    pub fn configured_proof_types(&self) -> impl Iterator<Item = ProofType> + '_ {
+        self.proof_types.iter().map(|proof_type| proof_type.to_u8())
+    }
+
+    pub fn configured_proof_types_vec(&self) -> Vec<ProofType> {
+        self.configured_proof_types().collect()
+    }
+
+    /// Returns `true` if the peer has execution proof support in its ENR.
+    pub fn is_proof_capable_peer(&self, peer_id: &PeerId) -> bool {
+        self.network_globals()
+            .peers
+            .read()
+            .peer_info(peer_id)
+            .is_some_and(|info| {
+                info.enr()
+                    .map(|enr| enr.execution_proof_enabled())
+                    .unwrap_or(false)
+            })
     }
 
     pub fn network_globals(&self) -> &NetworkGlobals<T::EthSpec> {
@@ -435,6 +620,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             network_beacon_processor: _,
             chain: _,
             fork_context: _,
+            proof_types: _,
             // Don't use a fallback match. We want to be sure that all requests are considered when
             // adding new ones
         } = self;

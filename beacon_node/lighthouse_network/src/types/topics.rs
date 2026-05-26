@@ -32,12 +32,14 @@ pub const EXECUTION_PAYLOAD: &str = "execution_payload";
 pub const EXECUTION_PAYLOAD_BID: &str = "execution_payload_bid";
 pub const PAYLOAD_ATTESTATION: &str = "payload_attestation_message";
 pub const PROPOSER_PREFERENCES: &str = "proposer_preferences";
+pub const EXECUTION_PROOF_TOPIC: &str = "execution_proof";
 pub const LIGHT_CLIENT_FINALITY_UPDATE: &str = "light_client_finality_update";
 pub const LIGHT_CLIENT_OPTIMISTIC_UPDATE: &str = "light_client_optimistic_update";
 
 #[derive(Debug)]
 pub struct TopicConfig {
     pub enable_light_client_server: bool,
+    pub enable_execution_proof: bool,
     pub subscribe_all_subnets: bool,
     pub sampling_subnets: HashSet<DataColumnSubnetId>,
 }
@@ -94,6 +96,10 @@ pub fn core_topics_to_subscribe<E: EthSpec>(
         topics.push(GossipKind::ProposerPreferences);
     }
 
+    if opts.enable_execution_proof {
+        topics.push(GossipKind::ExecutionProof);
+    }
+
     topics
 }
 
@@ -120,6 +126,7 @@ pub fn is_fork_non_core_topic(topic: &GossipTopic, _fork_name: ForkName) -> bool
         | GossipKind::ExecutionPayloadBid
         | GossipKind::PayloadAttestation
         | GossipKind::ProposerPreferences
+        | GossipKind::ExecutionProof
         | GossipKind::LightClientFinalityUpdate
         | GossipKind::LightClientOptimisticUpdate => false,
     }
@@ -130,6 +137,7 @@ pub fn all_topics_at_fork<E: EthSpec>(fork: ForkName, spec: &ChainSpec) -> Vec<G
     let sampling_subnets = HashSet::from_iter(all_data_column_sidecar_subnets_from_spec(spec));
     let opts = TopicConfig {
         enable_light_client_server: true,
+        enable_execution_proof: true,
         subscribe_all_subnets: true,
         sampling_subnets,
     };
@@ -183,6 +191,8 @@ pub enum GossipKind {
     ExecutionPayloadBid,
     /// Topic for signed proposer preferences.
     ProposerPreferences,
+    /// Topic for signed execution proofs.
+    ExecutionProof,
     /// Topic for publishing finality updates for light clients.
     LightClientFinalityUpdate,
     /// Topic for publishing optimistic updates for light clients.
@@ -277,6 +287,7 @@ impl GossipTopic {
                 EXECUTION_PAYLOAD_BID => GossipKind::ExecutionPayloadBid,
                 PAYLOAD_ATTESTATION => GossipKind::PayloadAttestation,
                 PROPOSER_PREFERENCES => GossipKind::ProposerPreferences,
+                EXECUTION_PROOF_TOPIC => GossipKind::ExecutionProof,
                 LIGHT_CLIENT_FINALITY_UPDATE => GossipKind::LightClientFinalityUpdate,
                 LIGHT_CLIENT_OPTIMISTIC_UPDATE => GossipKind::LightClientOptimisticUpdate,
                 topic => match subnet_topic_index(topic) {
@@ -343,6 +354,7 @@ impl std::fmt::Display for GossipTopic {
             GossipKind::PayloadAttestation => PAYLOAD_ATTESTATION.into(),
             GossipKind::ExecutionPayloadBid => EXECUTION_PAYLOAD_BID.into(),
             GossipKind::ProposerPreferences => PROPOSER_PREFERENCES.into(),
+            GossipKind::ExecutionProof => EXECUTION_PROOF_TOPIC.into(),
             GossipKind::LightClientFinalityUpdate => LIGHT_CLIENT_FINALITY_UPDATE.into(),
             GossipKind::LightClientOptimisticUpdate => LIGHT_CLIENT_OPTIMISTIC_UPDATE.into(),
         };
@@ -539,6 +551,7 @@ mod tests {
     fn get_topic_config(sampling_subnets: &HashSet<DataColumnSubnetId>) -> TopicConfig {
         TopicConfig {
             enable_light_client_server: false,
+            enable_execution_proof: false,
             subscribe_all_subnets: false,
             sampling_subnets: sampling_subnets.clone(),
         }

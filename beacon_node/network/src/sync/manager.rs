@@ -39,6 +39,7 @@ use super::network_context::{
     CustodyByRootResult, RangeBlockComponent, RangeRequestId, RpcEvent, SyncNetworkContext,
 };
 use super::peer_sync_info::{PeerSyncType, remote_sync_type};
+use super::proof_sync::ProofSync;
 use super::range_sync::{EPOCHS_PER_BATCH, RangeSync, RangeSyncType};
 use crate::network_beacon_processor::{
     BlockProcessingResult, ChainSegmentProcessId, NetworkBeaconProcessor,
@@ -50,14 +51,17 @@ use crate::sync::custody_backfill_sync::CustodyBackFillSync;
 use crate::sync::network_context::{PeerGroup, RpcResponseResult};
 use beacon_chain::block_verification_types::AsBlock;
 use beacon_chain::{BeaconChain, BeaconChainTypes, EngineState};
+use execution_layer::eip8025::types::ProofTypes;
 use futures::StreamExt;
 use lighthouse_network::SyncInfo;
 use lighthouse_network::rpc::RPCError;
+use lighthouse_network::rpc::methods::ExecutionProofStatus;
 use lighthouse_network::service::api_types::{
     BlobsByRangeRequestId, BlocksByRangeRequestId, ComponentsByRangeRequestId,
     CustodyBackFillBatchRequestId, CustodyBackfillBatchId, CustodyRequester,
     DataColumnsByRangeRequestId, DataColumnsByRangeRequester, DataColumnsByRootRequestId,
-    DataColumnsByRootRequester, Id, SingleLookupReqId, SyncRequestId,
+    DataColumnsByRootRequester, ExecutionProofStatusRequestId, Id, SingleLookupReqId,
+    SyncRequestId,
 };
 use lighthouse_network::types::{NetworkGlobals, SyncState};
 use lighthouse_network::{PeerAction, PeerId};
@@ -72,7 +76,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, trace};
 use types::{
     BlobSidecar, DataColumnSidecar, EthSpec, ForkContext, Hash256, SignedBeaconBlock,
-    SignedExecutionPayloadEnvelope, Slot,
+    SignedExecutionPayloadEnvelope, SignedExecutionProof, Slot,
 };
 
 /// The number of slots ahead of us that is allowed before requesting a long-range (batch)  Sync
@@ -137,6 +141,21 @@ pub enum SyncMessage<E: EthSpec> {
         peer_id: PeerId,
         envelope: Option<Arc<SignedExecutionPayloadEnvelope<E>>>,
         seen_timestamp: Duration,
+    },
+
+    /// An execution proof has been received from the RPC.
+    RpcExecutionProof {
+        sync_request_id: SyncRequestId,
+        peer_id: PeerId,
+        execution_proof: Option<Arc<SignedExecutionProof>>,
+    },
+
+    /// An ExecutionProofStatus response has been received from the RPC, or a peer sent us its
+    /// status as an inbound request body.
+    RpcExecutionProofStatus {
+        peer_id: PeerId,
+        request_id: Option<ExecutionProofStatusRequestId>,
+        status: ExecutionProofStatus,
     },
 
     /// A block with an unknown parent has been received.
@@ -253,6 +272,9 @@ pub struct SyncManager<T: BeaconChainTypes> {
     /// The object handling long-range batch load-balanced syncing.
     range_sync: RangeSync<T>,
 
+    /// Catch-up mechanism for missing optional execution proofs.
+    proof_sync: ProofSync<T>,
+
     /// Backfill syncing.
     backfill_sync: BackFillSync<T>,
 
@@ -308,6 +330,11 @@ impl<T: BeaconChainTypes> SyncManager<T> {
         fork_context: Arc<ForkContext>,
     ) -> Self {
         let network_globals = beacon_processor.network_globals.clone();
+        let proof_types = beacon_chain
+            .execution_layer
+            .as_ref()
+            .map(|execution_layer| execution_layer.proof_types().clone())
+            .unwrap_or_else(ProofTypes::default);
         Self {
             chain: beacon_chain.clone(),
             input_channel: sync_recv,
@@ -316,8 +343,10 @@ impl<T: BeaconChainTypes> SyncManager<T> {
                 beacon_processor.clone(),
                 beacon_chain.clone(),
                 fork_context.clone(),
+                proof_types,
             ),
             range_sync: RangeSync::new(beacon_chain.clone()),
+            proof_sync: ProofSync::new(beacon_chain.clone()),
             backfill_sync: BackFillSync::new(beacon_chain.clone(), network_globals.clone()),
             custody_backfill_sync: CustodyBackFillSync::new(beacon_chain.clone(), network_globals),
             block_lookups: BlockLookups::new(),
@@ -429,6 +458,12 @@ impl<T: BeaconChainTypes> SyncManager<T> {
             }
         }
 
+        if self.network_globals().config.enable_execution_proof
+            && self.network.is_proof_capable_peer(&peer_id)
+        {
+            self.proof_sync.add_peer(peer_id, &mut self.network);
+        }
+
         self.update_sync_state();
 
         // Try to make progress on custody requests that are waiting for peers
@@ -509,6 +544,18 @@ impl<T: BeaconChainTypes> SyncManager<T> {
             SyncRequestId::DataColumnsByRange(req_id) => {
                 self.on_data_columns_by_range_response(req_id, peer_id, RpcEvent::RPCError(error))
             }
+            SyncRequestId::ExecutionProofsByRange(req_id) => {
+                debug!(%peer_id, ?req_id, "Execution proofs by range request failed");
+                self.proof_sync.on_range_request_error(&req_id);
+            }
+            SyncRequestId::ExecutionProofsByRoot(req_id) => {
+                debug!(%peer_id, ?req_id, "Execution proofs by root request failed");
+                self.proof_sync.on_root_request_error(&req_id);
+            }
+            SyncRequestId::ExecutionProofStatus(req_id) => {
+                self.proof_sync
+                    .on_peer_execution_proof_status_error(peer_id, req_id);
+            }
         }
     }
 
@@ -522,6 +569,7 @@ impl<T: BeaconChainTypes> SyncManager<T> {
         self.range_sync.peer_disconnect(&mut self.network, peer_id);
         let _ = self.backfill_sync.peer_disconnected(peer_id);
         self.block_lookups.peer_disconnected(peer_id);
+        self.proof_sync.on_proof_capable_peer_disconnected(peer_id);
 
         // Inject a Disconnected error on all requests associated with the disconnected peer
         // to retry all batches/lookups. Only after removing the peer from the data structures to
@@ -704,6 +752,7 @@ impl<T: BeaconChainTypes> SyncManager<T> {
                     self.backfill_sync.pause();
                     self.custody_backfill_sync
                         .pause("Range sync in progress".to_string());
+                    self.proof_sync.pause();
 
                     SyncState::SyncingFinalized {
                         start_slot,
@@ -717,6 +766,7 @@ impl<T: BeaconChainTypes> SyncManager<T> {
                     self.backfill_sync.pause();
                     self.custody_backfill_sync
                         .pause("Range sync in progress".to_string());
+                    self.proof_sync.pause();
 
                     SyncState::SyncingHead {
                         start_slot,
@@ -742,6 +792,9 @@ impl<T: BeaconChainTypes> SyncManager<T> {
                 )
             {
                 self.network.subscribe_core_topics();
+                if self.network_globals().config.enable_execution_proof {
+                    self.proof_sync.start(&mut self.network);
+                }
             }
         }
     }
@@ -773,6 +826,7 @@ impl<T: BeaconChainTypes> SyncManager<T> {
         let epoch_duration =
             self.chain.slot_clock.slot_duration().as_secs() * T::EthSpec::slots_per_epoch();
         let mut epoch_interval = tokio::time::interval(Duration::from_secs(epoch_duration));
+        let mut proof_sync_interval = tokio::time::interval(self.chain.slot_clock.slot_duration());
 
         // process any inbound messages
         loop {
@@ -797,6 +851,9 @@ impl<T: BeaconChainTypes> SyncManager<T> {
                 }
                 _ = epoch_interval.tick() => {
                     self.update_sync_state();
+                }
+                _ = proof_sync_interval.tick(), if self.network_globals().config.enable_execution_proof => {
+                    self.proof_sync.poll(&mut self.network);
                 }
             }
         }
@@ -854,6 +911,18 @@ impl<T: BeaconChainTypes> SyncManager<T> {
                 envelope,
                 seen_timestamp,
             ),
+            SyncMessage::RpcExecutionProof {
+                sync_request_id,
+                peer_id,
+                execution_proof,
+            } => self.rpc_execution_proof_received(sync_request_id, peer_id, execution_proof),
+            SyncMessage::RpcExecutionProofStatus {
+                peer_id,
+                request_id,
+                status,
+            } => self
+                .proof_sync
+                .on_peer_execution_proof_status(peer_id, request_id, status),
             SyncMessage::UnknownParentBlock(peer_id, block, block_root) => {
                 let block_slot = block.slot();
                 let parent_root = block.parent_root();
@@ -1198,6 +1267,36 @@ impl<T: BeaconChainTypes> SyncManager<T> {
             _ => {
                 crit!(%peer_id, "bad request id for data_column");
             }
+        }
+    }
+
+    fn rpc_execution_proof_received(
+        &mut self,
+        sync_request_id: SyncRequestId,
+        peer_id: PeerId,
+        execution_proof: Option<Arc<SignedExecutionProof>>,
+    ) {
+        let Some(proof) = execution_proof else {
+            match &sync_request_id {
+                SyncRequestId::ExecutionProofsByRange(id) => {
+                    self.proof_sync.on_range_request_terminated(id);
+                }
+                SyncRequestId::ExecutionProofsByRoot(id) => {
+                    self.proof_sync.on_root_request_terminated(id);
+                }
+                other => {
+                    debug!(%peer_id, ?other, "Unexpected execution proof stream termination");
+                }
+            }
+            return;
+        };
+
+        if let Err(error) = self
+            .network
+            .beacon_processor()
+            .send_rpc_execution_proof(peer_id, proof)
+        {
+            debug!(%peer_id, ?error, "Failed to send RPC execution proof to beacon processor");
         }
     }
 

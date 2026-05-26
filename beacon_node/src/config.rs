@@ -359,6 +359,29 @@ pub fn get_config<E: EthSpec>(
         clap_utils::parse_required(cli_args, "execution-timeout-multiplier")?;
     el_config.execution_timeout_multiplier = Some(execution_timeout_multiplier);
 
+    if let Some(endpoint) = cli_args.get_one::<String>("proof-engine-endpoint") {
+        el_config.proof_engine_endpoint = Some(parse_only_one_value(
+            endpoint,
+            SensitiveUrl::parse,
+            "--proof-engine-endpoint",
+        )?);
+        client_config.network.enable_execution_proof = true;
+    }
+
+    if let Some(proof_types) = cli_args.get_one::<String>("proof-types") {
+        let proof_types = proof_types
+            .split(',')
+            .filter(|proof_type| !proof_type.trim().is_empty())
+            .map(|proof_type| {
+                proof_type
+                    .trim()
+                    .parse::<execution_layer::eip8025::ProofType>()
+                    .map_err(|e| format!("Invalid --proof-types value: {e}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        el_config.proof_types = execution_layer::eip8025::types::ProofTypes::from(proof_types);
+    }
+
     // Store the EL config in the client config.
     client_config.execution_layer = Some(el_config);
 
@@ -828,6 +851,14 @@ pub fn get_config<E: EthSpec>(
     // Optimistic finalized sync.
     client_config.chain.optimistic_finalized_sync =
         !cli_args.get_flag("disable-optimistic-finalized-sync");
+
+    if let Some(quorum) = clap_utils::parse_optional::<usize>(cli_args, "execution-proof-quorum")? {
+        client_config.chain.execution_proof_quorum.enabled = true;
+        client_config
+            .chain
+            .execution_proof_quorum
+            .min_valid_proof_types = quorum;
+    }
 
     if cli_args.get_flag("genesis-backfill") {
         client_config.chain.genesis_backfill = true;

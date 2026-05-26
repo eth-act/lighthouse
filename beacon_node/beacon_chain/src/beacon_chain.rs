@@ -30,6 +30,7 @@ use crate::data_column_verification::{
     PartialColumnVerificationResult, validate_partial_data_column_sidecar_for_gossip,
 };
 use crate::early_attester_cache::EarlyAttesterCache;
+use crate::eip8025::ExecutionProofStatusCache;
 use crate::envelope_times_cache::EnvelopeTimesCache;
 use crate::errors::{BeaconChainError as Error, BlockProductionError};
 use crate::events::ServerSentEventHandler;
@@ -57,6 +58,7 @@ use crate::observed_attesters::{
 };
 use crate::observed_block_producers::ObservedBlockProducers;
 use crate::observed_data_sidecars::ObservedDataSidecars;
+use crate::observed_execution_proofs::ObservedExecutionProofs;
 use crate::observed_operations::{ObservationOutcome, ObservedOperations};
 use crate::observed_slashable::ObservedSlashable;
 use crate::partial_data_column_assembler::PartialMergeResult;
@@ -432,6 +434,10 @@ pub struct BeaconChain<T: BeaconChainTypes> {
     /// Maintains a record of column sidecars seen over the gossip network.
     pub observed_column_sidecars:
         RwLock<ObservedDataSidecars<DataColumnSidecar<T::EthSpec>, T::EthSpec>>,
+    /// Maintains proof-gossip deduplication state without storing proof bytes.
+    pub observed_execution_proofs: RwLock<ObservedExecutionProofs>,
+    /// Maintains EIP-8025 proof-status metadata and bounded request-root mappings.
+    pub execution_proof_statuses: RwLock<ExecutionProofStatusCache>,
     /// Maintains a record of slashable message seen over the gossip network or RPC.
     pub observed_slashable: RwLock<ObservedSlashable<T::EthSpec>>,
     /// Cache of pending execution payload envelopes for local block building.

@@ -15,7 +15,8 @@ use beacon_processor::{
 use lighthouse_network::rpc::InboundRequestId;
 use lighthouse_network::rpc::methods::{
     BlobsByRangeRequest, BlobsByRootRequest, BlocksByHeadRequest, DataColumnsByRangeRequest,
-    DataColumnsByRootRequest, LightClientUpdatesByRangeRequest, PayloadEnvelopesByRangeRequest,
+    DataColumnsByRootRequest, ExecutionProofsByRangeRequest, ExecutionProofsByRootRequest,
+    LightClientUpdatesByRangeRequest, PayloadEnvelopesByRangeRequest,
     PayloadEnvelopesByRootRequest,
 };
 use lighthouse_network::service::api_types::CustodyBackfillBatchId;
@@ -423,6 +424,43 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         })
     }
 
+    /// Process an execution proof received over gossip.
+    pub fn send_gossip_execution_proof(
+        self: &Arc<Self>,
+        message_id: MessageId,
+        peer_id: PeerId,
+        execution_proof: Arc<SignedExecutionProof>,
+    ) -> Result<(), Error<T::EthSpec>> {
+        let processor = self.clone();
+        self.executor.spawn(
+            async move {
+                processor
+                    .process_gossip_execution_proof(message_id, peer_id, execution_proof)
+                    .await;
+            },
+            "gossip_execution_proof",
+        );
+        Ok(())
+    }
+
+    /// Verify an execution proof received over RPC.
+    pub fn send_rpc_execution_proof(
+        self: &Arc<Self>,
+        peer_id: PeerId,
+        execution_proof: Arc<SignedExecutionProof>,
+    ) -> Result<(), Error<T::EthSpec>> {
+        let processor = self.clone();
+        self.executor.spawn(
+            async move {
+                processor
+                    .process_rpc_execution_proof(peer_id, execution_proof)
+                    .await;
+            },
+            "rpc_execution_proof",
+        );
+        Ok(())
+    }
+
     /// Create a new `Work` event for some execution payload envelope.
     pub fn send_gossip_execution_payload(
         self: &Arc<Self>,
@@ -815,6 +853,48 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         })
     }
 
+    /// Serve an `ExecutionProofsByRange` RPC request.
+    pub fn send_execution_proofs_by_range_request(
+        self: &Arc<Self>,
+        peer_id: PeerId,
+        inbound_request_id: InboundRequestId,
+        request: ExecutionProofsByRangeRequest,
+    ) -> Result<(), Error<T::EthSpec>> {
+        let processor = self.clone();
+        self.executor.spawn_blocking(
+            move || {
+                processor.handle_execution_proofs_by_range_request(
+                    peer_id,
+                    inbound_request_id,
+                    request,
+                );
+            },
+            "execution_proofs_by_range_request",
+        );
+        Ok(())
+    }
+
+    /// Serve an `ExecutionProofsByRoot` RPC request.
+    pub fn send_execution_proofs_by_root_request(
+        self: &Arc<Self>,
+        peer_id: PeerId,
+        inbound_request_id: InboundRequestId,
+        request: ExecutionProofsByRootRequest,
+    ) -> Result<(), Error<T::EthSpec>> {
+        let processor = self.clone();
+        self.executor.spawn_blocking(
+            move || {
+                processor.handle_execution_proofs_by_root_request(
+                    peer_id,
+                    inbound_request_id,
+                    request,
+                );
+            },
+            "execution_proofs_by_root_request",
+        );
+        Ok(())
+    }
+
     /// Create a new work event to process `LightClientBootstrap`s from the RPC network.
     pub fn send_light_client_bootstrap_request(
         self: &Arc<Self>,
@@ -898,6 +978,50 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         self.network_tx.send(message).unwrap_or_else(|e| {
             debug!(error = %e, "Could not send message to the network service. Likely shutdown")
         });
+    }
+
+    pub fn local_execution_proof_status(
+        &self,
+    ) -> lighthouse_network::rpc::methods::ExecutionProofStatus {
+        let head = self.chain.canonical_head.cached_head();
+        let configured_proof_types = self
+            .chain
+            .execution_layer
+            .as_ref()
+            .map(|execution_layer| {
+                execution_layer
+                    .proof_types()
+                    .iter()
+                    .map(|proof_type| proof_type.to_u8())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let (block_root, slot, mut available_proof_types) = self
+            .chain
+            .latest_execution_proof_status(&configured_proof_types)
+            .map(|status| {
+                let proof_types = status
+                    .valid_proof_types()
+                    .filter(|proof_type| configured_proof_types.contains(proof_type))
+                    .collect::<Vec<_>>();
+                (status.block_root, status.slot.as_u64(), proof_types)
+            })
+            .unwrap_or_else(|| (head.head_block_root(), head.head_slot().as_u64(), vec![]));
+        available_proof_types.sort_unstable();
+
+        let proof_types = ssz_types::VariableList::<ProofType, MaxExecutionProofsPerPayload>::new(
+            available_proof_types,
+        )
+        .unwrap_or_else(|error| {
+            debug!(?error, "Local execution proof types exceed status limit");
+            ssz_types::VariableList::default()
+        });
+
+        lighthouse_network::rpc::methods::ExecutionProofStatus {
+            block_root,
+            slot,
+            proof_types,
+        }
     }
 
     pub async fn fetch_engine_blobs_and_publish(

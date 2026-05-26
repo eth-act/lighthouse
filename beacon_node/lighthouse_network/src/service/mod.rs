@@ -382,6 +382,7 @@ impl<E: EthSpec> Network<E> {
         let eth2_rpc = RPC::new(
             ctx.fork_context.clone(),
             config.enable_light_client_server,
+            config.enable_execution_proof,
             config.inbound_rate_limiter_config.clone(),
             config.outbound_rate_limiter_config.clone(),
             seq_number,
@@ -1725,6 +1726,39 @@ impl<E: EthSpec> Network<E> {
                             request_type,
                         })
                     }
+                    RequestType::ExecutionProofsByRange(_) => {
+                        metrics::inc_counter_vec(
+                            &metrics::TOTAL_RPC_REQUESTS,
+                            &["execution_proofs_by_range"],
+                        );
+                        Some(NetworkEvent::RequestReceived {
+                            peer_id,
+                            inbound_request_id,
+                            request_type,
+                        })
+                    }
+                    RequestType::ExecutionProofsByRoot(_) => {
+                        metrics::inc_counter_vec(
+                            &metrics::TOTAL_RPC_REQUESTS,
+                            &["execution_proofs_by_root"],
+                        );
+                        Some(NetworkEvent::RequestReceived {
+                            peer_id,
+                            inbound_request_id,
+                            request_type,
+                        })
+                    }
+                    RequestType::ExecutionProofStatus(_) => {
+                        metrics::inc_counter_vec(
+                            &metrics::TOTAL_RPC_REQUESTS,
+                            &["execution_proof_status"],
+                        );
+                        Some(NetworkEvent::RequestReceived {
+                            peer_id,
+                            inbound_request_id,
+                            request_type,
+                        })
+                    }
                     RequestType::BlobsByRange(_) => {
                         metrics::inc_counter_vec(&metrics::TOTAL_RPC_REQUESTS, &["blobs_by_range"]);
                         Some(NetworkEvent::RequestReceived {
@@ -1852,6 +1886,19 @@ impl<E: EthSpec> Network<E> {
                         peer_id,
                         Response::PayloadEnvelopesByRoot(Some(resp)),
                     ),
+                    RpcSuccessResponse::ExecutionProofsByRange(resp) => self.build_response(
+                        id,
+                        peer_id,
+                        Response::ExecutionProofsByRange(Some(resp)),
+                    ),
+                    RpcSuccessResponse::ExecutionProofsByRoot(resp) => self.build_response(
+                        id,
+                        peer_id,
+                        Response::ExecutionProofsByRoot(Some(resp)),
+                    ),
+                    RpcSuccessResponse::ExecutionProofStatus(status) => {
+                        self.build_response(id, peer_id, Response::ExecutionProofStatus(status))
+                    }
                     RpcSuccessResponse::BlobsByRoot(resp) => {
                         self.build_response(id, peer_id, Response::BlobsByRoot(Some(resp)))
                     }
@@ -1892,6 +1939,12 @@ impl<E: EthSpec> Network<E> {
                     }
                     ResponseTermination::PayloadEnvelopesByRoot => {
                         Response::PayloadEnvelopesByRoot(None)
+                    }
+                    ResponseTermination::ExecutionProofsByRange => {
+                        Response::ExecutionProofsByRange(None)
+                    }
+                    ResponseTermination::ExecutionProofsByRoot => {
+                        Response::ExecutionProofsByRoot(None)
                     }
                     ResponseTermination::BlobsByRange => Response::BlobsByRange(None),
                     ResponseTermination::BlobsByRoot => Response::BlobsByRoot(None),

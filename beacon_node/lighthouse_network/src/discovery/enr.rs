@@ -29,6 +29,8 @@ pub const ATTESTATION_BITFIELD_ENR_KEY: &str = "attnets";
 pub const SYNC_COMMITTEE_BITFIELD_ENR_KEY: &str = "syncnets";
 /// The ENR field specifying the peerdas custody group count.
 pub const PEERDAS_CUSTODY_GROUP_COUNT_ENR_KEY: &str = "cgc";
+/// The ENR field indicating execution proof support.
+pub const EXECUTION_PROOF_ENR_KEY: &str = "eproof";
 
 /// Extension trait for ENR's within Eth2.
 pub trait Eth2Enr {
@@ -47,6 +49,9 @@ pub trait Eth2Enr {
     fn next_fork_digest(&self) -> Result<[u8; 4], &'static str>;
 
     fn eth2(&self) -> Result<EnrForkId, &'static str>;
+
+    /// Whether this node advertises optional execution proof support.
+    fn execution_proof_enabled(&self) -> bool;
 }
 
 impl Eth2Enr for Enr {
@@ -98,6 +103,12 @@ impl Eth2Enr for Enr {
             .map_err(|_| "Invalid RLP Encoding")?;
 
         EnrForkId::from_ssz_bytes(&eth2_bytes).map_err(|_| "Could not decode EnrForkId")
+    }
+
+    fn execution_proof_enabled(&self) -> bool {
+        self.get_decodable::<bool>(EXECUTION_PROOF_ENR_KEY)
+            .and_then(|r| r.ok())
+            .unwrap_or(false)
     }
 }
 
@@ -296,6 +307,10 @@ pub fn build_enr<E: EthSpec>(
         builder.add_value(NEXT_FORK_DIGEST_ENR_KEY, &next_fork_digest);
     }
 
+    if config.enable_execution_proof {
+        builder.add_value(EXECUTION_PROOF_ENR_KEY, &true);
+    }
+
     builder
         .build(enr_key)
         .map_err(|e| format!("Could not build Local ENR: {:?}", e))
@@ -325,6 +340,7 @@ fn compare_enr(local_enr: &Enr, disk_enr: &Enr) -> bool {
         && local_enr.get_decodable::<Bytes>(ATTESTATION_BITFIELD_ENR_KEY) == disk_enr.get_decodable(ATTESTATION_BITFIELD_ENR_KEY)
         && local_enr.get_decodable::<Bytes>(SYNC_COMMITTEE_BITFIELD_ENR_KEY) == disk_enr.get_decodable(SYNC_COMMITTEE_BITFIELD_ENR_KEY)
         && local_enr.get_decodable::<Bytes>(PEERDAS_CUSTODY_GROUP_COUNT_ENR_KEY) == disk_enr.get_decodable(PEERDAS_CUSTODY_GROUP_COUNT_ENR_KEY)
+        && local_enr.get_decodable::<bool>(EXECUTION_PROOF_ENR_KEY) == disk_enr.get_decodable(EXECUTION_PROOF_ENR_KEY)
 }
 
 /// Loads enr from the given directory

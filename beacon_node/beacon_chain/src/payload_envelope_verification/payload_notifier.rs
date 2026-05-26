@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 use execution_layer::{NewPayloadRequest, NewPayloadRequestGloas};
 use fork_choice::PayloadVerificationStatus;
+use ssz::Encode;
 use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
 use tracing::warn;
+use types::ProofAttributes;
 use types::{SignedBeaconBlock, SignedExecutionPayloadEnvelope};
 
 use crate::{
@@ -64,8 +66,43 @@ impl<T: BeaconChainTypes> PayloadNotifier<T> {
         } else {
             let parent_root = self.block.message().parent_root();
             let request = Self::build_new_payload_request(&self.envelope, &self.block)?;
+            self.request_execution_proofs(&request);
             notify_new_payload(&self.chain, self.envelope.slot(), parent_root, request).await
         }
+    }
+
+    fn request_execution_proofs(&self, request: &NewPayloadRequest<'_, T::EthSpec>) {
+        let Some(execution_layer) = self.chain.execution_layer.as_ref() else {
+            return;
+        };
+        let Some(proof_engine) = execution_layer.proof_engine() else {
+            return;
+        };
+
+        let proof_types = execution_layer
+            .proof_types()
+            .iter()
+            .map(|proof_type| proof_type.to_u8())
+            .collect();
+        let proof_attributes = ProofAttributes { proof_types };
+        let request_body = request.as_ssz_bytes();
+        let request_root = request.request_root();
+
+        self.chain.task_executor.spawn(
+            async move {
+                if let Err(error) = proof_engine
+                    .request_proofs_ssz(request_body, proof_attributes)
+                    .await
+                {
+                    warn!(
+                        ?error,
+                        ?request_root,
+                        "Failed to request EIP-8025 execution proofs"
+                    );
+                }
+            },
+            "eip8025_proof_request",
+        );
     }
 
     fn build_new_payload_request<'a>(
@@ -83,7 +120,11 @@ impl<T: BeaconChainTypes> PayloadNotifier<T> {
             .blob_kzg_commitments
             .iter()
             .map(kzg_commitment_to_versioned_hash)
-            .collect();
+            .collect::<Vec<_>>()
+            .try_into()
+            .map_err(|e| {
+                BlockError::BeaconChainError(Box::new(crate::BeaconChainError::SszTypesError(e)))
+            })?;
 
         Ok(NewPayloadRequest::Gloas(NewPayloadRequestGloas {
             execution_payload: &envelope.message.payload,

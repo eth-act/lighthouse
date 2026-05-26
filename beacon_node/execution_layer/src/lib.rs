@@ -58,6 +58,7 @@ use types::{
 };
 
 mod block_hash;
+pub mod eip8025;
 mod engine_api;
 pub mod engines;
 mod keccak;
@@ -139,6 +140,7 @@ pub enum Error {
     NoEngine,
     NoPayloadBuilder,
     ApiError(ApiError),
+    ProofEngineError(eip8025::ProofEngineError),
     Builder(builder_client::Error),
     NoHeaderFromBuilder,
     CannotProduceHeader,
@@ -193,6 +195,12 @@ impl From<EngineError> for Error {
             EngineError::Api { error } => Error::ApiError(error),
             _ => Error::EngineError(Box::new(e)),
         }
+    }
+}
+
+impl From<eip8025::ProofEngineError> for Error {
+    fn from(e: eip8025::ProofEngineError) -> Self {
+        Error::ProofEngineError(e)
     }
 }
 
@@ -457,6 +465,8 @@ struct Inner<E: EthSpec> {
     proposers: RwLock<HashMap<ProposerKey, Proposer>>,
     executor: TaskExecutor,
     payload_cache: PayloadCache<E>,
+    proof_engine: Option<Arc<eip8025::HttpProofEngine>>,
+    proof_types: eip8025::types::ProofTypes,
     /// Track whether the last `newPayload` call errored.
     ///
     /// This is used *only* in the informational sync status endpoint, so that a VC using this
@@ -468,6 +478,11 @@ struct Inner<E: EthSpec> {
 pub struct Config {
     /// Endpoint url for EL nodes that are running the engine api.
     pub execution_endpoint: Option<SensitiveUrl>,
+    /// Endpoint url for the optional EIP-8025 proof engine.
+    pub proof_engine_endpoint: Option<SensitiveUrl>,
+    /// Proof types to request from the proof engine when generating proofs.
+    #[serde(default)]
+    pub proof_types: eip8025::types::ProofTypes,
     /// Endpoint urls for services providing the builder api.
     pub builder_url: Option<SensitiveUrl>,
     /// The timeout value used when making a request to fetch a block header
@@ -503,6 +518,8 @@ impl<E: EthSpec> ExecutionLayer<E> {
     pub fn from_config(config: Config, executor: TaskExecutor) -> Result<Self, Error> {
         let Config {
             execution_endpoint: url,
+            proof_engine_endpoint,
+            proof_types,
             builder_url,
             builder_user_agent,
             builder_header_timeout,
@@ -556,6 +573,8 @@ impl<E: EthSpec> ExecutionLayer<E> {
                 .map_err(Error::ApiError)?;
             Engine::new(api, executor.clone())
         };
+        let proof_engine =
+            proof_engine_endpoint.map(|url| Arc::new(eip8025::HttpProofEngine::new(url, None)));
 
         let inner = Inner {
             engine: Arc::new(engine),
@@ -566,6 +585,8 @@ impl<E: EthSpec> ExecutionLayer<E> {
             proposers: RwLock::new(HashMap::new()),
             executor,
             payload_cache: PayloadCache::default(),
+            proof_engine,
+            proof_types,
             last_new_payload_errored: RwLock::new(false),
         };
 
@@ -587,6 +608,14 @@ impl<E: EthSpec> ExecutionLayer<E> {
 
     fn engine(&self) -> &Arc<Engine> {
         &self.inner.engine
+    }
+
+    pub fn proof_engine(&self) -> Option<Arc<eip8025::HttpProofEngine>> {
+        self.inner.proof_engine.clone()
+    }
+
+    pub fn proof_types(&self) -> &eip8025::types::ProofTypes {
+        &self.inner.proof_types
     }
 
     pub fn builder(&self) -> Option<Arc<BuilderHttpClient>> {

@@ -318,6 +318,14 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         // This prevents inconsistency between the two at the expense of concurrency.
         drop(fork_choice);
 
+        if let Err(error) = self.register_execution_payload_request_root(block_root) {
+            warn!(
+                ?error,
+                ?block_root,
+                "Unable to cache EIP-8025 execution proof request root"
+            );
+        }
+
         // We're declaring the envelope "imported" at this point, since fork choice and the DB know
         // about it.
         let envelope_time_imported = self.slot_clock.now_duration().unwrap_or(Duration::MAX);

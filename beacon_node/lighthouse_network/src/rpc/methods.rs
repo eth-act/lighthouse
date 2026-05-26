@@ -12,7 +12,11 @@ use std::ops::Deref;
 use std::sync::Arc;
 use strum::IntoStaticStr;
 use superstruct::superstruct;
+use typenum::Unsigned;
 use types::data::BlobIdentifier;
+use types::execution::eip8025::{
+    MaxExecutionProofsPerPayload, ProofByRootIdentifier, ProofType, SignedExecutionProof,
+};
 use types::light_client::consts::MAX_REQUEST_LIGHT_CLIENT_UPDATES;
 use types::{
     BlobSidecar, ChainSpec, ColumnIndex, DataColumnSidecar, DataColumnsByRootIdentifier, Epoch,
@@ -619,6 +623,108 @@ impl LightClientUpdatesByRangeRequest {
     }
 }
 
+/// The peer's current execution proof verification status, exchanged via the
+/// `ExecutionProofStatus` RPC protocol.
+#[derive(Clone, Debug, Default, PartialEq, Encode, Decode)]
+pub struct ExecutionProofStatus {
+    /// The block root of the latest block this peer can use as a proof-sync anchor.
+    pub block_root: Hash256,
+    /// The slot of the latest block this peer can use as a proof-sync anchor.
+    pub slot: u64,
+    /// Proof types supported by this peer.
+    pub proof_types: VariableList<ProofType, MaxExecutionProofsPerPayload>,
+}
+
+impl ExecutionProofStatus {
+    pub fn ssz_min_len() -> usize {
+        32 + 8 + ssz::BYTES_PER_LENGTH_OFFSET
+    }
+
+    pub fn ssz_max_len() -> usize {
+        use typenum::Unsigned;
+        Self::ssz_min_len() + MaxExecutionProofsPerPayload::USIZE
+    }
+}
+
+/// Request execution proofs for a slot range from a peer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExecutionProofsByRangeRequest {
+    /// The starting slot to request execution proofs.
+    pub start_slot: u64,
+    /// The number of slots from the start slot.
+    pub count: u64,
+    /// Proof types to return across the requested range. Empty list means all known proof types.
+    pub proof_types: RuntimeVariableList<ProofType>,
+}
+
+impl ExecutionProofsByRangeRequest {
+    pub fn max_requested(&self) -> u64 {
+        use typenum::Unsigned;
+        self.count
+            .saturating_mul(MaxExecutionProofsPerPayload::to_u64())
+    }
+
+    pub fn ssz_min_len() -> usize {
+        20
+    }
+
+    pub fn ssz_max_len() -> usize {
+        use typenum::Unsigned;
+        Self::ssz_min_len() + MaxExecutionProofsPerPayload::USIZE
+    }
+
+    pub fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, ssz::DecodeError> {
+        let mut builder = ssz::SszDecoderBuilder::new(bytes);
+        builder.register_type::<u64>()?;
+        builder.register_type::<u64>()?;
+        builder.register_type::<VariableList<ProofType, MaxExecutionProofsPerPayload>>()?;
+        let mut decoder = builder.build()?;
+        Ok(Self {
+            start_slot: decoder.decode_next::<u64>()?,
+            count: decoder.decode_next::<u64>()?,
+            proof_types: decoder.decode_next_with(|slice| {
+                RuntimeVariableList::from_ssz_bytes(slice, MaxExecutionProofsPerPayload::to_usize())
+            })?,
+        })
+    }
+}
+
+impl ssz::Encode for ExecutionProofsByRangeRequest {
+    fn is_ssz_fixed_len() -> bool {
+        false
+    }
+
+    fn ssz_append(&self, buf: &mut Vec<u8>) {
+        let mut encoder = ssz::SszEncoder::container(buf, 3);
+        encoder.append(&self.start_slot);
+        encoder.append(&self.count);
+        encoder.append(&self.proof_types);
+        encoder.finalize();
+    }
+
+    fn ssz_bytes_len(&self) -> usize {
+        Self::ssz_min_len() + self.proof_types.ssz_bytes_len()
+    }
+}
+
+/// Request execution proofs for specific blocks by root from a peer.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExecutionProofsByRootRequest {
+    /// Each entry identifies a block root and the proof types requested for it.
+    pub identifiers: RuntimeVariableList<ProofByRootIdentifier>,
+}
+
+impl ExecutionProofsByRootRequest {
+    pub fn new(
+        identifiers: Vec<ProofByRootIdentifier>,
+        max_request_blocks: usize,
+    ) -> Result<Self, String> {
+        let identifiers = RuntimeVariableList::new(identifiers, max_request_blocks)
+            .map_err(|e| format!("ExecutionProofsByRootRequest too many identifiers: {e:?}"))?;
+        Ok(Self { identifiers })
+    }
+}
+
 /* RPC Handling and Grouping */
 // Collection of enums and structs used by the Codecs to encode/decode RPC messages
 
@@ -668,6 +774,15 @@ pub enum RpcSuccessResponse<E: EthSpec> {
     /// A response to a get DATA_COLUMN_SIDECARS_BY_RANGE request.
     DataColumnsByRange(Arc<DataColumnSidecar<E>>),
 
+    /// A response to a get EXECUTION_PROOFS_BY_RANGE request.
+    ExecutionProofsByRange(Arc<SignedExecutionProof>),
+
+    /// A response to a get EXECUTION_PROOFS_BY_ROOT request.
+    ExecutionProofsByRoot(Arc<SignedExecutionProof>),
+
+    /// A response to an EXECUTION_PROOF_STATUS request.
+    ExecutionProofStatus(ExecutionProofStatus),
+
     /// A PONG response to a PING request.
     Pong(Ping),
 
@@ -707,6 +822,12 @@ pub enum ResponseTermination {
 
     /// Light client updates by range stream termination.
     LightClientUpdatesByRange,
+
+    /// Execution proofs by range stream termination.
+    ExecutionProofsByRange,
+
+    /// Execution proofs by root stream termination.
+    ExecutionProofsByRoot,
 }
 
 impl ResponseTermination {
@@ -722,6 +843,8 @@ impl ResponseTermination {
             ResponseTermination::DataColumnsByRoot => Protocol::DataColumnsByRoot,
             ResponseTermination::DataColumnsByRange => Protocol::DataColumnsByRange,
             ResponseTermination::LightClientUpdatesByRange => Protocol::LightClientUpdatesByRange,
+            ResponseTermination::ExecutionProofsByRange => Protocol::ExecutionProofsByRange,
+            ResponseTermination::ExecutionProofsByRoot => Protocol::ExecutionProofsByRoot,
         }
     }
 }
@@ -827,6 +950,9 @@ impl<E: EthSpec> RpcSuccessResponse<E> {
             }
             RpcSuccessResponse::LightClientFinalityUpdate(_) => Protocol::LightClientFinalityUpdate,
             RpcSuccessResponse::LightClientUpdatesByRange(_) => Protocol::LightClientUpdatesByRange,
+            RpcSuccessResponse::ExecutionProofsByRange(_) => Protocol::ExecutionProofsByRange,
+            RpcSuccessResponse::ExecutionProofsByRoot(_) => Protocol::ExecutionProofsByRoot,
+            RpcSuccessResponse::ExecutionProofStatus(_) => Protocol::ExecutionProofStatus,
         }
     }
 
@@ -843,6 +969,9 @@ impl<E: EthSpec> RpcSuccessResponse<E> {
             Self::LightClientOptimisticUpdate(r) => Some(r.get_slot()),
             Self::LightClientUpdatesByRange(r) => Some(r.attested_header_slot()),
             Self::MetaData(_) | Self::Status(_) | Self::Pong(_) => None,
+            Self::ExecutionProofsByRange(_)
+            | Self::ExecutionProofsByRoot(_)
+            | Self::ExecutionProofStatus(_) => None,
         }
     }
 }
@@ -947,6 +1076,23 @@ impl<E: EthSpec> std::fmt::Display for RpcSuccessResponse<E> {
                     update.signature_slot(),
                 )
             }
+            RpcSuccessResponse::ExecutionProofsByRange(proof) => {
+                write!(
+                    f,
+                    "ExecutionProofsByRange: validator_index: {}",
+                    proof.validator_index
+                )
+            }
+            RpcSuccessResponse::ExecutionProofsByRoot(proof) => {
+                write!(
+                    f,
+                    "ExecutionProofsByRoot: validator_index: {}",
+                    proof.validator_index
+                )
+            }
+            RpcSuccessResponse::ExecutionProofStatus(status) => {
+                write!(f, "ExecutionProofStatus: slot={}", status.slot)
+            }
         }
     }
 }
@@ -1036,6 +1182,28 @@ impl<E: EthSpec> std::fmt::Display for DataColumnsByRootRequest<E> {
             f,
             "Request: DataColumnsByRoot: Number of Requested Data Column Ids: {}",
             self.data_column_ids.len()
+        )
+    }
+}
+
+impl std::fmt::Display for ExecutionProofsByRangeRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Request: ExecutionProofsByRange: Start Slot: {}, Count: {}, Proof Types: {}",
+            self.start_slot,
+            self.count,
+            self.proof_types.len()
+        )
+    }
+}
+
+impl std::fmt::Display for ExecutionProofsByRootRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Request: ExecutionProofsByRoot: Number of Requested Identifiers: {}",
+            self.identifiers.len()
         )
     }
 }

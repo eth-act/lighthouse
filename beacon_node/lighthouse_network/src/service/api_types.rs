@@ -1,11 +1,13 @@
-use crate::rpc::methods::{ResponseTermination, RpcResponse, RpcSuccessResponse, StatusMessage};
+use crate::rpc::methods::{
+    ExecutionProofStatus, ResponseTermination, RpcResponse, RpcSuccessResponse, StatusMessage,
+};
 use libp2p::PeerId;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 use types::{
     BlobSidecar, DataColumnSidecar, Epoch, EthSpec, LightClientBootstrap,
     LightClientFinalityUpdate, LightClientOptimisticUpdate, LightClientUpdate, SignedBeaconBlock,
-    SignedExecutionPayloadEnvelope,
+    SignedExecutionPayloadEnvelope, execution::eip8025::SignedExecutionProof,
 };
 
 pub type Id = u32;
@@ -31,6 +33,12 @@ pub enum SyncRequestId {
     BlobsByRange(BlobsByRangeRequestId),
     /// Data columns by range request
     DataColumnsByRange(DataColumnsByRangeRequestId),
+    /// Execution proofs by range request
+    ExecutionProofsByRange(ExecutionProofsByRangeRequestId),
+    /// Execution proofs by root request
+    ExecutionProofsByRoot(ExecutionProofsByRootRequestId),
+    /// Execution proof status request
+    ExecutionProofStatus(ExecutionProofStatusRequestId),
 }
 
 /// Request ID for data_columns_by_root requests. Block lookups do not issue this request directly.
@@ -68,6 +76,24 @@ pub struct DataColumnsByRangeRequestId {
     /// This is useful to penalize the peer at a later point if it returned data columns that
     /// did not match with the verified block.
     pub peer: PeerId,
+}
+
+/// Request ID for execution_proofs_by_range requests.
+#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
+pub struct ExecutionProofsByRangeRequestId {
+    pub id: Id,
+}
+
+/// Request ID for execution_proofs_by_root requests.
+#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
+pub struct ExecutionProofsByRootRequestId {
+    pub id: Id,
+}
+
+/// Request ID for execution_proof_status requests.
+#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
+pub struct ExecutionProofStatusRequestId {
+    pub id: Id,
 }
 
 #[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
@@ -180,6 +206,12 @@ pub enum Response<E: EthSpec> {
     LightClientFinalityUpdate(Arc<LightClientFinalityUpdate<E>>),
     /// A response to a LightClientUpdatesByRange request.
     LightClientUpdatesByRange(Option<Arc<LightClientUpdate<E>>>),
+    /// A response to a get EXECUTION_PROOFS_BY_RANGE request.
+    ExecutionProofsByRange(Option<Arc<SignedExecutionProof>>),
+    /// A response to a get EXECUTION_PROOFS_BY_ROOT request.
+    ExecutionProofsByRoot(Option<Arc<SignedExecutionProof>>),
+    /// A response to an EXECUTION_PROOF_STATUS request.
+    ExecutionProofStatus(ExecutionProofStatus),
 }
 
 impl<E: EthSpec> std::convert::From<Response<E>> for RpcResponse<E> {
@@ -239,6 +271,21 @@ impl<E: EthSpec> std::convert::From<Response<E>> for RpcResponse<E> {
                     RpcResponse::StreamTermination(ResponseTermination::LightClientUpdatesByRange)
                 }
             },
+            Response::ExecutionProofsByRange(r) => match r {
+                Some(proof) => {
+                    RpcResponse::Success(RpcSuccessResponse::ExecutionProofsByRange(proof))
+                }
+                None => RpcResponse::StreamTermination(ResponseTermination::ExecutionProofsByRange),
+            },
+            Response::ExecutionProofsByRoot(r) => match r {
+                Some(proof) => {
+                    RpcResponse::Success(RpcSuccessResponse::ExecutionProofsByRoot(proof))
+                }
+                None => RpcResponse::StreamTermination(ResponseTermination::ExecutionProofsByRoot),
+            },
+            Response::ExecutionProofStatus(status) => {
+                RpcResponse::Success(RpcSuccessResponse::ExecutionProofStatus(status))
+            }
         }
     }
 }
@@ -259,6 +306,9 @@ macro_rules! impl_display {
 impl_display!(BlocksByRangeRequestId, "{}/{}", id, parent_request_id);
 impl_display!(BlobsByRangeRequestId, "{}/{}", id, parent_request_id);
 impl_display!(DataColumnsByRangeRequestId, "{}/{}", id, parent_request_id);
+impl_display!(ExecutionProofsByRangeRequestId, "ExecProofsByRange/{}", id);
+impl_display!(ExecutionProofsByRootRequestId, "ExecProofsByRoot/{}", id);
+impl_display!(ExecutionProofStatusRequestId, "ExecProofStatus/{}", id);
 impl_display!(ComponentsByRangeRequestId, "{}/{}", id, requester);
 impl_display!(DataColumnsByRootRequestId, "{}/{}", id, requester);
 impl_display!(SingleLookupReqId, "{}/Lookup/{}", req_id, lookup_id);

@@ -2856,7 +2856,9 @@ where
             .blob_kzg_commitments
             .iter()
             .map(kzg_commitment_to_versioned_hash)
-            .collect();
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("versioned hashes should fit");
 
         let request = NewPayloadRequest::Gloas(NewPayloadRequestGloas {
             execution_payload: &signed_envelope.message.payload,

@@ -8,7 +8,8 @@ use beacon_chain::{BeaconChainError, BeaconChainTypes, BlockProcessStatus, WhenS
 use itertools::{Itertools, process_results};
 use lighthouse_network::rpc::methods::{
     BlobsByRangeRequest, BlobsByRootRequest, BlocksByHeadRequest, DataColumnsByRangeRequest,
-    DataColumnsByRootRequest, PayloadEnvelopesByRangeRequest, PayloadEnvelopesByRootRequest,
+    DataColumnsByRootRequest, ExecutionProofsByRangeRequest, ExecutionProofsByRootRequest,
+    PayloadEnvelopesByRangeRequest, PayloadEnvelopesByRootRequest,
 };
 use lighthouse_network::rpc::*;
 use lighthouse_network::{PeerId, ReportSource, Response, SyncInfo};
@@ -19,7 +20,7 @@ use std::sync::Arc;
 use tokio_stream::StreamExt;
 use tracing::{Span, debug, error, field, instrument, trace, warn};
 use types::data::BlobIdentifier;
-use types::{ColumnIndex, Epoch, EthSpec, Hash256, Slot};
+use types::{ColumnIndex, Epoch, EthSpec, Hash256, ProofType, Slot};
 
 impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
     /* Auxiliary functions */
@@ -1860,6 +1861,261 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         );
 
         Ok(())
+    }
+
+    /// Handle an `ExecutionProofsByRange` request from the peer.
+    pub fn handle_execution_proofs_by_range_request(
+        &self,
+        peer_id: PeerId,
+        inbound_request_id: InboundRequestId,
+        req: ExecutionProofsByRangeRequest,
+    ) {
+        self.terminate_response_stream(
+            peer_id,
+            inbound_request_id,
+            self.handle_execution_proofs_by_range_request_inner(peer_id, inbound_request_id, req),
+            Response::ExecutionProofsByRange,
+        );
+    }
+
+    fn handle_execution_proofs_by_range_request_inner(
+        &self,
+        peer_id: PeerId,
+        inbound_request_id: InboundRequestId,
+        req: ExecutionProofsByRangeRequest,
+    ) -> Result<(), (RpcErrorResponse, &'static str)> {
+        debug!(
+            %peer_id,
+            start_slot = req.start_slot,
+            count = req.count,
+            num_proof_types = req.proof_types.len(),
+            "Received ExecutionProofsByRange Request"
+        );
+
+        self.check_execution_proofs_by_range_window(req.start_slot, req.count)?;
+        let proof_types = self.requested_or_configured_proof_types(req.proof_types.iter().copied());
+        let proofs = self
+            .chain
+            .execution_proofs_by_range(Slot::new(req.start_slot), req.count, &proof_types)
+            .map_err(|error| {
+                debug!(?error, %peer_id, "Error getting execution proofs by range");
+                (
+                    RpcErrorResponse::ServerError,
+                    "Error getting execution proofs by range",
+                )
+            })?;
+
+        let proofs_sent = proofs.len();
+        for proof in proofs {
+            self.send_response(
+                peer_id,
+                inbound_request_id,
+                Response::ExecutionProofsByRange(Some(proof)),
+            );
+        }
+
+        debug!(
+            %peer_id,
+            start_slot = req.start_slot,
+            count = req.count,
+            returned = proofs_sent,
+            "ExecutionProofsByRange Response processed"
+        );
+
+        Ok(())
+    }
+
+    fn proof_serve_range(&self) -> (Slot, Slot) {
+        let finalized_slot = self
+            .chain
+            .canonical_head
+            .cached_head()
+            .finalized_checkpoint()
+            .epoch
+            .start_slot(T::EthSpec::slots_per_epoch());
+        let current_slot = self
+            .chain
+            .slot()
+            .unwrap_or_else(|_| self.chain.slot_clock.genesis_slot());
+        (finalized_slot, current_slot)
+    }
+
+    fn check_execution_proofs_by_range_window(
+        &self,
+        start_slot: u64,
+        count: u64,
+    ) -> Result<(), (RpcErrorResponse, &'static str)> {
+        if count == 0 {
+            return Ok(());
+        }
+
+        let Some(end_slot) = start_slot.checked_add(count.saturating_sub(1)) else {
+            return Err((
+                RpcErrorResponse::InvalidRequest,
+                "ExecutionProofsByRange range overflows",
+            ));
+        };
+
+        let (serve_start_slot, current_slot) = self.proof_serve_range();
+        if Slot::new(start_slot) < serve_start_slot || Slot::new(end_slot) > current_slot {
+            debug!(
+                start_slot,
+                end_slot,
+                %serve_start_slot,
+                %current_slot,
+                "ExecutionProofsByRange outside proof serve range"
+            );
+            return Err((
+                RpcErrorResponse::ResourceUnavailable,
+                "ExecutionProofsByRange outside proof serve range",
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn canonical_block_slot(
+        &self,
+        block_root: Hash256,
+    ) -> Result<Option<Slot>, (RpcErrorResponse, &'static str)> {
+        let Some(block) = self.chain.get_blinded_block(&block_root).map_err(|error| {
+            error!(
+                ?block_root,
+                ?error,
+                "Error loading block for ExecutionProofsByRoot proof range check"
+            );
+            (
+                RpcErrorResponse::ServerError,
+                "Failed loading block for ExecutionProofsByRoot",
+            )
+        })?
+        else {
+            return Ok(None);
+        };
+
+        let slot = block.slot();
+        let canonical_root = self
+            .chain
+            .block_root_at_slot(slot, WhenSlotSkipped::None)
+            .map_err(|error| {
+                error!(
+                    ?block_root,
+                    %slot,
+                    ?error,
+                    "Error checking canonical block root for ExecutionProofsByRoot"
+                );
+                (
+                    RpcErrorResponse::ServerError,
+                    "Failed checking canonical block root for ExecutionProofsByRoot",
+                )
+            })?;
+
+        Ok((canonical_root == Some(block_root)).then_some(slot))
+    }
+
+    /// Handle an `ExecutionProofsByRoot` request from the peer.
+    pub fn handle_execution_proofs_by_root_request(
+        &self,
+        peer_id: PeerId,
+        inbound_request_id: InboundRequestId,
+        req: ExecutionProofsByRootRequest,
+    ) {
+        self.terminate_response_stream(
+            peer_id,
+            inbound_request_id,
+            self.handle_execution_proofs_by_root_request_inner(peer_id, inbound_request_id, req),
+            Response::ExecutionProofsByRoot,
+        );
+    }
+
+    fn handle_execution_proofs_by_root_request_inner(
+        &self,
+        peer_id: PeerId,
+        inbound_request_id: InboundRequestId,
+        req: ExecutionProofsByRootRequest,
+    ) -> Result<(), (RpcErrorResponse, &'static str)> {
+        debug!(
+            %peer_id,
+            num_identifiers = req.identifiers.len(),
+            "Received ExecutionProofsByRoot Request"
+        );
+
+        let (serve_start_slot, current_slot) = self.proof_serve_range();
+        let mut has_canonical_requested_root = false;
+        let mut in_range_roots = HashSet::new();
+        for identifier in req.identifiers.iter() {
+            let Some(slot) = self.canonical_block_slot(identifier.block_root)? else {
+                continue;
+            };
+            has_canonical_requested_root = true;
+            if slot >= serve_start_slot && slot <= current_slot {
+                in_range_roots.insert(identifier.block_root);
+            }
+        }
+
+        if has_canonical_requested_root && in_range_roots.is_empty() {
+            debug!(
+                %serve_start_slot,
+                %current_slot,
+                num_identifiers = req.identifiers.len(),
+                "ExecutionProofsByRoot outside proof serve range"
+            );
+            return Err((
+                RpcErrorResponse::ResourceUnavailable,
+                "ExecutionProofsByRoot outside proof serve range",
+            ));
+        }
+
+        let mut proofs_sent = 0usize;
+        for identifier in req.identifiers.iter() {
+            if has_canonical_requested_root && !in_range_roots.contains(&identifier.block_root) {
+                continue;
+            }
+            let proof_types =
+                self.requested_or_configured_proof_types(identifier.proof_types.iter().copied());
+            let proofs = self
+                .chain
+                .execution_proofs_by_block_root(identifier.block_root, &proof_types);
+            proofs_sent += proofs.len();
+            for proof in proofs {
+                self.send_response(
+                    peer_id,
+                    inbound_request_id,
+                    Response::ExecutionProofsByRoot(Some(proof)),
+                );
+            }
+        }
+
+        debug!(
+            %peer_id,
+            num_identifiers = req.identifiers.len(),
+            returned = proofs_sent,
+            "ExecutionProofsByRoot Response processed"
+        );
+
+        Ok(())
+    }
+
+    fn requested_or_configured_proof_types<I>(&self, requested: I) -> Vec<ProofType>
+    where
+        I: IntoIterator<Item = ProofType>,
+    {
+        let requested = requested.into_iter().collect::<Vec<_>>();
+        if !requested.is_empty() {
+            return requested;
+        }
+
+        self.chain
+            .execution_layer
+            .as_ref()
+            .map(|execution_layer| {
+                execution_layer
+                    .proof_types()
+                    .iter()
+                    .map(|proof_type| proof_type.to_u8())
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Helper function to ensure single item protocol always end with either a single chunk or an
