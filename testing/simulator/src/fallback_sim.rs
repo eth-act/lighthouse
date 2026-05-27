@@ -1,4 +1,4 @@
-use crate::local_network::LocalNetworkParams;
+use crate::local_network::{LocalNetworkParams, NodeType};
 use crate::{LocalNetwork, checks};
 use clap::ArgMatches;
 
@@ -219,6 +219,9 @@ pub fn run_fallback_sim(matches: &ArgMatches) -> Result<(), String> {
                     node_count,
                     extra_nodes: 0,
                     proposer_nodes: 0,
+                    proof_generator_nodes: 0,
+                    proof_verifier_nodes: 0,
+                    delayed_nodes: 0,
                     genesis_delay,
                 },
                 context.clone(),
@@ -229,7 +232,11 @@ pub fn run_fallback_sim(matches: &ArgMatches) -> Result<(), String> {
         // Add nodes to the network.
         for _ in 0..node_count {
             network
-                .add_beacon_node(beacon_config.clone(), mock_execution_config.clone(), false)
+                .add_beacon_node(
+                    beacon_config.clone(),
+                    mock_execution_config.clone(),
+                    NodeType::Default,
+                )
                 .await?;
         }
 

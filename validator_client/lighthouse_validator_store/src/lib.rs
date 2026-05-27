@@ -1,5 +1,5 @@
 use account_utils::validator_definitions::{PasswordStorage, ValidatorDefinition};
-use bls::{PublicKeyBytes, Signature};
+use bls::{PublicKeyBytes, Signature, SignatureBytes};
 use doppelganger_service::DoppelgangerService;
 use eth2::types::PublishBlockRequest;
 use futures::{Stream, future::join_all, stream};
@@ -20,14 +20,14 @@ use task_executor::TaskExecutor;
 use tracing::{Instrument, debug, error, info, info_span, instrument, warn};
 use types::{
     AbstractExecPayload, Address, AggregateAndProof, Attestation, BeaconBlock, BlindedPayload,
-    ChainSpec, ContributionAndProof, Domain, Epoch, EthSpec, ExecutionPayloadEnvelope, Fork,
-    FullPayload, Graffiti, Hash256, PayloadAttestationData, PayloadAttestationMessage,
-    ProposerPreferences, SelectionProof, SignedAggregateAndProof, SignedBeaconBlock,
-    SignedContributionAndProof, SignedExecutionPayloadEnvelope, SignedProposerPreferences,
-    SignedRoot, SignedValidatorRegistrationData, SignedVoluntaryExit, Slot,
-    SyncAggregatorSelectionData, SyncCommitteeContribution, SyncCommitteeMessage,
-    SyncSelectionProof, SyncSubnetId, ValidatorRegistrationData, VoluntaryExit,
-    graffiti::GraffitiString,
+    ChainSpec, ContributionAndProof, Domain, Epoch, EthSpec, ExecutionPayloadEnvelope,
+    ExecutionProof, Fork, FullPayload, Graffiti, Hash256, PayloadAttestationData,
+    PayloadAttestationMessage, ProposerPreferences, SelectionProof, SignedAggregateAndProof,
+    SignedBeaconBlock, SignedContributionAndProof, SignedExecutionPayloadEnvelope,
+    SignedExecutionProof, SignedProposerPreferences, SignedRoot, SignedValidatorRegistrationData,
+    SignedVoluntaryExit, Slot, SyncAggregatorSelectionData, SyncCommitteeContribution,
+    SyncCommitteeMessage, SyncSelectionProof, SyncSubnetId, ValidatorRegistrationData,
+    VoluntaryExit, graffiti::GraffitiString,
 };
 use validator_store::{
     AggregateToSign, AttestationToSign, ContributionToSign, DoppelgangerStatus,
@@ -1345,6 +1345,43 @@ impl<T: SlotClock + 'static, E: EthSpec> ValidatorStore for LighthouseValidatorS
                 }
             }
             Ok(signed)
+        })
+    }
+
+    async fn sign_execution_proof(
+        &self,
+        validator_pubkey: PublicKeyBytes,
+        execution_proof: ExecutionProof,
+        signing_epoch: Epoch,
+    ) -> Result<SignedExecutionProof, Error> {
+        let signing_context = self.signing_context(Domain::ExecutionProof, signing_epoch);
+        let signing_method = self.doppelganger_bypassed_signing_method(validator_pubkey)?;
+
+        let signature = signing_method
+            .get_signature::<E, FullPayload<E>>(
+                SignableMessage::ExecutionProof(&execution_proof),
+                signing_context,
+                &self.spec,
+                &self.task_executor,
+            )
+            .await?;
+
+        let validator_index = self
+            .validator_index(&validator_pubkey)
+            .ok_or(ValidatorStoreError::UnknownPubkey(validator_pubkey))?;
+
+        let signature = SignatureBytes::deserialize(&signature.serialize())
+            .map_err(|_| Error::Middleware("Failed to serialize signature".to_string()))?;
+
+        validator_metrics::inc_counter_vec(
+            &validator_metrics::SIGNED_EXECUTION_PROOFS_TOTAL,
+            &[validator_metrics::SUCCESS],
+        );
+
+        Ok(SignedExecutionProof {
+            message: execution_proof,
+            validator_index,
+            signature,
         })
     }
 

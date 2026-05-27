@@ -1012,6 +1012,7 @@ where
             observed_column_sidecars: RwLock::new(ObservedDataSidecars::new(self.spec.clone())),
             observed_execution_proofs: RwLock::new(ObservedExecutionProofs::default()),
             execution_proof_statuses: RwLock::new(ExecutionProofStatusCache::default()),
+            internal_event_tx: std::sync::OnceLock::new(),
             observed_slashable: <_>::default(),
             pending_payload_envelopes: <_>::default(),
             observed_voluntary_exits: <_>::default(),

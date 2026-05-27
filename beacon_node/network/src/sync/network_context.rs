@@ -22,6 +22,7 @@ use crate::sync::range_data_column_batch_request::RangeDataColumnBatchRequest;
 use beacon_chain::block_verification_types::LookupBlock;
 use beacon_chain::block_verification_types::{AsBlock, RangeSyncBlock};
 use beacon_chain::eip8025::MissingExecutionProofInfo;
+use beacon_chain::internal_events::InternalBeaconNodeEvent;
 use beacon_chain::{BeaconChain, BeaconChainTypes, BlockProcessStatus, EngineState};
 use custody::CustodyRequestResult;
 use execution_layer::eip8025::types::ProofTypes;
@@ -436,6 +437,11 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofsByRange(id)),
         })
         .map_err(|e| RpcRequestSendError::InternalError(e.to_owned()))?;
+        self.chain
+            .emit_internal_event(InternalBeaconNodeEvent::OutboundExecutionProofsByRange {
+                start_slot,
+                count,
+            });
 
         debug!(
             method = "ExecutionProofsByRange",
@@ -474,6 +480,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             .max_request_blocks(self.fork_context.current_fork_name());
         let request = ExecutionProofsByRootRequest::new(identifiers, max_request_blocks)
             .map_err(RpcRequestSendError::InternalError)?;
+        let event_identifiers = request.identifiers.to_vec();
         let id = ExecutionProofsByRootRequestId { id: self.next_id() };
 
         self.send_network_msg(NetworkMessage::SendRequest {
@@ -482,6 +489,10 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofsByRoot(id)),
         })
         .map_err(|e| RpcRequestSendError::InternalError(e.to_owned()))?;
+        self.chain
+            .emit_internal_event(InternalBeaconNodeEvent::OutboundExecutionProofsByRoot {
+                identifiers: event_identifiers,
+            });
 
         debug!(
             method = "ExecutionProofsByRoot",
@@ -499,9 +510,10 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
         peer_id: PeerId,
     ) -> Result<ExecutionProofStatusRequestId, RpcRequestSendError> {
         let id = ExecutionProofStatusRequestId { id: self.next_id() };
+        let local_status = self.local_execution_proof_status();
         self.send_network_msg(NetworkMessage::SendRequest {
             peer_id,
-            request: RequestType::ExecutionProofStatus(self.local_execution_proof_status()),
+            request: RequestType::ExecutionProofStatus(local_status),
             app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofStatus(id)),
         })
         .map_err(|e| RpcRequestSendError::InternalError(e.to_owned()))?;

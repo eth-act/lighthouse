@@ -74,10 +74,61 @@ impl FromStr for ProofType {
             "reth-risc0" => Ok(Self::RethRisc0),
             "reth-sp1" => Ok(Self::RethSP1),
             "reth-zisk" => Ok(Self::RethZisk),
-            _ => Err(ProofEngineError::InvalidProofType(format!(
-                "unknown proof type: {s}"
-            ))),
+            numeric => numeric.parse::<u8>().map_or_else(
+                |_| {
+                    Err(ProofEngineError::InvalidProofType(format!(
+                        "unknown proof type: {s}"
+                    )))
+                },
+                Self::from_u8,
+            ),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProofType;
+
+    #[test]
+    fn proof_type_parses_string_names() {
+        assert_eq!(
+            "reth-zisk"
+                .parse::<ProofType>()
+                .expect("known proof type should parse"),
+            ProofType::RethZisk
+        );
+    }
+
+    #[test]
+    fn proof_type_parses_numeric_ids() {
+        assert_eq!(
+            "6".parse::<ProofType>()
+                .expect("known numeric proof type should parse"),
+            ProofType::RethZisk
+        );
+    }
+
+    #[test]
+    fn proof_type_rejects_unknown_names() {
+        let error = "not-a-proof-type"
+            .parse::<ProofType>()
+            .expect_err("unknown proof type should be rejected");
+        assert!(
+            error.to_string().contains("unknown proof type"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn proof_type_rejects_unknown_numeric_ids() {
+        let error = "7"
+            .parse::<ProofType>()
+            .expect_err("unknown numeric proof type should be rejected");
+        assert!(
+            error.to_string().contains("no mapping for proof type 7"),
+            "unexpected error: {error}"
+        );
     }
 }
 
@@ -133,6 +184,22 @@ impl From<Vec<ProofType>> for ProofTypes {
 pub enum ProofEvent {
     ProofComplete(ProofComplete),
     ProofFailure(ProofFailure),
+}
+
+impl ProofEvent {
+    pub fn new_payload_request_root(&self) -> Hash256 {
+        match self {
+            Self::ProofComplete(complete) => complete.new_payload_request_root,
+            Self::ProofFailure(failure) => failure.new_payload_request_root,
+        }
+    }
+
+    pub fn proof_type(&self) -> u8 {
+        match self {
+            Self::ProofComplete(complete) => complete.proof_type,
+            Self::ProofFailure(failure) => failure.proof_type,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

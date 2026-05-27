@@ -438,6 +438,10 @@ pub struct BeaconChain<T: BeaconChainTypes> {
     pub observed_execution_proofs: RwLock<ObservedExecutionProofs>,
     /// Maintains EIP-8025 proof-status metadata and bounded request-root mappings.
     pub execution_proof_statuses: RwLock<ExecutionProofStatusCache>,
+    /// Lazily initialized event bus used by execution-proof integration tests.
+    pub internal_event_tx: std::sync::OnceLock<
+        tokio::sync::broadcast::Sender<crate::internal_events::InternalBeaconNodeEvent>,
+    >,
     /// Maintains a record of slashable message seen over the gossip network or RPC.
     pub observed_slashable: RwLock<ObservedSlashable<T::EthSpec>>,
     /// Cache of pending execution payload envelopes for local block building.
@@ -4433,6 +4437,16 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         // This prevents inconsistency between the two at the expense of concurrency.
         drop(fork_choice);
 
+        if let Ok(new_payload_request) =
+            TryInto::<execution_layer::NewPayloadRequest<T::EthSpec>>::try_into(block)
+        {
+            self.execution_proof_statuses.write().register_request_root(
+                block_root,
+                new_payload_request.request_root(),
+                block.slot(),
+            );
+        }
+
         // We're declaring the block "imported" at this point, since fork choice and the DB know
         // about it.
         let block_time_imported = self.slot_clock.now_duration().unwrap_or(Duration::MAX);
@@ -7445,6 +7459,32 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     pub fn dump_dot_file(&self, file_name: &str) {
         let mut file = std::fs::File::create(file_name).unwrap();
         self.dump_as_dot(&mut file);
+    }
+
+    pub fn subscribe_internal_events(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<crate::internal_events::InternalBeaconNodeEvent> {
+        self.internal_event_tx
+            .get_or_init(|| {
+                let (tx, _rx) = tokio::sync::broadcast::channel(
+                    crate::internal_events::INTERNAL_EVENT_CHANNEL_CAPACITY,
+                );
+                tx
+            })
+            .subscribe()
+    }
+
+    pub fn internal_event_sender(
+        &self,
+    ) -> Option<&tokio::sync::broadcast::Sender<crate::internal_events::InternalBeaconNodeEvent>>
+    {
+        self.internal_event_tx.get()
+    }
+
+    pub fn emit_internal_event(&self, event: crate::internal_events::InternalBeaconNodeEvent) {
+        if let Some(tx) = self.internal_event_tx.get() {
+            let _ = tx.send(event);
+        }
     }
 
     /// Checks if attestations have been seen from the given `validator_index` at the

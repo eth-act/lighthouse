@@ -33,7 +33,9 @@
 //! needs to be searched for (i.e if an attestation references an unknown block) this manager can
 //! search for the block and subsequently search for parents if needed.
 
-use super::backfill_sync::{BackFillSync, ProcessResult, SyncStart};
+#[cfg(not(feature = "disable-backfill"))]
+use super::backfill_sync::SyncStart;
+use super::backfill_sync::{BackFillSync, ProcessResult};
 use super::block_lookups::BlockLookups;
 use super::network_context::{
     CustodyByRootResult, RangeBlockComponent, RangeRequestId, RpcEvent, SyncNetworkContext,
@@ -665,7 +667,30 @@ impl<T: BeaconChainTypes> SyncManager<T> {
                     // If we synced a peer between status messages, most likely the peer has
                     // advanced and will produce a head chain on re-status. Otherwise it will shift
                     // to being synced
+                    #[cfg(not(feature = "disable-backfill"))]
                     let mut sync_state = {
+                        let head = self.chain.best_slot();
+                        let current_slot = self.chain.slot().unwrap_or_else(|_| Slot::new(0));
+
+                        let peers = self.network_globals().peers.read();
+                        if current_slot >= head
+                            && current_slot.sub(head) <= (SLOT_IMPORT_TOLERANCE as u64)
+                            && head > 0
+                        {
+                            SyncState::Synced
+                        } else if peers.advanced_peers().next().is_some() {
+                            SyncState::SyncTransition
+                        } else if peers.synced_peers().next().is_none() {
+                            SyncState::Stalled
+                        } else {
+                            // There are no peers that require syncing and we have at least one synced
+                            // peer
+                            SyncState::Synced
+                        }
+                    };
+
+                    #[cfg(feature = "disable-backfill")]
+                    let sync_state = {
                         let head = self.chain.best_slot();
                         let current_slot = self.chain.slot().unwrap_or_else(|_| Slot::new(0));
 
@@ -809,7 +834,10 @@ impl<T: BeaconChainTypes> SyncManager<T> {
                 .as_ref()
                 .map(|el| el.get_responsiveness_watch())
                 .into();
-            futures::stream::iter(ee_responsiveness_watch.await).flatten()
+            match ee_responsiveness_watch.await.flatten() {
+                Some(watch) => watch.left_stream(),
+                None => futures::stream::empty().right_stream(),
+            }
         };
 
         // min(LOOKUP_MAX_DURATION_*) is 15 seconds. The cost of calling prune_lookups more often is

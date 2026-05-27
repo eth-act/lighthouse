@@ -139,6 +139,7 @@ impl<E: EthSpec> TryFrom<BuilderBid<E>> for ProvenancedPayload<BlockProposalCont
 pub enum Error {
     NoEngine,
     NoPayloadBuilder,
+    NoExecutionEndpoint,
     ApiError(ApiError),
     ProofEngineError(eip8025::ProofEngineError),
     Builder(builder_client::Error),
@@ -457,7 +458,7 @@ pub enum SubmitBlindedBlockResponse<E: EthSpec> {
 type PayloadContentsRefTuple<'a, E> = (ExecutionPayloadRef<'a, E>, Option<&'a BlobsBundle<E>>);
 
 struct Inner<E: EthSpec> {
-    engine: Arc<Engine>,
+    engine: Option<Arc<Engine>>,
     builder: ArcSwapOption<BuilderHttpClient>,
     execution_engine_forkchoice_lock: Mutex<()>,
     suggested_fee_recipient: Option<Address>,
@@ -517,7 +518,7 @@ impl<E: EthSpec> ExecutionLayer<E> {
     /// Instantiate `Self` with an Execution engine specified in `Config`, using JSON-RPC via HTTP.
     pub fn from_config(config: Config, executor: TaskExecutor) -> Result<Self, Error> {
         let Config {
-            execution_endpoint: url,
+            execution_endpoint,
             proof_engine_endpoint,
             proof_types,
             builder_url,
@@ -532,52 +533,68 @@ impl<E: EthSpec> ExecutionLayer<E> {
             execution_timeout_multiplier,
         } = config;
 
-        let execution_url = url.ok_or(Error::NoEngine)?;
+        if execution_endpoint.is_none() && proof_engine_endpoint.is_none() {
+            return Err(Error::NoExecutionEndpoint);
+        }
 
-        // Use the default jwt secret path if not provided via cli.
-        let secret_file = secret_file.unwrap_or_else(|| default_datadir.join(DEFAULT_JWT_FILE));
+        let engine = if let Some(execution_url) = execution_endpoint {
+            // Use the default jwt secret path if not provided via cli.
+            let secret_file = secret_file.unwrap_or_else(|| default_datadir.join(DEFAULT_JWT_FILE));
 
-        let jwt_key = if secret_file.exists() {
-            // Read secret from file if it already exists
-            std::fs::read_to_string(&secret_file)
-                .map_err(|e| format!("Failed to read JWT secret file. Error: {:?}", e))
-                .and_then(|ref s| {
-                    let secret = JwtKey::from_slice(
-                        &hex::decode(strip_prefix(s.trim_end()))
-                            .map_err(|e| format!("Invalid hex string: {:?}", e))?,
-                    )?;
-                    Ok(secret)
-                })
-                .map_err(Error::InvalidJWTSecret)
-        } else {
-            // Create a new file and write a randomly generated secret to it if file does not exist
-            warn!(path = %secret_file.display(),"No JWT found on disk. Generating");
-            std::fs::File::options()
-                .write(true)
-                .create_new(true)
-                .open(&secret_file)
-                .map_err(|e| format!("Failed to open JWT secret file. Error: {:?}", e))
-                .and_then(|mut f| {
-                    let secret = auth::JwtKey::random();
-                    f.write_all(secret.hex_string().as_bytes())
-                        .map_err(|e| format!("Failed to write to JWT secret file: {:?}", e))?;
-                    Ok(secret)
-                })
-                .map_err(Error::InvalidJWTSecret)
-        }?;
+            let jwt_key = if secret_file.exists() {
+                // Read secret from file if it already exists
+                std::fs::read_to_string(&secret_file)
+                    .map_err(|e| format!("Failed to read JWT secret file. Error: {:?}", e))
+                    .and_then(|ref s| {
+                        let secret = JwtKey::from_slice(
+                            &hex::decode(strip_prefix(s.trim_end()))
+                                .map_err(|e| format!("Invalid hex string: {:?}", e))?,
+                        )?;
+                        Ok(secret)
+                    })
+                    .map_err(Error::InvalidJWTSecret)
+            } else {
+                // Create a new file and write a randomly generated secret to it if file does not exist
+                warn!(path = %secret_file.display(),"No JWT found on disk. Generating");
+                std::fs::File::options()
+                    .write(true)
+                    .create_new(true)
+                    .open(&secret_file)
+                    .map_err(|e| format!("Failed to open JWT secret file. Error: {:?}", e))
+                    .and_then(|mut f| {
+                        let secret = auth::JwtKey::random();
+                        f.write_all(secret.hex_string().as_bytes())
+                            .map_err(|e| format!("Failed to write to JWT secret file: {:?}", e))?;
+                        Ok(secret)
+                    })
+                    .map_err(Error::InvalidJWTSecret)
+            }?;
 
-        let engine: Engine = {
             let auth = Auth::new(jwt_key, jwt_id, jwt_version);
             debug!(endpoint = %execution_url, jwt_path = ?secret_file.as_path(),"Loaded execution endpoint");
             let api = HttpJsonRpc::new_with_auth(execution_url, auth, execution_timeout_multiplier)
                 .map_err(Error::ApiError)?;
-            Engine::new(api, executor.clone())
+            Some(Arc::new(Engine::new(api, executor.clone())))
+        } else {
+            None
         };
-        let proof_engine =
-            proof_engine_endpoint.map(|url| Arc::new(eip8025::HttpProofEngine::new(url, None)));
+        let proof_engine = proof_engine_endpoint.map(|url| {
+            if let Some(idx) = test_utils::parse_mock_index(url.expose_full().as_str()) {
+                let mock = test_utils::get_mock_proof_engine::<E>(idx).unwrap_or_else(|| {
+                    debug!(
+                        idx,
+                        "No pre-registered mock proof engine; creating one on demand"
+                    );
+                    test_utils::register_mock_proof_engine::<E>(idx, 0)
+                });
+                Arc::new(eip8025::HttpProofEngine::with_proof_node(mock))
+            } else {
+                Arc::new(eip8025::HttpProofEngine::new(url, None))
+            }
+        });
 
         let inner = Inner {
-            engine: Arc::new(engine),
+            engine,
             builder: ArcSwapOption::empty(),
             execution_engine_forkchoice_lock: <_>::default(),
             suggested_fee_recipient,
@@ -606,8 +623,8 @@ impl<E: EthSpec> ExecutionLayer<E> {
         Ok(el)
     }
 
-    fn engine(&self) -> &Arc<Engine> {
-        &self.inner.engine
+    pub fn engine(&self) -> Option<&Arc<Engine>> {
+        self.inner.engine.as_ref()
     }
 
     pub fn proof_engine(&self) -> Option<Arc<eip8025::HttpProofEngine>> {
@@ -676,20 +693,27 @@ impl<E: EthSpec> ExecutionLayer<E> {
 
     /// Get the current difficulty of the PoW chain.
     pub async fn get_current_difficulty(&self) -> Result<Option<Uint256>, ApiError> {
-        let block = self
-            .engine()
-            .api
-            .get_block_by_number(BlockByNumberQuery::Tag(LATEST_TAG))
-            .await?
-            .ok_or(ApiError::ExecutionHeadBlockNotFound)?;
-        Ok(block.total_difficulty)
+        if let Some(engine) = self.engine() {
+            let block = engine
+                .api
+                .get_block_by_number(BlockByNumberQuery::Tag(LATEST_TAG))
+                .await?
+                .ok_or(ApiError::ExecutionHeadBlockNotFound)?;
+            Ok(block.total_difficulty)
+        } else {
+            Ok(None)
+        }
     }
 
     /// Gives access to a channel containing if the last engine state is online or not.
     ///
     /// This can be called several times.
-    pub async fn get_responsiveness_watch(&self) -> WatchStream<EngineState> {
-        self.engine().watch_state().await
+    pub async fn get_responsiveness_watch(&self) -> Option<WatchStream<EngineState>> {
+        if let Some(engine) = self.engine() {
+            Some(engine.watch_state().await)
+        } else {
+            None
+        }
     }
 
     /// Note: this function returns a mutex guard, be careful to avoid deadlocks.
@@ -737,7 +761,9 @@ impl<E: EthSpec> ExecutionLayer<E> {
 
     /// Performs a single execution of the watchdog routine.
     pub async fn watchdog_task(&self) {
-        self.engine().upcheck().await;
+        if let Some(engine) = self.engine() {
+            engine.upcheck().await;
+        }
     }
 
     /// Spawns a routine which cleans the cached proposer data periodically.
@@ -780,7 +806,11 @@ impl<E: EthSpec> ExecutionLayer<E> {
 
     /// Returns `true` if the execution engine is synced and reachable.
     pub async fn is_synced(&self) -> bool {
-        self.engine().is_synced().await
+        if let Some(engine) = self.engine() {
+            engine.is_synced().await
+        } else {
+            true
+        }
     }
 
     /// Execution nodes return a "SYNCED" response when they do not have any peers.
@@ -791,12 +821,17 @@ impl<E: EthSpec> ExecutionLayer<E> {
     /// Returns the `Self::is_synced` response if unable to get latest block.
     pub async fn is_synced_for_notifier(&self, current_slot: Slot) -> bool {
         let synced = self.is_synced().await;
-        if synced
-            && let Ok(Some(block)) = self
-                .engine()
+        let block = if let Some(engine) = self.engine() {
+            engine
                 .api
                 .get_block_by_number(BlockByNumberQuery::Tag(LATEST_TAG))
                 .await
+        } else {
+            Ok(None)
+        };
+
+        if synced
+            && let Ok(Some(block)) = block
             && block.block_number == 0
             && current_slot > 0
         {
@@ -812,7 +847,12 @@ impl<E: EthSpec> ExecutionLayer<E> {
     /// be used to give an indication on the HTTP API that the node's execution layer is struggling,
     /// which can in turn be used by the VC.
     pub async fn is_offline_or_erroring(&self) -> bool {
-        self.engine().is_offline().await || *self.inner.last_new_payload_errored.read().await
+        let engine_offline = if let Some(engine) = self.engine() {
+            engine.is_offline().await
+        } else {
+            false
+        };
+        engine_offline || *self.inner.last_new_payload_errored.read().await
     }
 
     /// Updates the proposer preparation data provided by validators
@@ -1340,7 +1380,9 @@ impl<E: EthSpec> ExecutionLayer<E> {
             ..
         } = payload_parameters;
 
-        self.engine()
+        let engine = self.engine().ok_or(Error::NoEngine)?;
+
+        engine
             .request(move |engine| async move {
                 let payload_id = if let Some(id) = engine
                     .get_payload_id(&parent_hash, payload_attributes)
@@ -1458,8 +1500,12 @@ impl<E: EthSpec> ExecutionLayer<E> {
         let block_hash = new_payload_request.block_hash();
         let parent_hash = new_payload_request.parent_hash();
 
-        let result = self
-            .engine()
+        let Some(engine) = self.engine() else {
+            *self.inner.last_new_payload_errored.write().await = false;
+            return Ok(PayloadStatus::Accepted);
+        };
+
+        let result = engine
             .request(|engine| engine.api.new_payload(new_payload_request))
             .await;
 
@@ -1487,7 +1533,9 @@ impl<E: EthSpec> ExecutionLayer<E> {
 
     /// Update engine sync status.
     pub async fn upcheck(&self) {
-        self.engine().upcheck().await;
+        if let Some(engine) = self.engine() {
+            engine.upcheck().await;
+        }
     }
 
     /// Register that the given `validator_index` is going to produce a block at `slot`.
@@ -1601,18 +1649,19 @@ impl<E: EthSpec> ExecutionLayer<E> {
             finalized_block_hash,
         };
 
-        self.engine()
-            .set_latest_forkchoice_state(forkchoice_state)
-            .await;
+        let result = if let Some(engine) = self.engine() {
+            engine.set_latest_forkchoice_state(forkchoice_state).await;
 
-        let result = self
-            .engine()
-            .request(|engine| async move {
-                engine
-                    .notify_forkchoice_updated(forkchoice_state, payload_attributes)
-                    .await
-            })
-            .await;
+            engine
+                .request(|engine| async move {
+                    engine
+                        .notify_forkchoice_updated(forkchoice_state, payload_attributes)
+                        .await
+                })
+                .await
+        } else {
+            return Ok(PayloadStatus::Accepted);
+        };
 
         if let Ok(status) = &result {
             metrics::inc_counter_vec(
@@ -1642,10 +1691,35 @@ impl<E: EthSpec> ExecutionLayer<E> {
         &self,
         age_limit: Option<Duration>,
     ) -> Result<EngineCapabilities, Error> {
-        self.engine()
-            .request(|engine| engine.get_engine_capabilities(age_limit))
-            .await
-            .map_err(Into::into)
+        if let Some(engine) = self.engine() {
+            engine
+                .request(|engine| engine.get_engine_capabilities(age_limit))
+                .await
+                .map_err(Into::into)
+        } else {
+            Ok(EngineCapabilities {
+                new_payload_v1: true,
+                new_payload_v2: true,
+                new_payload_v3: true,
+                new_payload_v4: true,
+                new_payload_v5: true,
+                forkchoice_updated_v1: true,
+                forkchoice_updated_v2: true,
+                forkchoice_updated_v3: true,
+                forkchoice_updated_v4: true,
+                get_payload_bodies_by_hash_v1: false,
+                get_payload_bodies_by_range_v1: false,
+                get_payload_v1: true,
+                get_payload_v2: true,
+                get_payload_v3: true,
+                get_payload_v4: true,
+                get_payload_v5: true,
+                get_payload_v6: true,
+                get_client_version_v1: false,
+                get_blobs_v2: false,
+                get_blobs_v3: false,
+            })
+        }
     }
 
     /// Returns the execution engine version resulting from a call to
@@ -1661,27 +1735,33 @@ impl<E: EthSpec> ExecutionLayer<E> {
         &self,
         age_limit: Option<Duration>,
     ) -> Result<Vec<ClientVersionV1>, Error> {
-        let versions = self
-            .engine()
-            .request(|engine| engine.get_engine_version(age_limit))
-            .await
-            .map_err(Into::<Error>::into)?;
-        metrics::expose_execution_layer_info(&versions);
-
-        Ok(versions)
+        if let Some(engine) = self.engine() {
+            let versions = engine
+                .request(|engine| engine.get_engine_version(age_limit))
+                .await
+                .map_err(Into::<Error>::into)?;
+            metrics::expose_execution_layer_info(&versions);
+            Ok(versions)
+        } else {
+            Ok(vec![])
+        }
     }
 
     pub async fn get_payload_bodies_by_hash(
         &self,
         hashes: Vec<ExecutionBlockHash>,
     ) -> Result<Vec<Option<ExecutionPayloadBodyV1<E>>>, Error> {
-        self.engine()
-            .request(|engine: &Engine| async move {
-                engine.api.get_payload_bodies_by_hash_v1(hashes).await
-            })
-            .await
-            .map_err(Box::new)
-            .map_err(Error::EngineError)
+        if let Some(engine) = self.engine() {
+            engine
+                .request(|engine: &Engine| async move {
+                    engine.api.get_payload_bodies_by_hash_v1(hashes).await
+                })
+                .await
+                .map_err(Box::new)
+                .map_err(Error::EngineError)
+        } else {
+            Ok(vec![None; hashes.len()])
+        }
     }
 
     pub async fn get_payload_bodies_by_range(
@@ -1690,16 +1770,20 @@ impl<E: EthSpec> ExecutionLayer<E> {
         count: u64,
     ) -> Result<Vec<Option<ExecutionPayloadBodyV1<E>>>, Error> {
         let _timer = metrics::start_timer(&metrics::EXECUTION_LAYER_GET_PAYLOAD_BODIES_BY_RANGE);
-        self.engine()
-            .request(|engine: &Engine| async move {
-                engine
-                    .api
-                    .get_payload_bodies_by_range_v1(start, count)
-                    .await
-            })
-            .await
-            .map_err(Box::new)
-            .map_err(Error::EngineError)
+        if let Some(engine) = self.engine() {
+            engine
+                .request(|engine: &Engine| async move {
+                    engine
+                        .api
+                        .get_payload_bodies_by_range_v1(start, count)
+                        .await
+                })
+                .await
+                .map_err(Box::new)
+                .map_err(Error::EngineError)
+        } else {
+            Ok(vec![None; count as usize])
+        }
     }
 
     /// Fetch a full payload from the execution node.
@@ -1759,6 +1843,7 @@ impl<E: EthSpec> ExecutionLayer<E> {
 
         if capabilities.get_blobs_v2 {
             self.engine()
+                .expect("capabilities only returns get_blobs_v2=true if engine is present")
                 .request(|engine| async move { engine.api.get_blobs_v2(query).await })
                 .await
                 .map_err(Box::new)
@@ -1776,6 +1861,7 @@ impl<E: EthSpec> ExecutionLayer<E> {
 
         if capabilities.get_blobs_v3 {
             self.engine()
+                .expect("capabilities only returns get_blobs_v3=true if engine is present")
                 .request(|engine| async move { engine.api.get_blobs_v3(query).await })
                 .await
                 .map_err(Box::new)
@@ -1789,11 +1875,15 @@ impl<E: EthSpec> ExecutionLayer<E> {
         &self,
         query: BlockByNumberQuery<'_>,
     ) -> Result<Option<ExecutionBlock>, Error> {
-        self.engine()
-            .request(|engine| async move { engine.api.get_block_by_number(query).await })
-            .await
-            .map_err(Box::new)
-            .map_err(Error::EngineError)
+        if let Some(engine) = self.engine() {
+            engine
+                .request(|engine| async move { engine.api.get_block_by_number(query).await })
+                .await
+                .map_err(Box::new)
+                .map_err(Error::EngineError)
+        } else {
+            Ok(None)
+        }
     }
 
     pub async fn propose_blinded_beacon_block(

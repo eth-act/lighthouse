@@ -6960,6 +6960,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "proof_engine_test"
+version = "8.1.3"
+dependencies = [
+ "anyhow",
+ "beacon_chain",
+ "execution_layer",
+ "futures",
+ "network",
+ "simulator",
+ "task_executor",
+ "tokio",
+ "tracing",
+ "types",
+]
+
+[[package]]
 name = "proptest"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8208,23 +8224,29 @@ dependencies = [
 name = "simulator"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
  "beacon_chain",
  "clap",
  "environment",
+ "eth2",
  "execution_layer",
  "futures",
  "kzg",
+ "lighthouse_network",
  "logging",
+ "network_utils",
  "node_test_rig",
  "parking_lot",
  "rayon",
  "sensitive_url",
  "serde_json",
+ "task_executor",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "typenum",
  "types",
+ "validator_http_api",
 ]
 
 [[package]]
@@ -9530,6 +9552,7 @@ dependencies = [
  "doppelganger_service",
  "environment",
  "eth2",
+ "execution_layer",
  "fdlimit",
  "graffiti_file",
  "hyper 1.8.1",
@@ -9545,6 +9568,7 @@ dependencies = [
  "slot_clock",
  "tokio",
  "tracing",
+ "typenum",
  "types",
  "validator_http_api",
  "validator_http_metrics",
@@ -9686,6 +9710,7 @@ dependencies = [
  "bls",
  "either",
  "eth2",
+ "execution_layer",
  "futures",
  "graffiti_file",
  "logging",

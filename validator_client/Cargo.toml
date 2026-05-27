@@ -18,6 +18,7 @@ dirs = { workspace = true }
 doppelganger_service = { workspace = true }
 environment = { workspace = true }
 eth2 = { workspace = true }
+execution_layer = { workspace = true }
 fdlimit = "0.3.0"
 graffiti_file = { workspace = true }
 hyper = { workspace = true }
@@ -33,6 +34,7 @@ slashing_protection = { workspace = true }
 slot_clock = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+typenum = { workspace = true }
 types  = { workspace = true }
 validator_http_api = { workspace = true }
 validator_http_metrics = { workspace = true }

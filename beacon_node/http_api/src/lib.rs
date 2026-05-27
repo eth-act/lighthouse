@@ -1528,7 +1528,8 @@ pub fn serve<T: BeaconChainTypes>(
         post_beacon_pool_bls_to_execution_changes(&network_tx_filter, &beacon_pool_path);
 
     // POST beacon/pool/execution_proofs
-    let post_beacon_pool_execution_proofs = post_beacon_pool_execution_proofs(&beacon_pool_path);
+    let post_beacon_pool_execution_proofs =
+        post_beacon_pool_execution_proofs(&network_tx_filter, &beacon_pool_path);
 
     // POST validator/proposer_preferences (JSON)
     let post_validator_proposer_preferences = post_validator_proposer_preferences(

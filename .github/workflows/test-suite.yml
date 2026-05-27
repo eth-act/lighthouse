@@ -130,6 +130,30 @@ jobs:
       if: env.SELF_HOSTED_RUNNERS == 'true'
       continue-on-error: true
       run: sccache --show-stats
+  proof-engine-tests:
+    name: proof-engine-tests
+    needs: [check-labels]
+    if: needs.check-labels.outputs.skip_ci != 'true'
+    runs-on: ${{ github.repository == 'sigp/lighthouse' && 'warp-ubuntu-latest-x64-4x;snapshot.key=lighthouse-ubuntu-latest-v1' || 'ubuntu-latest' }}
+    steps:
+    - uses: actions/checkout@v5
+    - if: github.repository != 'sigp/lighthouse'
+      name: Get latest version of stable Rust
+      uses: moonrepo/setup-rust@v1
+      with:
+          channel: stable
+          cache-extra-identifier: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
+          cache-target: release
+          bins: cargo-nextest
+      env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - if: github.repository == 'sigp/lighthouse'
+      uses: Swatinem/rust-cache@v2
+      with:
+          cache-provider: warpbuild
+          key: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
+    - name: Run proof engine tests sequentially
+      run: make test-proof-engine
   beacon-chain-tests:
     name: beacon-chain-tests
     needs: [check-labels]

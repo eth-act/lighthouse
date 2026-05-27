@@ -7,9 +7,10 @@ use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_h
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use store::DatabaseBlock;
 use types::{
-    Hash256, ProofStatus, ProofType, SignedBlindedBeaconBlock, SignedExecutionPayloadEnvelope,
-    SignedExecutionProof, Slot,
+    EthSpec, Hash256, ProofStatus, ProofType, SignedBlindedBeaconBlock,
+    SignedExecutionPayloadEnvelope, SignedExecutionProof, Slot,
 };
 
 const DEFAULT_REQUEST_ROOT_CACHE_SIZE: usize = 8192;
@@ -92,6 +93,16 @@ impl ExecutionProofStatusCache {
 
     pub fn request_root_for_block_root(&self, block_root: &Hash256) -> Option<Hash256> {
         self.block_root_to_request_root.peek(block_root).copied()
+    }
+
+    pub fn block_context_for_request_root(
+        &self,
+        request_root: &Hash256,
+    ) -> Option<(Hash256, Slot)> {
+        let block_root = self.request_root_to_block_root.peek(request_root)?;
+        self.statuses_by_block_root
+            .get(block_root)
+            .map(|status| (status.block_root, status.slot))
     }
 
     pub fn observe_valid_proof(
@@ -268,7 +279,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         let proof_backed_payload_promotion = if quorum_threshold
             .is_some_and(|threshold| summary.valid_proof_type_count >= threshold)
         {
-            self.try_mark_payload_envelope_proof_valid(block_root)?
+            self.try_mark_proof_backed_payload_valid(block_root)?
         } else {
             false
         };
@@ -412,15 +423,14 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             return Ok(Some((block_root, slot)));
         }
 
-        let Some(block_root) = self
+        let Some((block_root, slot)) = self
             .execution_proof_statuses
             .read()
-            .block_root_for_request_root(&request_root)
+            .block_context_for_request_root(&request_root)
         else {
             return Ok(None);
         };
 
-        let (_, slot) = self.execution_payload_request_context(block_root)?;
         Ok(Some((block_root, slot)))
     }
 
@@ -428,6 +438,15 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         &self,
         block_root: Hash256,
     ) -> Result<(Hash256, Slot), BeaconChainError> {
+        if let Some(DatabaseBlock::Full(block)) = self.store.try_get_full_block(&block_root)?
+            && !block.fork_name_unchecked().gloas_enabled()
+        {
+            let slot = block.slot();
+            let request = NewPayloadRequest::try_from(block.message())
+                .map_err(BeaconChainError::BeaconStateError)?;
+            return Ok((request.request_root(), slot));
+        }
+
         let block = self
             .get_blinded_block(&block_root)?
             .ok_or(BeaconChainError::MissingBeaconBlock(block_root))?;
@@ -440,18 +459,28 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         Ok((request.request_root(), slot))
     }
 
-    fn try_mark_payload_envelope_proof_valid(
+    fn try_mark_proof_backed_payload_valid(
         &self,
         block_root: Hash256,
     ) -> Result<bool, BeaconChainError> {
-        if self.get_payload_envelope(&block_root)?.is_none() {
+        let block = self
+            .get_blinded_block(&block_root)?
+            .ok_or(BeaconChainError::MissingBeaconBlock(block_root))?;
+        let is_gloas = block.fork_name_unchecked().gloas_enabled();
+        if is_gloas && self.get_payload_envelope(&block_root)?.is_none() {
             return Ok(false);
         }
 
         let mut fork_choice = self.canonical_head.fork_choice_write_lock();
-        fork_choice
-            .on_valid_payload_envelope_received(block_root)
-            .map_err(map_fork_choice_error)?;
+        if is_gloas {
+            fork_choice
+                .on_valid_payload_envelope_received(block_root)
+                .map_err(map_fork_choice_error)?;
+        } else {
+            fork_choice
+                .on_valid_execution_payload(block_root)
+                .map_err(map_fork_choice_error)?;
+        }
 
         Ok(true)
     }
@@ -503,6 +532,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         &self,
         proof_types: &[ProofType],
     ) -> Vec<MissingExecutionProofInfo> {
+        self.register_execution_proof_request_window();
         self.execution_proof_statuses
             .read()
             .missing_execution_proofs(proof_types)
@@ -515,6 +545,44 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         self.execution_proof_statuses
             .read()
             .latest_status_with_valid_proofs(proof_types)
+    }
+
+    fn register_execution_proof_request_window(&self) {
+        let head = self.canonical_head.cached_head();
+        let start_slot = head
+            .finalized_checkpoint()
+            .epoch
+            .start_slot(T::EthSpec::slots_per_epoch());
+        let end_slot = head.head_slot();
+
+        for slot in start_slot.as_u64()..=end_slot.as_u64() {
+            let slot = Slot::new(slot);
+            let Ok(Some(block_root)) = self.block_root_at_slot(slot, crate::WhenSlotSkipped::None)
+            else {
+                continue;
+            };
+
+            if self
+                .execution_proof_statuses
+                .read()
+                .request_root_for_block_root(&block_root)
+                .is_some()
+            {
+                continue;
+            }
+
+            let Ok((request_root, request_slot)) =
+                self.execution_payload_request_context(block_root)
+            else {
+                continue;
+            };
+
+            self.execution_proof_statuses.write().register_request_root(
+                block_root,
+                request_root,
+                request_slot,
+            );
+        }
     }
 }
 

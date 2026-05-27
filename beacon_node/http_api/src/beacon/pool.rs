@@ -67,6 +67,7 @@ pub struct SubmitExecutionProofStatus {
 
 /// POST beacon/pool/execution_proofs
 pub fn post_beacon_pool_execution_proofs<T: BeaconChainTypes>(
+    network_tx_filter: &NetworkTxFilter<T>,
     beacon_pool_path: &BeaconPoolPathFilter<T>,
 ) -> ResponseFilter {
     beacon_pool_path
@@ -74,10 +75,12 @@ pub fn post_beacon_pool_execution_proofs<T: BeaconChainTypes>(
         .and(warp::path("execution_proofs"))
         .and(warp::path::end())
         .and(warp_utils::json::json())
+        .and(network_tx_filter.clone())
         .then(
             |_task_spawner: TaskSpawner<T::EthSpec>,
              chain: Arc<BeaconChain<T>>,
-             request: SubmitExecutionProofsRequest| async move {
+             request: SubmitExecutionProofsRequest,
+             network_tx: UnboundedSender<NetworkMessage<T::EthSpec>>| async move {
                 convert_rejection(
                     async move {
                         if chain
@@ -108,6 +111,14 @@ pub fn post_beacon_pool_execution_proofs<T: BeaconChainTypes>(
                                             index,
                                             "execution proof is invalid".to_string(),
                                         ));
+                                    } else if observation.status == ProofStatus::Valid
+                                        || (observation.status == ProofStatus::Accepted
+                                            && observation.valid_proof_type_count > 0)
+                                    {
+                                        utils::publish_pubsub_message(
+                                            &network_tx,
+                                            PubsubMessage::ExecutionProof(Arc::new(proof.clone())),
+                                        )?;
                                     }
                                     statuses.push(SubmitExecutionProofStatus {
                                         status: observation.status,

@@ -10,6 +10,7 @@ use beacon_chain::data_column_verification::{
     GossipVerifiedPartialDataColumnHeader, KzgVerifiedPartialDataColumn,
     PartialColumnVerificationResult,
 };
+use beacon_chain::internal_events::InternalBeaconNodeEvent;
 use beacon_chain::payload_bid_verification::PayloadBidError;
 use beacon_chain::payload_envelope_verification::{
     EnvelopeError, gossip_verified_envelope::GossipVerifiedEnvelope,
@@ -234,11 +235,34 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         peer_id: PeerId,
         execution_proof: Arc<SignedExecutionProof>,
     ) {
-        match self
+        if self.chain.internal_event_sender().is_some() {
+            self.chain
+                .emit_internal_event(InternalBeaconNodeEvent::GossipExecutionProof(
+                    execution_proof.clone(),
+                ));
+        }
+
+        let request_root = execution_proof.request_root();
+        let verification_result = self
             .chain
             .verify_and_observe_execution_proof(&execution_proof, None)
-            .await
-        {
+            .await;
+
+        if self.chain.internal_event_sender().is_some() {
+            self.chain.emit_internal_event(match &verification_result {
+                Ok(observation) => InternalBeaconNodeEvent::ExecutionProofVerified {
+                    request_root,
+                    status: observation.status,
+                    block: None,
+                },
+                Err(error) => InternalBeaconNodeEvent::ExecutionProofVerificationFailed {
+                    request_root,
+                    error: format!("{error:?}"),
+                },
+            });
+        }
+
+        match verification_result {
             Ok(observation) => match observation.status {
                 ProofStatus::Valid | ProofStatus::Accepted => {
                     self.propagate_validation_result(
@@ -287,11 +311,34 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
         peer_id: PeerId,
         execution_proof: Arc<SignedExecutionProof>,
     ) {
-        match self
+        if self.chain.internal_event_sender().is_some() {
+            self.chain
+                .emit_internal_event(InternalBeaconNodeEvent::RpcExecutionProof(
+                    execution_proof.clone(),
+                ));
+        }
+
+        let request_root = execution_proof.request_root();
+        let verification_result = self
             .chain
             .verify_and_observe_execution_proof(&execution_proof, None)
-            .await
-        {
+            .await;
+
+        if self.chain.internal_event_sender().is_some() {
+            self.chain.emit_internal_event(match &verification_result {
+                Ok(observation) => InternalBeaconNodeEvent::ExecutionProofVerified {
+                    request_root,
+                    status: observation.status,
+                    block: None,
+                },
+                Err(error) => InternalBeaconNodeEvent::ExecutionProofVerificationFailed {
+                    request_root,
+                    error: format!("{error:?}"),
+                },
+            });
+        }
+
+        match verification_result {
             Ok(observation) if observation.status == ProofStatus::Invalid => {
                 self.send_network_message(NetworkMessage::ReportPeer {
                     peer_id,

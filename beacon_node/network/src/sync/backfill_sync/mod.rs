@@ -81,6 +81,7 @@ impl<E: EthSpec> BatchConfig for BackFillBatchConfig<E> {
 }
 
 /// Return type when attempting to start the backfill sync process.
+#[cfg_attr(feature = "disable-backfill", allow(dead_code))]
 pub enum SyncStart {
     /// The chain started syncing or is already syncing.
     Syncing {
@@ -159,6 +160,7 @@ pub struct BackFillSync<T: BeaconChainTypes> {
     network_globals: Arc<NetworkGlobals<T::EthSpec>>,
 }
 
+#[cfg_attr(feature = "disable-backfill", allow(dead_code))]
 impl<T: BeaconChainTypes> BackFillSync<T> {
     pub fn new(
         beacon_chain: Arc<BeaconChain<T>>,
@@ -1210,6 +1212,7 @@ impl<T: BeaconChainTypes> BackFillSync<T> {
 }
 
 /// Error kind for attempting to restart the sync from beacon chain parameters.
+#[cfg_attr(feature = "disable-backfill", allow(dead_code))]
 enum ResetEpochError {
     /// The chain has already completed.
     SyncCompleted,

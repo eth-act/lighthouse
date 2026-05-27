@@ -1,0 +1,16 @@
+[package]
+name = "proof_engine_test"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+beacon_chain = { workspace = true }
+execution_layer = { workspace = true }
+futures = { workspace = true }
+network = { workspace = true, features = ["disable-backfill"] }
+simulator = { path = "../simulator", features = ["test-utils"] }
+task_executor = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+types = { workspace = true }

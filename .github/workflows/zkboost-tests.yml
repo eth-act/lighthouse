@@ -1,0 +1,76 @@
+name: zkboost-tests
+
+on:
+  push:
+    branches:
+      - stable
+      - staging
+      - trying
+      - 'pr/*'
+  pull_request:
+  merge_group:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUSTFLAGS: "-D warnings -C debuginfo=0"
+  CARGO_INCREMENTAL: 0
+  TEST_FEATURES: portable
+  # Keep optional-proofs branch-family caches separate while their dependency graphs diverge.
+  RUST_CACHE_EXTRA_IDENTIFIER: ${{ contains(github.head_ref || github.ref_name, 'optional-proofs-unstable') && 'optional-proofs-unstable' || contains(github.head_ref || github.ref_name, 'optional-proofs') && 'optional-proofs' || '' }}
+  # Use Clang for C/C++ compilation. Required because leveldb-sys uses
+  # -Wthread-safety which is a Clang-only flag unsupported by GCC.
+  CC: clang
+  CXX: clang++
+  # leveldb-1.22's doc/bench/db_bench_sqlite3.cc uses time()/ctime() without
+  # including <ctime>; newer libc++ no longer pulls it in transitively.
+  CXXFLAGS: "-include ctime"
+
+jobs:
+  check-labels:
+    runs-on: ubuntu-latest
+    name: Check for 'skip-ci' label
+    outputs:
+      skip_ci: ${{ steps.set-output.outputs.SKIP_CI }}
+    steps:
+      - name: check for skip-ci label
+        id: set-output
+        env:
+          LABELS: ${{ toJson(github.event.pull_request.labels) }}
+        run: |
+          SKIP_CI="false"
+          if [ -z "${LABELS}" ]  || [ "${LABELS}" = "null" ]; then
+            LABELS="none";
+          else
+            LABELS=$(echo ${LABELS} | jq -r '.[].name')
+          fi
+          for label in ${LABELS}; do
+            if [ "$label" = "skip-ci" ]; then
+              SKIP_CI="true"
+              break
+            fi
+          done
+          echo "skip_ci=$SKIP_CI" >> $GITHUB_OUTPUT
+
+  zkboost-tests:
+    name: zkboost-tests
+    needs: [check-labels]
+    if: needs.check-labels.outputs.skip_ci != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install dependencies
+        run: sudo apt update && sudo apt install -y git gcc g++ make cmake pkg-config llvm-dev libclang-dev clang
+      - name: Get latest version of stable Rust
+        uses: moonrepo/setup-rust@v1
+        with:
+          channel: stable
+          cache-extra-identifier: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
+          cache-target: release
+          bins: cargo-nextest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run proof_engine_zkboost integration tests
+        run: make test-zkboost

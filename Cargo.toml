@@ -68,6 +68,7 @@ members = [
     "testing/ef_tests",
     "testing/execution_engine_integration",
     "testing/node_test_rig",
+    "testing/proof_engine",
     "testing/simulator",
     "testing/state_transition_vectors",
     "testing/validator_test_rig",
@@ -275,4 +276,3 @@ debug = true
 
 [patch.crates-io]
 quick-protobuf = { git = "https://github.com/sigp/quick-protobuf.git", rev = "87c4ccb9bb2af494de375f5f6c62850badd26304" }
-

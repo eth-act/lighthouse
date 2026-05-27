@@ -7,11 +7,12 @@ use std::future::Future;
 use std::sync::Arc;
 use types::{
     Address, Attestation, AttestationError, BlindedBeaconBlock, Epoch, EthSpec,
-    ExecutionPayloadEnvelope, Graffiti, Hash256, PayloadAttestationData, PayloadAttestationMessage,
-    ProposerPreferences, SelectionProof, SignedAggregateAndProof, SignedBlindedBeaconBlock,
-    SignedContributionAndProof, SignedExecutionPayloadEnvelope, SignedProposerPreferences,
-    SignedValidatorRegistrationData, Slot, SyncCommitteeContribution, SyncCommitteeMessage,
-    SyncSelectionProof, SyncSubnetId, ValidatorRegistrationData,
+    ExecutionPayloadEnvelope, ExecutionProof, Graffiti, Hash256, PayloadAttestationData,
+    PayloadAttestationMessage, ProposerPreferences, SelectionProof, SignedAggregateAndProof,
+    SignedBlindedBeaconBlock, SignedContributionAndProof, SignedExecutionPayloadEnvelope,
+    SignedExecutionProof, SignedProposerPreferences, SignedValidatorRegistrationData, Slot,
+    SyncCommitteeContribution, SyncCommitteeMessage, SyncSelectionProof, SyncSubnetId,
+    ValidatorRegistrationData,
 };
 
 #[derive(Debug, PartialEq, Clone)]
@@ -191,6 +192,14 @@ pub trait ValidatorStore: Send + Sync {
         self: &Arc<Self>,
         contributions: Vec<ContributionToSign<Self::E>>,
     ) -> impl Stream<Item = Result<Vec<SignedContributionAndProof<Self::E>>, Error<Self::Error>>> + Send;
+
+    /// Sign an execution proof for EIP-8025 optional execution verification.
+    fn sign_execution_proof(
+        &self,
+        validator_pubkey: PublicKeyBytes,
+        execution_proof: ExecutionProof,
+        signing_epoch: Epoch,
+    ) -> impl Future<Output = Result<SignedExecutionProof, Error<Self::Error>>> + Send;
 
     /// Prune the slashing protection database so that it remains performant.
     ///

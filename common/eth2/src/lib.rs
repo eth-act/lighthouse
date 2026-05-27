@@ -48,7 +48,7 @@ use std::future::Future;
 use std::time::Duration;
 use types::{
     PayloadAttestationData, PayloadAttestationMessage, SignedExecutionPayloadBid,
-    SignedProposerPreferences,
+    SignedExecutionProof, SignedProposerPreferences,
 };
 
 pub const V1: EndpointVersion = EndpointVersion(1);
@@ -1830,6 +1830,30 @@ impl BeaconNodeHttpClient {
         let ssz_body: Vec<u8> = messages.iter().flat_map(|m| m.as_ssz_bytes()).collect();
 
         self.post_generic_with_consensus_version_and_ssz_body(path, ssz_body, None, fork_name)
+            .await?;
+
+        Ok(())
+    }
+
+    /// `POST beacon/pool/execution_proofs`
+    pub async fn post_beacon_pool_execution_proofs(
+        &self,
+        proofs: &[SignedExecutionProof],
+    ) -> Result<(), Error> {
+        #[derive(Serialize)]
+        struct SubmitExecutionProofsRequest<'a> {
+            proofs: &'a [SignedExecutionProof],
+        }
+
+        let mut path = self.eth_path(V1)?;
+
+        path.path_segments_mut()
+            .map_err(|()| Error::InvalidUrl(self.server.clone()))?
+            .push("beacon")
+            .push("pool")
+            .push("execution_proofs");
+
+        self.post(path, &SubmitExecutionProofsRequest { proofs })
             .await?;
 
         Ok(())

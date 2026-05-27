@@ -1,4 +1,5 @@
 use crate::local_network::LocalNetworkParams;
+use crate::local_network::NodeType;
 use crate::local_network::TERMINAL_BLOCK;
 use crate::{LocalNetwork, checks};
 use clap::ArgMatches;
@@ -210,8 +211,11 @@ pub fn run_basic_sim(matches: &ArgMatches) -> Result<(), String> {
                 LocalNetworkParams {
                     validator_count: total_validator_count,
                     node_count,
-                    extra_nodes,
+                    extra_nodes: 0,
                     proposer_nodes,
+                    proof_generator_nodes: 0,
+                    proof_verifier_nodes: 0,
+                    delayed_nodes: extra_nodes,
                     genesis_delay,
                 },
                 context.clone(),
@@ -222,7 +226,11 @@ pub fn run_basic_sim(matches: &ArgMatches) -> Result<(), String> {
         // Add nodes to the network.
         for _ in 0..node_count {
             network
-                .add_beacon_node(beacon_config.clone(), mock_execution_config.clone(), false)
+                .add_beacon_node(
+                    beacon_config.clone(),
+                    mock_execution_config.clone(),
+                    NodeType::Default,
+                )
                 .await?;
         }
 
@@ -232,7 +240,11 @@ pub fn run_basic_sim(matches: &ArgMatches) -> Result<(), String> {
         for _ in 0..proposer_nodes {
             println!("Adding a proposer node");
             network
-                .add_beacon_node(beacon_config.clone(), mock_execution_config.clone(), true)
+                .add_beacon_node(
+                    beacon_config.clone(),
+                    mock_execution_config.clone(),
+                    NodeType::Proposer,
+                )
                 .await?;
         }
 
@@ -263,7 +275,7 @@ pub fn run_basic_sim(matches: &ArgMatches) -> Result<(), String> {
                             .await
                     } else {
                         network_1
-                            .add_validator_client(validator_config, i, files)
+                            .add_validator_client(validator_config, i, files, NodeType::Default)
                             .await
                     }
                     .expect("should add validator");
