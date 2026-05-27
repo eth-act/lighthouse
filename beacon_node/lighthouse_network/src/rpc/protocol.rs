@@ -1310,7 +1310,10 @@ mod tests {
             LightClientBootstrapV1
             | LightClientOptimisticUpdateV1
             | LightClientFinalityUpdateV1
-            | LightClientUpdatesByRangeV1 => false,
+            | LightClientUpdatesByRangeV1
+            | ExecutionProofsByRangeV1
+            | ExecutionProofsByRootV1
+            | ExecutionProofStatusV1 => false,
         }
     }
 

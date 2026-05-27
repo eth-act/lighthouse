@@ -51,7 +51,6 @@ use crate::sync::custody_backfill_sync::CustodyBackFillSync;
 use crate::sync::network_context::{PeerGroup, RpcResponseResult};
 use beacon_chain::block_verification_types::AsBlock;
 use beacon_chain::{BeaconChain, BeaconChainTypes, EngineState};
-use execution_layer::eip8025::types::ProofTypes;
 use futures::StreamExt;
 use lighthouse_network::SyncInfo;
 use lighthouse_network::rpc::RPCError;
@@ -334,7 +333,7 @@ impl<T: BeaconChainTypes> SyncManager<T> {
             .execution_layer
             .as_ref()
             .map(|execution_layer| execution_layer.proof_types().clone())
-            .unwrap_or_else(ProofTypes::default);
+            .unwrap_or_default();
         Self {
             chain: beacon_chain.clone(),
             input_channel: sync_recv,

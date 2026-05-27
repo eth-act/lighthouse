@@ -1413,6 +1413,24 @@ mod tests {
                     RequestType::LightClientUpdatesByRange(light_client_updates_by_range)
                 )
             }
+            RequestType::ExecutionProofsByRange(execution_proofs_by_range) => {
+                assert_eq!(
+                    decoded,
+                    RequestType::ExecutionProofsByRange(execution_proofs_by_range)
+                )
+            }
+            RequestType::ExecutionProofsByRoot(execution_proofs_by_root) => {
+                assert_eq!(
+                    decoded,
+                    RequestType::ExecutionProofsByRoot(execution_proofs_by_root)
+                )
+            }
+            RequestType::ExecutionProofStatus(execution_proof_status) => {
+                assert_eq!(
+                    decoded,
+                    RequestType::ExecutionProofStatus(execution_proof_status)
+                )
+            }
         }
     }
 
