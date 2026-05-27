@@ -24,6 +24,8 @@ env:
   LIGHTHOUSE_GITHUB_TOKEN: ${{ secrets.LIGHTHOUSE_GITHUB_TOKEN }}
   # Disable incremental compilation
   CARGO_INCREMENTAL: 0
+  # Keep optional-proofs branch-family caches separate while their dependency graphs diverge.
+  RUST_CACHE_EXTRA_IDENTIFIER: ${{ contains(github.head_ref || github.ref_name, 'optional-proofs-unstable') && 'optional-proofs-unstable' || contains(github.head_ref || github.ref_name, 'optional-proofs') && 'optional-proofs' || '' }}
   # Enable portable to prevent issues with caching `blst` for the wrong CPU type
   TEST_FEATURES: portable
 
@@ -58,6 +60,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
+          cache-extra-identifier: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
           cache-target: release
           bins: cargo-nextest
     - name: Run beacon_chain tests for ${{ matrix.fork }}
@@ -82,6 +85,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
+          cache-extra-identifier: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
           cache-target: release
           bins: cargo-nextest
     - name: Run operation_pool tests for ${{ matrix.fork }}
@@ -106,6 +110,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
         channel: stable
+        cache-extra-identifier: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
         cache-target: release
         bins: cargo-nextest
     - name: Create CI logger dir

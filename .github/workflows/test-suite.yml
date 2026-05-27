@@ -26,6 +26,8 @@ env:
   CARGO_INCREMENTAL: 0
   # Enable portable to prevent issues with caching `blst` for the wrong CPU type
   TEST_FEATURES: portable
+  # Keep optional-proofs branch-family caches separate while their dependency graphs diverge.
+  RUST_CACHE_EXTRA_IDENTIFIER: ${{ contains(github.head_ref || github.ref_name, 'optional-proofs-unstable') && 'optional-proofs-unstable' || contains(github.head_ref || github.ref_name, 'optional-proofs') && 'optional-proofs' || '' }}
 jobs:
   check-labels:
     runs-on: ubuntu-latest
@@ -112,6 +114,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
+          cache-extra-identifier: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
           cache-target: release
           bins: cargo-nextest
       env:
@@ -120,6 +123,7 @@ jobs:
       uses: Swatinem/rust-cache@v2
       with:
           cache-provider: warpbuild
+          key: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
     - name: Run tests in release
       run: make test-release
     - name: Show cache stats
@@ -140,12 +144,14 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
+          cache-extra-identifier: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
           cache-target: release
           bins: cargo-nextest
     - if: github.repository == 'sigp/lighthouse'
       uses: Swatinem/rust-cache@v2
       with:
           cache-provider: warpbuild
+          key: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
     - name: Run beacon_chain tests for all known forks
       run: make test-beacon-chain
   http-api-tests:
@@ -162,12 +168,14 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
+          cache-extra-identifier: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
           cache-target: release
           bins: cargo-nextest
     - if: github.repository == 'sigp/lighthouse'
       uses: Swatinem/rust-cache@v2
       with:
           cache-provider: warpbuild
+          key: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
     - name: Run http_api tests for all recent forks
       run: make test-http-api
   op-pool-tests:
@@ -183,6 +191,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
+          cache-extra-identifier: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
           cache-target: release
           bins: cargo-nextest
     - name: Run operation_pool tests for all known forks
@@ -200,6 +209,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
         channel: stable
+        cache-extra-identifier: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
         cache-target: release
         bins: cargo-nextest
     - name: Create CI logger dir
@@ -229,6 +239,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
+          cache-extra-identifier: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
           cache-target: release
           bins: cargo-nextest
     - name: Run slasher tests for all supported backends
@@ -247,11 +258,13 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
+          cache-extra-identifier: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
           bins: cargo-nextest
     - if: github.repository == 'sigp/lighthouse'
       uses: Swatinem/rust-cache@v2
       with:
           cache-provider: warpbuild
+          key: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
     - name: Run tests in debug
       run: make test-debug
   state-transition-vectors-ubuntu:
@@ -265,6 +278,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
+          cache-extra-identifier: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
           cache-target: release
     - name: Run state_transition_vectors in release.
       run: make run-state-transition-tests
@@ -282,12 +296,14 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
+          cache-extra-identifier: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
           cache-target: release
           bins: cargo-nextest
     - if: github.repository == 'sigp/lighthouse'
       uses: Swatinem/rust-cache@v2
       with:
           cache-provider: warpbuild
+          key: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
     - name: Run consensus-spec-tests with blst and fake_crypto
       run: make test-ef
   basic-simulator-ubuntu:
@@ -301,6 +317,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
+          cache-extra-identifier: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
           cache-target: release
     - name: Create log dir
       run: mkdir ${{ runner.temp }}/basic_simulator_logs
@@ -323,6 +340,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
+          cache-extra-identifier: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
           cache-target: release
     - name: Create log dir
       run: mkdir ${{ runner.temp }}/fallback_simulator_logs
@@ -346,6 +364,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
+          cache-extra-identifier: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
           cache: false
       env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -362,6 +381,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: stable
+          cache-extra-identifier: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
           cache-target: release
           components: rustfmt,clippy
           bins: cargo-audit,cargo-deny
@@ -410,6 +430,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
           channel: nightly
+          cache-extra-identifier: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
           bins: cargo-udeps
           cache: false
       env:
@@ -447,6 +468,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
         channel: stable
+        cache-extra-identifier: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
         cache-target: release
     - name: Run Makefile to trigger the bash script
       run: make cli-local
@@ -461,6 +483,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
         channel: stable
+        cache-extra-identifier: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
     - uses: taiki-e/install-action@cargo-hack
     - name: Check types feature powerset
       run: cargo hack check -p types --feature-powerset --no-dev-deps --exclude-features arbitrary-fuzz,portable
@@ -477,6 +500,7 @@ jobs:
       uses: moonrepo/setup-rust@v1
       with:
         channel: stable
+        cache-extra-identifier: ${{ env.RUST_CACHE_EXTRA_IDENTIFIER }}
         cache-target: release
         bins: cargo-sort
     - name: Run cargo sort to check if Cargo.toml files are sorted
