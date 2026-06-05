@@ -18,7 +18,7 @@ portable = ["types/portable"]
 anyhow = "1"
 axum = "0.7"
 bytes = "1"
-ethereum_ssz = { version = "0.10.0", features = ["context_deserialize"] }
+ethereum_ssz = { version = "0.10.4", features = ["context_deserialize"] }
 execution_layer = { path = "../../beacon_node/execution_layer" }
 futures = "0.3"
 metrics-exporter-prometheus = "0.16"

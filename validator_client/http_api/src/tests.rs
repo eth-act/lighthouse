@@ -132,6 +132,7 @@ impl ApiTester {
             },
             sse_logging_components: None,
             slot_clock: slot_clock.clone(),
+            proof_service: None,
         });
         let ctx = context.clone();
         let (listening_socket, server) =

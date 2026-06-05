@@ -142,7 +142,7 @@ eth2_network_config = { path = "common/eth2_network_config" }
 eth2_wallet = { path = "crypto/eth2_wallet" }
 ethereum_hashing = "0.8.0"
 ethereum_serde_utils = "0.8.0"
-ethereum_ssz = { version = "0.10.0", features = ["context_deserialize"] }
+ethereum_ssz = { version = "0.10.4", features = ["context_deserialize"] }
 ethereum_ssz_derive = "0.10.0"
 execution_layer = { path = "beacon_node/execution_layer" }
 filesystem = { path = "common/filesystem" }
@@ -220,7 +220,7 @@ slashing_protection = { path = "validator_client/slashing_protection" }
 slot_clock = { path = "common/slot_clock" }
 smallvec = "1"
 snap = "1"
-ssz_types = { version = "0.14.0", features = ["context_deserialize", "runtime_types"] }
+ssz_types = { version = "0.14.1", features = ["context_deserialize", "runtime_types"] }
 state_processing = { path = "consensus/state_processing" }
 store = { path = "beacon_node/store" }
 strum = { version = "0.27", features = ["derive"] }
