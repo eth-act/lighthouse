@@ -695,7 +695,7 @@ impl ssz::Encode for ExecutionProofsByRangeRequest {
     }
 
     fn ssz_append(&self, buf: &mut Vec<u8>) {
-        let mut encoder = ssz::SszEncoder::container(buf, 3);
+        let mut encoder = ssz::SszEncoder::container(buf, Self::ssz_min_len());
         encoder.append(&self.start_slot);
         encoder.append(&self.count);
         encoder.append(&self.proof_types);

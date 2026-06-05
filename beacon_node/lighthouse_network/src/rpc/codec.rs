@@ -1212,6 +1212,40 @@ mod tests {
         }
     }
 
+    fn eprange_request() -> ExecutionProofsByRangeRequest {
+        use typenum::Unsigned;
+        ExecutionProofsByRangeRequest {
+            start_slot: 5,
+            count: 10,
+            proof_types: RuntimeVariableList::new(
+                vec![0, 2],
+                types::execution::eip8025::MaxExecutionProofsPerPayload::to_usize(),
+            )
+            .unwrap(),
+        }
+    }
+
+    fn eproot_request(fork_name: ForkName, spec: &ChainSpec) -> ExecutionProofsByRootRequest {
+        ExecutionProofsByRootRequest {
+            identifiers: RuntimeVariableList::new(
+                vec![types::execution::eip8025::ProofByRootIdentifier {
+                    block_root: Hash256::zero(),
+                    proof_types: VariableList::try_from(vec![0, 1]).unwrap(),
+                }],
+                spec.max_request_blocks(fork_name),
+            )
+            .unwrap(),
+        }
+    }
+
+    fn epstatus_request() -> ExecutionProofStatus {
+        ExecutionProofStatus {
+            block_root: Hash256::zero(),
+            slot: 42,
+            proof_types: VariableList::try_from(vec![0, 1, 2, 3]).unwrap(),
+        }
+    }
+
     fn bbroot_request_v1(fork_name: ForkName, spec: &ChainSpec) -> BlocksByRootRequest {
         BlocksByRootRequest::new_v1(vec![Hash256::zero()], &fork_context(fork_name, spec)).unwrap()
     }
@@ -2167,6 +2201,8 @@ mod tests {
                 beacon_root: Hash256::zero(),
                 count: 32,
             }),
+            RequestType::ExecutionProofsByRange(eprange_request()),
+            RequestType::ExecutionProofStatus(epstatus_request()),
         ];
         for req in requests.iter() {
             for fork_name in ForkName::list_all() {
@@ -2182,6 +2218,7 @@ mod tests {
                 RequestType::BlocksByRoot(bbroot_request_v1(fork_name, &chain_spec)),
                 RequestType::BlocksByRoot(bbroot_request_v2(fork_name, &chain_spec)),
                 RequestType::DataColumnsByRoot(dcbroot_request(fork_name, &chain_spec)),
+                RequestType::ExecutionProofsByRoot(eproot_request(fork_name, &chain_spec)),
             ]
         };
         for fork_name in ForkName::list_all() {
