@@ -24,6 +24,10 @@ use validator_http_api::{Config as ValidatorHttpConfig, PK_FILENAME};
 
 pub const TERMINAL_BLOCK: u64 = 0;
 
+// Proof node types and several helpers are only exercised by the proof engine
+// integration tests; allow dead code so the simulator binary builds with
+// `-D warnings`.
+#[allow(dead_code)]
 #[derive(Debug, Copy, Clone)]
 pub enum NodeType {
     Default,
@@ -70,6 +74,7 @@ pub struct LocalNetworkParams {
 }
 
 impl LocalNetworkParams {
+    #[allow(dead_code)]
     pub fn node_type(&self, node_idx: usize) -> NodeType {
         if node_idx < self.node_count {
             NodeType::Default
@@ -259,6 +264,7 @@ impl<E: EthSpec> LocalNetwork<E> {
         self.validator_clients.read().len()
     }
 
+    #[allow(dead_code)]
     pub fn executor(&self) -> &TaskExecutor {
         &self.context.executor
     }
@@ -566,6 +572,7 @@ impl<E: EthSpec> LocalNetwork<E> {
     }
 
     /// Return a HTTP client for the beacon node at `index`.
+    #[allow(dead_code)]
     pub fn remote_node(&self, index: usize) -> Option<BeaconNodeHttpClient> {
         self.beacon_nodes
             .read()
@@ -586,6 +593,7 @@ impl<E: EthSpec> LocalNetwork<E> {
     }
 
     /// Subscribe to mock proof-client events for a beacon node at a specific index.
+    #[allow(dead_code)]
     pub fn node_subscribe_client_events(
         &self,
         index: usize,
@@ -596,6 +604,7 @@ impl<E: EthSpec> LocalNetwork<E> {
     }
 
     /// Subscribe to the internal event bus for a beacon node at a specific index.
+    #[allow(dead_code)]
     pub fn node_subscribe_internal_events(
         &self,
         index: usize,
