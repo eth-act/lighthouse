@@ -1,8 +1,12 @@
 use crate::{Error, block_hash::calculate_execution_block_hash, metrics};
 
 use crate::versioned_hashes::verify_versioned_hashes;
+use ssz_derive::Encode as SszEncode;
+use ssz_types::VariableList;
 use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
 use superstruct::superstruct;
+use tree_hash::TreeHash as _;
+use tree_hash_derive::TreeHash;
 use types::{
     BeaconBlockRef, BeaconStateError, EthSpec, ExecutionBlockHash, ExecutionPayload,
     ExecutionPayloadRef, Hash256, VersionedHash,
@@ -14,7 +18,7 @@ use types::{
 
 #[superstruct(
     variants(Bellatrix, Capella, Deneb, Electra, Fulu, Gloas),
-    variant_attributes(derive(Clone, Debug, PartialEq),),
+    variant_attributes(derive(Clone, Debug, PartialEq, SszEncode, TreeHash),),
     map_into(ExecutionPayload),
     map_ref_into(ExecutionPayloadRef),
     cast_error(
@@ -26,7 +30,9 @@ use types::{
         expr = "BeaconStateError::IncorrectStateVariant"
     )
 )]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, SszEncode, TreeHash)]
+#[tree_hash(enum_behaviour = "transparent")]
+#[ssz(enum_behaviour = "transparent")]
 pub struct NewPayloadRequest<'block, E: EthSpec> {
     #[superstruct(
         only(Bellatrix),
@@ -44,7 +50,7 @@ pub struct NewPayloadRequest<'block, E: EthSpec> {
     #[superstruct(only(Gloas), partial_getter(rename = "execution_payload_gloas"))]
     pub execution_payload: &'block ExecutionPayloadGloas<E>,
     #[superstruct(only(Deneb, Electra, Fulu, Gloas))]
-    pub versioned_hashes: Vec<VersionedHash>,
+    pub versioned_hashes: VariableList<VersionedHash, E::MaxBlobCommitmentsPerBlock>,
     #[superstruct(only(Deneb, Electra, Fulu, Gloas))]
     pub parent_beacon_block_root: Hash256,
     #[superstruct(only(Electra, Fulu, Gloas))]
@@ -52,6 +58,11 @@ pub struct NewPayloadRequest<'block, E: EthSpec> {
 }
 
 impl<'block, E: EthSpec> NewPayloadRequest<'block, E> {
+    /// Root used by EIP-8025 proofs to bind a proof to an `engine_newPayload` request.
+    pub fn request_root(&self) -> Hash256 {
+        self.tree_hash_root()
+    }
+
     pub fn parent_hash(&self) -> ExecutionBlockHash {
         match self {
             Self::Bellatrix(payload) => payload.execution_payload.parent_hash,
@@ -196,7 +207,8 @@ impl<'a, E: EthSpec> TryFrom<BeaconBlockRef<'a, E>> for NewPayloadRequest<'a, E>
                     .blob_kzg_commitments
                     .iter()
                     .map(kzg_commitment_to_versioned_hash)
-                    .collect(),
+                    .collect::<Vec<_>>()
+                    .try_into()?,
                 parent_beacon_block_root: block_ref.parent_root,
             })),
             BeaconBlockRef::Electra(block_ref) => Ok(Self::Electra(NewPayloadRequestElectra {
@@ -206,7 +218,8 @@ impl<'a, E: EthSpec> TryFrom<BeaconBlockRef<'a, E>> for NewPayloadRequest<'a, E>
                     .blob_kzg_commitments
                     .iter()
                     .map(kzg_commitment_to_versioned_hash)
-                    .collect(),
+                    .collect::<Vec<_>>()
+                    .try_into()?,
                 parent_beacon_block_root: block_ref.parent_root,
                 execution_requests: &block_ref.body.execution_requests,
             })),
@@ -217,7 +230,8 @@ impl<'a, E: EthSpec> TryFrom<BeaconBlockRef<'a, E>> for NewPayloadRequest<'a, E>
                     .blob_kzg_commitments
                     .iter()
                     .map(kzg_commitment_to_versioned_hash)
-                    .collect(),
+                    .collect::<Vec<_>>()
+                    .try_into()?,
                 parent_beacon_block_root: block_ref.parent_root,
                 execution_requests: &block_ref.body.execution_requests,
             })),

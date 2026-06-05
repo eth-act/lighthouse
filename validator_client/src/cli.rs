@@ -519,4 +519,26 @@ pub struct ValidatorClient {
         display_order = 0
     )]
     pub web3_signer_max_idle_connections: Option<usize>,
+
+    #[clap(
+        long,
+        value_name = "HTTP-JSON-RPC-URL",
+        help = "URL of the proof engine HTTP JSON-RPC endpoint for EIP-8025 execution proofs. \
+                When set, the validator client will monitor new blocks, request proofs from this \
+                endpoint, sign completed proofs, and submit them to the beacon node.",
+        display_order = 0
+    )]
+    pub proof_engine_endpoint: Option<String>,
+
+    #[clap(
+        long,
+        value_name = "TYPES",
+        value_delimiter = ',',
+        requires = "proof_engine_endpoint",
+        help = "Comma-separated list of proof type identifiers (u8) to request from the proof engine \
+                (e.g., 0,1,2). If not specified, defaults to '0,1,2,3' \
+                (EthrexRisc0, EthrexSP1, EthrexZisk, RethOpenVM).",
+        display_order = 0
+    )]
+    pub proof_types: Option<Vec<u8>>,
 }

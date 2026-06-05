@@ -33,11 +33,11 @@ PROFILE ?= release
 # List of all hard forks up to gloas. This list is used to set env variables for several tests so that
 # they run for different forks.
 # TODO(EIP-7732) Remove this once we extend network tests to support gloas and use RECENT_FORKS instead
-RECENT_FORKS_BEFORE_GLOAS=electra fulu
+RECENT_FORKS_BEFORE_GLOAS=fulu
 
 # List of all recent hard forks. This list is used to set env variables for http_api tests
 # Include phase0 to test the code paths in sync that are pre blobs
-RECENT_FORKS=electra fulu gloas
+RECENT_FORKS=fulu gloas
 
 # For network tests include phase0 to cover genesis syncing (blocks without blobs or columns)
 TEST_NETWORK_FORKS=phase0 $(RECENT_FORKS_BEFORE_GLOAS)
@@ -181,7 +181,12 @@ build-release-tarballs:
 test-release:
 	cargo nextest run --workspace --release --features "$(TEST_FEATURES)" \
 		--exclude ef_tests --exclude beacon_chain --exclude slasher --exclude network \
-		--exclude http_api
+		--exclude http_api --exclude proof_engine_test
+
+# Runs the proof engine integration tests sequentially. Each test spawns multiple
+# beacon nodes and is sensitive to slot timing, so dedicated execution is required.
+test-proof-engine:
+	cargo nextest run -p proof_engine_test --release --test-threads 1
 
 
 # Runs the full workspace tests in **debug**, without downloading any additional test
@@ -189,6 +194,10 @@ test-release:
 test-debug:
 	cargo nextest run --workspace --features "$(TEST_FEATURES)" \
 		--exclude ef_tests --exclude beacon_chain --exclude network --exclude http_api
+
+# Runs the proof_engine_zkboost integration tests against a real mock-backend zkBoost server.
+test-zkboost:
+	cargo nextest run --manifest-path testing/proof_engine_zkboost/Cargo.toml --release
 
 # Runs cargo-fmt (linter).
 cargo-fmt:

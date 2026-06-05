@@ -58,6 +58,7 @@ use tracing::{info, warn};
 use types::{ChainSpec, ConfigAndPreset, EthSpec};
 use validator_dir::Builder as ValidatorDirBuilder;
 use validator_services::block_service::BlockService;
+use validator_services::proof_service::ProofService;
 use warp::{Filter, reply::Response, sse::Event};
 use warp_utils::reject::convert_rejection;
 use warp_utils::task::blocking_json_task;
@@ -83,7 +84,7 @@ impl From<String> for Error {
 /// A wrapper around all the items required to spawn the HTTP server.
 ///
 /// The server will gracefully handle the case where any fields are `None`.
-pub struct Context<T: SlotClock, E> {
+pub struct Context<T: SlotClock + 'static, E: EthSpec> {
     pub task_executor: TaskExecutor,
     pub api_secret: ApiSecret,
     pub block_service: Option<BlockService<LighthouseValidatorStore<T, E>, T>>,
@@ -96,6 +97,7 @@ pub struct Context<T: SlotClock, E> {
     pub config: Config,
     pub sse_logging_components: Option<SSELoggingComponents>,
     pub slot_clock: T,
+    pub proof_service: Option<Arc<ProofService<LighthouseValidatorStore<T, E>, T>>>,
 }
 
 /// Configuration for the HTTP server.

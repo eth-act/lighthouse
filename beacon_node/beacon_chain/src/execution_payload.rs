@@ -12,12 +12,13 @@ use crate::{
     ExecutionPayloadError,
 };
 use execution_layer::{
-    BlockProposalContentsType, BuilderParams, NewPayloadRequest, PayloadAttributes,
+    BlockProposalContentsType, BuilderParams, ExecutionLayer, NewPayloadRequest, PayloadAttributes,
     PayloadParameters, PayloadStatus,
 };
 use fork_choice::{InvalidationOperation, PayloadVerificationStatus};
 use proto_array::{Block as ProtoBlock, ExecutionStatus};
 use slot_clock::SlotClock;
+use ssz::Encode;
 use state_processing::per_block_processing::{
     compute_timestamp_at_slot, get_expected_withdrawals, is_execution_enabled,
     partially_verify_execution_payload,
@@ -139,6 +140,8 @@ pub async fn notify_new_payload<T: BeaconChainTypes>(
         .as_ref()
         .ok_or(ExecutionPayloadError::NoExecutionConnection)?;
 
+    request_execution_proofs(chain, execution_layer, &new_payload_request);
+
     let execution_block_hash = new_payload_request.execution_payload_ref().block_hash();
     let new_payload_response = execution_layer
         .notify_new_payload(new_payload_request.clone())
@@ -211,6 +214,41 @@ pub async fn notify_new_payload<T: BeaconChainTypes>(
         },
         Err(e) => Err(ExecutionPayloadError::RequestFailed(e).into()),
     }
+}
+
+fn request_execution_proofs<T: BeaconChainTypes>(
+    chain: &Arc<BeaconChain<T>>,
+    execution_layer: &ExecutionLayer<T::EthSpec>,
+    new_payload_request: &NewPayloadRequest<'_, T::EthSpec>,
+) {
+    let Some(proof_engine) = execution_layer.proof_engine() else {
+        return;
+    };
+
+    let proof_types = execution_layer
+        .proof_types()
+        .iter()
+        .map(|proof_type| proof_type.to_u8())
+        .collect();
+    let proof_attributes = ProofAttributes { proof_types };
+    let request_body = new_payload_request.as_ssz_bytes();
+    let request_root = new_payload_request.request_root();
+
+    chain.task_executor.spawn(
+        async move {
+            if let Err(error) = proof_engine
+                .request_proofs_ssz(request_body, proof_attributes)
+                .await
+            {
+                warn!(
+                    ?error,
+                    ?request_root,
+                    "Failed to request EIP-8025 execution proofs"
+                );
+            }
+        },
+        "eip8025_proof_request",
+    );
 }
 
 /// Validate the gossip block's execution_payload according to the checks described here:

@@ -1,3 +1,4 @@
+pub mod eip8025;
 mod eth1_data;
 mod execution_block_header;
 #[macro_use]
@@ -14,6 +15,11 @@ mod signed_execution_payload_bid;
 mod signed_execution_payload_envelope;
 
 pub use bls_to_execution_change::BlsToExecutionChange;
+pub use eip8025::{
+    DOMAIN_EXECUTION_PROOF, ExecutionProof, ExecutionProofList, MIN_REQUIRED_EXECUTION_PROOFS,
+    MaxExecutionProofsPerPayload, ProofAttributes, ProofByRootIdentifier, ProofData, ProofStatus,
+    ProofType, PublicInput, SignedExecutionProof,
+};
 pub use eth1_data::Eth1Data;
 pub use execution_block_header::{EncodableExecutionBlockHeader, ExecutionBlockHeader};
 pub use execution_payload::{

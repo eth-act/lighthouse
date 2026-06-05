@@ -115,6 +115,12 @@ pub struct RPCRateLimiter {
     envrange_rl: Limiter<PeerId>,
     /// PayloadEnvelopesByRoot rate limiter.
     envroots_rl: Limiter<PeerId>,
+    /// ExecutionProofsByRange rate limiter.
+    proofrange_rl: Limiter<PeerId>,
+    /// ExecutionProofsByRoot rate limiter.
+    proofroots_rl: Limiter<PeerId>,
+    /// ExecutionProofStatus rate limiter.
+    proofstatus_rl: Limiter<PeerId>,
     /// DataColumnsByRoot rate limiter.
     dcbroot_rl: Limiter<PeerId>,
     /// DataColumnsByRange rate limiter.
@@ -160,6 +166,12 @@ pub struct RPCRateLimiterBuilder {
     perange_quota: Option<Quota>,
     /// Quota for the ExecutionPayloadEnvelopesByRoot protocol.
     peroots_quota: Option<Quota>,
+    /// Quota for the ExecutionProofsByRange protocol.
+    proofrange_quota: Option<Quota>,
+    /// Quota for the ExecutionProofsByRoot protocol.
+    proofroots_quota: Option<Quota>,
+    /// Quota for the ExecutionProofStatus protocol.
+    proofstatus_quota: Option<Quota>,
     /// Quota for the BlobsByRange protocol.
     blbrange_quota: Option<Quota>,
     /// Quota for the BlobsByRoot protocol.
@@ -192,6 +204,9 @@ impl RPCRateLimiterBuilder {
             Protocol::BlocksByHead => self.bbhead_quota = q,
             Protocol::PayloadEnvelopesByRange => self.perange_quota = q,
             Protocol::PayloadEnvelopesByRoot => self.peroots_quota = q,
+            Protocol::ExecutionProofsByRange => self.proofrange_quota = q,
+            Protocol::ExecutionProofsByRoot => self.proofroots_quota = q,
+            Protocol::ExecutionProofStatus => self.proofstatus_quota = q,
             Protocol::BlobsByRange => self.blbrange_quota = q,
             Protocol::BlobsByRoot => self.blbroot_quota = q,
             Protocol::DataColumnsByRoot => self.dcbroot_quota = q,
@@ -225,6 +240,15 @@ impl RPCRateLimiterBuilder {
         let peroots_quota = self
             .peroots_quota
             .ok_or("PayloadEnvelopesByRoot quota not specified")?;
+        let proofrange_quota = self
+            .proofrange_quota
+            .ok_or("ExecutionProofsByRange quota not specified")?;
+        let proofroots_quota = self
+            .proofroots_quota
+            .ok_or("ExecutionProofsByRoot quota not specified")?;
+        let proofstatus_quota = self
+            .proofstatus_quota
+            .ok_or("ExecutionProofStatus quota not specified")?;
         let lc_bootstrap_quota = self
             .lcbootstrap_quota
             .ok_or("LightClientBootstrap quota not specified")?;
@@ -263,6 +287,9 @@ impl RPCRateLimiterBuilder {
         let bbhead_rl = Limiter::from_quota(bbhead_quota)?;
         let envrange_rl = Limiter::from_quota(perange_quota)?;
         let envroots_rl = Limiter::from_quota(peroots_quota)?;
+        let proofrange_rl = Limiter::from_quota(proofrange_quota)?;
+        let proofroots_rl = Limiter::from_quota(proofroots_quota)?;
+        let proofstatus_rl = Limiter::from_quota(proofstatus_quota)?;
         let blbrange_rl = Limiter::from_quota(blbrange_quota)?;
         let blbroot_rl = Limiter::from_quota(blbroots_quota)?;
         let dcbroot_rl = Limiter::from_quota(dcbroot_quota)?;
@@ -289,6 +316,9 @@ impl RPCRateLimiterBuilder {
             bbhead_rl,
             envrange_rl,
             envroots_rl,
+            proofrange_rl,
+            proofroots_rl,
+            proofstatus_rl,
             blbrange_rl,
             blbroot_rl,
             dcbroot_rl,
@@ -345,6 +375,9 @@ impl RPCRateLimiter {
             blocks_by_head_quota,
             payload_envelopes_by_range_quota,
             payload_envelopes_by_root_quota,
+            execution_proofs_by_range_quota,
+            execution_proofs_by_root_quota,
+            execution_proof_status_quota,
             blobs_by_range_quota,
             blobs_by_root_quota,
             data_columns_by_root_quota,
@@ -371,6 +404,15 @@ impl RPCRateLimiter {
                 Protocol::PayloadEnvelopesByRoot,
                 payload_envelopes_by_root_quota,
             )
+            .set_quota(
+                Protocol::ExecutionProofsByRange,
+                execution_proofs_by_range_quota,
+            )
+            .set_quota(
+                Protocol::ExecutionProofsByRoot,
+                execution_proofs_by_root_quota,
+            )
+            .set_quota(Protocol::ExecutionProofStatus, execution_proof_status_quota)
             .set_quota(Protocol::BlobsByRange, blobs_by_range_quota)
             .set_quota(Protocol::BlobsByRoot, blobs_by_root_quota)
             .set_quota(Protocol::DataColumnsByRoot, data_columns_by_root_quota)
@@ -421,6 +463,9 @@ impl RPCRateLimiter {
             Protocol::BlocksByHead => &mut self.bbhead_rl,
             Protocol::PayloadEnvelopesByRange => &mut self.envrange_rl,
             Protocol::PayloadEnvelopesByRoot => &mut self.envroots_rl,
+            Protocol::ExecutionProofsByRange => &mut self.proofrange_rl,
+            Protocol::ExecutionProofsByRoot => &mut self.proofroots_rl,
+            Protocol::ExecutionProofStatus => &mut self.proofstatus_rl,
             Protocol::BlobsByRange => &mut self.blbrange_rl,
             Protocol::BlobsByRoot => &mut self.blbroot_rl,
             Protocol::DataColumnsByRoot => &mut self.dcbroot_rl,
@@ -448,6 +493,9 @@ impl RPCRateLimiter {
             bbhead_rl,
             envrange_rl,
             envroots_rl,
+            proofrange_rl,
+            proofroots_rl,
+            proofstatus_rl,
             blbrange_rl,
             blbroot_rl,
             dcbroot_rl,
@@ -468,6 +516,9 @@ impl RPCRateLimiter {
         bbhead_rl.prune(time_since_start);
         envrange_rl.prune(time_since_start);
         envroots_rl.prune(time_since_start);
+        proofrange_rl.prune(time_since_start);
+        proofroots_rl.prune(time_since_start);
+        proofstatus_rl.prune(time_since_start);
         blbrange_rl.prune(time_since_start);
         blbroot_rl.prune(time_since_start);
         dcbrange_rl.prune(time_since_start);

@@ -33,7 +33,12 @@ pub use execution_block_generator::{
 };
 pub use hook::Hook;
 pub use mock_builder::{MockBuilder, Operation, mock_builder_extra_data};
+pub use mock_event_stream::{MockEventStream, MockStreamError};
 pub use mock_execution_layer::MockExecutionLayer;
+pub use mock_proof_node_client::{
+    MockClientEvent, MockProofNodeClient, OwnedNewPayloadRequest, get_mock_proof_engine,
+    make_test_fulu_ssz, mock_proof_engine_url, parse_mock_index, register_mock_proof_engine,
+};
 
 pub const DEFAULT_JWT_SECRET: [u8; 32] = [42; 32];
 pub const DEFAULT_MOCK_EL_PAYLOAD_VALUE_WEI: u128 = 10_000_000_000_000_000;
@@ -57,7 +62,6 @@ pub const DEFAULT_ENGINE_CAPABILITIES: EngineCapabilities = EngineCapabilities {
     get_payload_v5: true,
     get_payload_v6: true,
     get_client_version_v1: true,
-    get_blobs_v1: true,
     get_blobs_v2: true,
     get_blobs_v3: true,
 };
@@ -74,7 +78,9 @@ mod execution_block_generator;
 mod handle_rpc;
 mod hook;
 mod mock_builder;
+mod mock_event_stream;
 mod mock_execution_layer;
+pub(crate) mod mock_proof_node_client;
 
 /// Configuration for the MockExecutionLayer.
 #[derive(Clone)]

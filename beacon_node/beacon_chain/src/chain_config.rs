@@ -3,7 +3,7 @@ pub use proto_array::DisallowedReOrgOffsets;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use std::{collections::HashSet, sync::LazyLock, time::Duration};
-use types::{Checkpoint, Hash256};
+use types::{Checkpoint, Hash256, MIN_REQUIRED_EXECUTION_PROOFS};
 
 pub const DEFAULT_FORK_CHOICE_BEFORE_PROPOSAL_TIMEOUT: u64 = 250;
 
@@ -114,6 +114,35 @@ pub struct ChainConfig {
     pub node_custody_type: NodeCustodyType,
     /// Disable proposer re-org
     pub disable_proposer_reorg: bool,
+    /// Non-default EIP-8025 proof quorum configuration.
+    ///
+    /// When disabled, valid execution proofs are tracked as proof metadata only and never change
+    /// payload/fork-choice validity.
+    #[serde(default)]
+    pub execution_proof_quorum: ExecutionProofQuorumConfig,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize)]
+pub struct ExecutionProofQuorumConfig {
+    /// Allow proof validity to mark a Gloas payload envelope as received in fork choice.
+    pub enabled: bool,
+    /// Required number of distinct valid proof types for the same new-payload request root.
+    pub min_valid_proof_types: usize,
+}
+
+impl Default for ExecutionProofQuorumConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_valid_proof_types: MIN_REQUIRED_EXECUTION_PROOFS,
+        }
+    }
+}
+
+impl ExecutionProofQuorumConfig {
+    pub fn threshold(&self) -> Option<usize> {
+        (self.enabled && self.min_valid_proof_types > 0).then_some(self.min_valid_proof_types)
+    }
 }
 
 impl Default for ChainConfig {
@@ -154,6 +183,7 @@ impl Default for ChainConfig {
             enable_partial_columns: false,
             node_custody_type: NodeCustodyType::Fullnode,
             disable_proposer_reorg: false,
+            execution_proof_quorum: ExecutionProofQuorumConfig::default(),
         }
     }
 }

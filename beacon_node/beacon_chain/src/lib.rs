@@ -20,6 +20,7 @@ pub mod custody_context;
 pub mod data_availability_checker;
 pub mod data_column_verification;
 mod early_attester_cache;
+pub mod eip8025;
 pub mod envelope_times_cache;
 mod errors;
 pub mod events;
@@ -29,6 +30,7 @@ pub mod fork_choice_signal;
 pub mod graffiti_calculator;
 pub mod historical_blocks;
 pub mod historical_data_columns;
+pub mod internal_events;
 pub mod invariants;
 pub mod kzg_utils;
 pub mod light_client_finality_update_verification;
@@ -41,6 +43,7 @@ pub mod observed_aggregates;
 mod observed_attesters;
 pub mod observed_block_producers;
 pub mod observed_data_sidecars;
+pub mod observed_execution_proofs;
 pub mod observed_operations;
 mod observed_slashable;
 pub mod partial_data_column_assembler;
@@ -85,7 +88,7 @@ pub use beacon_fork_choice_store::{
 };
 pub use block_verification::{
     BlockError, ExecutionPayloadError, ExecutionPendingBlock, GossipVerifiedBlock,
-    IntoExecutionPendingBlock, IntoGossipVerifiedBlock, InvalidSignature,
+    IntoExecutionPendingBlock, IntoGossipVerifiedBlock, InvalidSignature, ParentImportStatus,
     PayloadVerificationOutcome, PayloadVerificationStatus, build_blob_data_column_sidecars,
     get_block_root, signature_verify_chain_segment,
 };

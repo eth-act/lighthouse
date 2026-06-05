@@ -12,6 +12,7 @@ use crate::sync::SyncMessage;
 use beacon_chain::{BeaconChain, BeaconChainTypes};
 use beacon_processor::{BeaconProcessorSend, DuplicateCache};
 use futures::prelude::*;
+use lighthouse_network::rpc::methods::ExecutionProofStatus;
 use lighthouse_network::rpc::*;
 use lighthouse_network::{
     GossipTopic, MessageId, NetworkGlobals, PeerId, PubsubMessage, Response,
@@ -26,7 +27,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, error, trace, warn};
 use types::{
     BlobSidecar, DataColumnSidecar, EthSpec, ForkContext, PartialDataColumn, SignedBeaconBlock,
-    SignedExecutionPayloadEnvelope,
+    SignedExecutionPayloadEnvelope, SignedExecutionProof,
 };
 
 /// Handles messages from the network and routes them to the appropriate service to be handled.
@@ -312,6 +313,38 @@ impl<T: BeaconChainTypes> Router<T> {
                             request,
                         ),
                 ),
+            RequestType::ExecutionProofsByRange(request) => self
+                .handle_beacon_processor_send_result(
+                    self.network_beacon_processor
+                        .send_execution_proofs_by_range_request(
+                            peer_id,
+                            inbound_request_id,
+                            request,
+                        ),
+                ),
+            RequestType::ExecutionProofsByRoot(request) => self
+                .handle_beacon_processor_send_result(
+                    self.network_beacon_processor
+                        .send_execution_proofs_by_root_request(
+                            peer_id,
+                            inbound_request_id,
+                            request,
+                        ),
+                ),
+            RequestType::ExecutionProofStatus(status) => {
+                self.network.send_response(
+                    peer_id,
+                    inbound_request_id,
+                    Response::ExecutionProofStatus(
+                        self.network_beacon_processor.local_execution_proof_status(),
+                    ),
+                );
+                self.send_to_sync(SyncMessage::RpcExecutionProofStatus {
+                    peer_id,
+                    request_id: None,
+                    status,
+                });
+            }
             _ => {}
         }
     }
@@ -340,8 +373,8 @@ impl<T: BeaconChainTypes> Router<T> {
             Response::BlobsByRange(blob) => {
                 self.on_blobs_by_range_response(peer_id, app_request_id, blob);
             }
-            Response::BlobsByRoot(blob) => {
-                self.on_blobs_by_root_response(peer_id, app_request_id, blob);
+            Response::BlobsByRoot(_) => {
+                crit!(%peer_id, "Unexpected BlobsByRoot response; lookup blob requests removed");
             }
             Response::DataColumnsByRoot(data_column) => {
                 self.on_data_columns_by_root_response(peer_id, app_request_id, data_column);
@@ -356,6 +389,19 @@ impl<T: BeaconChainTypes> Router<T> {
             // once sync manager requests them.
             Response::PayloadEnvelopesByRange(_) => {
                 debug!("Requesting envelopes by range not supported yet");
+            }
+            Response::ExecutionProofsByRange(execution_proof) => {
+                self.on_execution_proofs_by_range_response(
+                    peer_id,
+                    app_request_id,
+                    execution_proof,
+                );
+            }
+            Response::ExecutionProofsByRoot(execution_proof) => {
+                self.on_execution_proofs_by_root_response(peer_id, app_request_id, execution_proof);
+            }
+            Response::ExecutionProofStatus(status) => {
+                self.on_execution_proof_status_response(peer_id, app_request_id, status);
             }
             // Lighthouse currently only serves BlocksByHead and does not issue it as a client,
             // so receiving a response is unexpected. Drop it without crashing.
@@ -412,19 +458,6 @@ impl<T: BeaconChainTypes> Router<T> {
                     seen_timestamp,
                 ),
             ),
-            PubsubMessage::BlobSidecar(data) => {
-                let (blob_index, blob_sidecar) = *data;
-                self.handle_beacon_processor_send_result(
-                    self.network_beacon_processor.send_gossip_blob_sidecar(
-                        message_id,
-                        peer_id,
-                        self.network_globals.client(&peer_id),
-                        blob_index,
-                        blob_sidecar,
-                        seen_timestamp,
-                    ),
-                )
-            }
             PubsubMessage::DataColumnSidecar(data) => {
                 let (subnet_id, column_sidecar) = *data;
                 self.handle_beacon_processor_send_result(
@@ -435,6 +468,7 @@ impl<T: BeaconChainTypes> Router<T> {
                             subnet_id,
                             column_sidecar,
                             seen_timestamp,
+                            true,
                         ),
                 )
             }
@@ -582,6 +616,16 @@ impl<T: BeaconChainTypes> Router<T> {
                             peer_id,
                             proposer_preferences,
                         ),
+                )
+            }
+            PubsubMessage::ExecutionProof(execution_proof) => {
+                trace!(%peer_id, "Received execution proof");
+                self.handle_beacon_processor_send_result(
+                    self.network_beacon_processor.send_gossip_execution_proof(
+                        message_id,
+                        peer_id,
+                        execution_proof,
+                    ),
                 )
             }
         }
@@ -734,40 +778,6 @@ impl<T: BeaconChainTypes> Router<T> {
         });
     }
 
-    /// Handle a `BlobsByRoot` response from the peer.
-    pub fn on_blobs_by_root_response(
-        &mut self,
-        peer_id: PeerId,
-        app_request_id: AppRequestId,
-        blob_sidecar: Option<Arc<BlobSidecar<T::EthSpec>>>,
-    ) {
-        let sync_request_id = match app_request_id {
-            AppRequestId::Sync(sync_id) => match sync_id {
-                id @ SyncRequestId::SingleBlob { .. } => id,
-                other => {
-                    crit!(request = ?other, "BlobsByRoot response on incorrect request");
-                    return;
-                }
-            },
-            AppRequestId::Router => {
-                crit!(%peer_id, "All BlobsByRoot requests belong to sync");
-                return;
-            }
-            AppRequestId::Internal => unreachable!("Handled internally"),
-        };
-
-        trace!(
-            %peer_id,
-            "Received BlobsByRoot Response"
-        );
-        self.send_to_sync(SyncMessage::RpcBlob {
-            sync_request_id,
-            peer_id,
-            blob_sidecar,
-            seen_timestamp: self.chain.slot_clock.now_duration().unwrap_or_default(),
-        });
-    }
-
     /// Handle a `DataColumnsByRoot` response from the peer.
     pub fn on_data_columns_by_root_response(
         &mut self,
@@ -846,6 +856,60 @@ impl<T: BeaconChainTypes> Router<T> {
             envelope,
             seen_timestamp: self.chain.slot_clock.now_duration().unwrap_or_default(),
         });
+    }
+
+    pub fn on_execution_proofs_by_range_response(
+        &mut self,
+        peer_id: PeerId,
+        app_request_id: AppRequestId,
+        execution_proof: Option<Arc<SignedExecutionProof>>,
+    ) {
+        trace!(%peer_id, "Received ExecutionProofsByRange Response");
+        if let AppRequestId::Sync(sync_request_id) = app_request_id {
+            self.send_to_sync(SyncMessage::RpcExecutionProof {
+                peer_id,
+                sync_request_id,
+                execution_proof,
+            });
+        } else {
+            crit!("All execution proofs by range responses should belong to sync");
+        }
+    }
+
+    pub fn on_execution_proofs_by_root_response(
+        &mut self,
+        peer_id: PeerId,
+        app_request_id: AppRequestId,
+        execution_proof: Option<Arc<SignedExecutionProof>>,
+    ) {
+        trace!(%peer_id, "Received ExecutionProofsByRoot Response");
+        if let AppRequestId::Sync(sync_request_id) = app_request_id {
+            self.send_to_sync(SyncMessage::RpcExecutionProof {
+                peer_id,
+                sync_request_id,
+                execution_proof,
+            });
+        } else {
+            crit!("All execution proofs by root responses should belong to sync");
+        }
+    }
+
+    fn on_execution_proof_status_response(
+        &mut self,
+        peer_id: PeerId,
+        app_request_id: AppRequestId,
+        status: ExecutionProofStatus,
+    ) {
+        if let AppRequestId::Sync(SyncRequestId::ExecutionProofStatus(request_id)) = app_request_id
+        {
+            self.send_to_sync(SyncMessage::RpcExecutionProofStatus {
+                peer_id,
+                request_id: Some(request_id),
+                status,
+            });
+        } else {
+            debug!(%peer_id, "ExecutionProofStatus response with unexpected request id");
+        }
     }
 
     fn handle_beacon_processor_send_result(

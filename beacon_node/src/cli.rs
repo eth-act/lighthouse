@@ -388,6 +388,14 @@ pub fn cli_app() -> Command {
                 .display_order(0)
         )
         .arg(
+            Arg::new("enable-mplex")
+                .long("enable-mplex")
+                .action(ArgAction::SetTrue)
+                .help_heading(FLAG_HEADER)
+                .help("Enables mplex multiplexer alongside yamux. Yamux is preferred when both are available.")
+                .display_order(0)
+        )
+        .arg(
             Arg::new("disable-peer-scoring")
                 .long("disable-peer-scoring")
                 .help("Disables peer scoring in lighthouse. WARNING: This is a dev only flag is only meant to be used in local testing scenarios \
@@ -916,6 +924,24 @@ pub fn cli_app() -> Command {
                 .value_name("NUM")
                 .help("Unsigned integer to multiply the default execution timeouts by.")
                 .default_value("1")
+                .action(ArgAction::Set)
+                .display_order(0)
+        )
+        .arg(
+            Arg::new("proof-engine-endpoint")
+                .long("proof-engine-endpoint")
+                .value_name("PROOF-ENGINE-ENDPOINT")
+                .help("Server endpoint for the optional EIP-8025 proof engine HTTP API.")
+                .requires("execution-endpoint")
+                .action(ArgAction::Set)
+                .display_order(0)
+        )
+        .arg(
+            Arg::new("proof-types")
+                .long("proof-types")
+                .value_name("PROOF-TYPES")
+                .help("Comma-separated EIP-8025 proof types to request from the proof engine.")
+                .requires("proof-engine-endpoint")
                 .action(ArgAction::Set)
                 .display_order(0)
         )
@@ -1513,6 +1539,15 @@ pub fn cli_app() -> Command {
                 .help("Force Lighthouse to verify every execution block hash with the execution \
                        client during finalized sync. By default block hashes will be checked in \
                        Lighthouse and only passed to the EL if initial verification fails.")
+                .display_order(0)
+        )
+        .arg(
+            Arg::new("execution-proof-quorum")
+                .long("execution-proof-quorum")
+                .value_name("K")
+                .help("Non-default: mark a Gloas payload envelope as proof-valid after K distinct valid EIP-8025 proof types for the same new-payload request root.")
+                .requires("proof-engine-endpoint")
+                .action(ArgAction::Set)
                 .display_order(0)
         )
         .arg(

@@ -16,34 +16,41 @@ use crate::network_beacon_processor::TestBeaconChainType;
 use crate::service::NetworkMessage;
 use crate::status::ToStatusMessage;
 use crate::sync::batch::ByRangeRequestType;
-use crate::sync::block_lookups::SingleLookupId;
+use crate::sync::block_lookups::{DownloadResult, SingleLookupId};
 use crate::sync::block_sidecar_coupling::CouplingError;
-use crate::sync::network_context::requests::BlobsByRootSingleBlockRequest;
 use crate::sync::range_data_column_batch_request::RangeDataColumnBatchRequest;
 use beacon_chain::block_verification_types::LookupBlock;
 use beacon_chain::block_verification_types::{AsBlock, RangeSyncBlock};
+use beacon_chain::eip8025::MissingExecutionProofInfo;
+use beacon_chain::internal_events::InternalBeaconNodeEvent;
 use beacon_chain::{BeaconChain, BeaconChainTypes, BlockProcessStatus, EngineState};
 use custody::CustodyRequestResult;
+use execution_layer::eip8025::types::ProofTypes;
 use fnv::FnvHashMap;
-use lighthouse_network::rpc::methods::{BlobsByRangeRequest, DataColumnsByRangeRequest};
+use lighthouse_network::rpc::methods::{
+    BlobsByRangeRequest, DataColumnsByRangeRequest, ExecutionProofStatus,
+    ExecutionProofsByRangeRequest, ExecutionProofsByRootRequest,
+};
 use lighthouse_network::rpc::{BlocksByRangeRequest, GoodbyeReason, RPCError, RequestType};
 pub use lighthouse_network::service::api_types::RangeRequestId;
 use lighthouse_network::service::api_types::{
     AppRequestId, BlobsByRangeRequestId, BlocksByRangeRequestId, ComponentsByRangeRequestId,
     CustodyBackFillBatchRequestId, CustodyBackfillBatchId, CustodyId, CustodyRequester,
     DataColumnsByRangeRequestId, DataColumnsByRangeRequester, DataColumnsByRootRequestId,
-    DataColumnsByRootRequester, Id, SingleLookupReqId, SyncRequestId,
+    DataColumnsByRootRequester, ExecutionProofStatusRequestId, ExecutionProofsByRangeRequestId,
+    ExecutionProofsByRootRequestId, Id, SingleLookupReqId, SyncRequestId,
 };
-use lighthouse_network::{Client, NetworkGlobals, PeerAction, PeerId, ReportSource};
+use lighthouse_network::{Client, Eth2Enr, NetworkGlobals, PeerAction, PeerId, ReportSource};
 use parking_lot::RwLock;
 pub use requests::LookupVerifyError;
 use requests::{
-    ActiveRequests, BlobsByRangeRequestItems, BlobsByRootRequestItems, BlocksByRangeRequestItems,
-    BlocksByRootRequestItems, DataColumnsByRangeRequestItems, DataColumnsByRootRequestItems,
+    ActiveRequests, BlobsByRangeRequestItems, BlocksByRangeRequestItems, BlocksByRootRequestItems,
+    DataColumnsByRangeRequestItems, DataColumnsByRootRequestItems,
     PayloadEnvelopesByRootRequestItems,
 };
 #[cfg(test)]
 use slot_clock::SlotClock;
+use ssz_types::{RuntimeVariableList, VariableList, typenum::Unsigned};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
@@ -53,10 +60,10 @@ use std::time::Duration;
 use task_executor::TaskExecutor;
 use tokio::sync::mpsc;
 use tracing::{Span, debug, debug_span, error, warn};
-use types::data::FixedBlobSidecarList;
 use types::{
     BlobSidecar, BlockImportSource, ColumnIndex, DataColumnSidecar, DataColumnSidecarList, EthSpec,
     ForkContext, Hash256, SignedBeaconBlock, SignedExecutionPayloadEnvelope, Slot,
+    execution::eip8025::{MaxExecutionProofsPerPayload, ProofByRootIdentifier, ProofType},
 };
 
 pub mod custody;
@@ -97,7 +104,7 @@ pub type RpcResponseResult<T> = Result<(T, Duration), RpcResponseError>;
 
 /// Duration = latest seen timestamp of all received data columns
 pub type CustodyByRootResult<T> =
-    Result<(DataColumnSidecarList<T>, PeerGroup, Duration), RpcResponseError>;
+    Result<DownloadResult<DataColumnSidecarList<T>>, RpcResponseError>;
 
 #[derive(Debug)]
 pub enum RpcResponseError {
@@ -121,6 +128,25 @@ pub enum RpcRequestSendError {
 pub enum NoPeerError {
     BlockPeer,
     CustodyPeer(ColumnIndex),
+    /// No connected peer with execution proof support advertised in its ENR.
+    ProofPeer,
+}
+
+/// Age threshold for considering a cached `ExecutionProofStatus` stale enough to re-query.
+pub const EXECUTION_PROOF_STATUS_REFRESH_THRESHOLD: std::time::Duration =
+    std::time::Duration::from_secs(300);
+
+/// A peer's `ExecutionProofStatus`, plus freshness and whether its anchor was verified locally.
+pub struct CachedExecutionProofStatus {
+    pub status: ExecutionProofStatus,
+    pub timestamp: std::time::Instant,
+    pub verified: bool,
+}
+
+impl CachedExecutionProofStatus {
+    pub fn needs_refresh(&self) -> bool {
+        !self.verified || self.timestamp.elapsed() > EXECUTION_PROOF_STATUS_REFRESH_THRESHOLD
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -178,13 +204,13 @@ impl PeerGroup {
 /// Sequential ID that uniquely identifies ReqResp outgoing requests
 pub type ReqId = u32;
 
-pub enum LookupRequestResult<I = ReqId> {
+pub enum LookupRequestResult<T, I = ReqId> {
     /// A request is sent. Sync MUST receive an event from the network in the future for either:
     /// completed response or failed request
     RequestSent(I),
     /// No request is sent, and no further action is necessary to consider this request completed.
     /// Includes a reason why this request is not needed.
-    NoRequestNeeded(&'static str),
+    NoRequestNeeded(&'static str, T),
     /// No request is sent, but the request is not completed. Sync MUST receive some future event
     /// that makes progress on the request. For example: request is processing from a different
     /// source (i.e. block received from gossip) and sync MUST receive an event with that processing
@@ -203,8 +229,6 @@ pub struct SyncNetworkContext<T: BeaconChainTypes> {
     /// A mapping of active BlocksByRoot requests, including both current slot and parent lookups.
     blocks_by_root_requests:
         ActiveRequests<SingleLookupReqId, BlocksByRootRequestItems<T::EthSpec>>,
-    /// A mapping of active BlobsByRoot requests, including both current slot and parent lookups.
-    blobs_by_root_requests: ActiveRequests<SingleLookupReqId, BlobsByRootRequestItems<T::EthSpec>>,
     /// A mapping of active PayloadEnvelopesByRoot requests
     payload_envelopes_by_root_requests:
         ActiveRequests<SingleLookupReqId, PayloadEnvelopesByRootRequestItems<T::EthSpec>>,
@@ -241,6 +265,9 @@ pub struct SyncNetworkContext<T: BeaconChainTypes> {
     pub chain: Arc<BeaconChain<T>>,
 
     fork_context: Arc<ForkContext>,
+
+    /// Proof types to request from peers.
+    proof_types: ProofTypes,
 }
 
 /// Small enumeration to make dealing with block and blob requests easier.
@@ -284,6 +311,7 @@ impl<E: EthSpec> SyncNetworkContext<TestBeaconChainType<E>> {
             Arc::new(beacon_processor),
             beacon_chain,
             fork_context,
+            ProofTypes::default(),
         )
     }
 }
@@ -294,13 +322,13 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
         network_beacon_processor: Arc<NetworkBeaconProcessor<T>>,
         chain: Arc<BeaconChain<T>>,
         fork_context: Arc<ForkContext>,
+        proof_types: ProofTypes,
     ) -> Self {
         SyncNetworkContext {
             network_send,
             execution_engine_state: EngineState::Online, // always assume `Online` at the start
             request_id: 1,
             blocks_by_root_requests: ActiveRequests::new("blocks_by_root"),
-            blobs_by_root_requests: ActiveRequests::new("blobs_by_root"),
             payload_envelopes_by_root_requests: ActiveRequests::new("payload_envelopes_by_root"),
             data_columns_by_root_requests: ActiveRequests::new("data_columns_by_root"),
             blocks_by_range_requests: ActiveRequests::new("blocks_by_range"),
@@ -312,6 +340,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             network_beacon_processor,
             chain,
             fork_context,
+            proof_types,
         }
     }
 
@@ -329,7 +358,6 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             network_send: _,
             request_id: _,
             blocks_by_root_requests,
-            blobs_by_root_requests,
             payload_envelopes_by_root_requests,
             data_columns_by_root_requests,
             blocks_by_range_requests,
@@ -344,16 +372,13 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             network_beacon_processor: _,
             chain: _,
             fork_context: _,
+            proof_types: _,
         } = self;
 
         let blocks_by_root_ids = blocks_by_root_requests
             .active_requests_of_peer(peer_id)
             .into_iter()
             .map(|id| SyncRequestId::SingleBlock { id: *id });
-        let blobs_by_root_ids = blobs_by_root_requests
-            .active_requests_of_peer(peer_id)
-            .into_iter()
-            .map(|id| SyncRequestId::SingleBlob { id: *id });
         let payload_envelopes_by_root_ids = payload_envelopes_by_root_requests
             .active_requests_of_peer(peer_id)
             .into_iter()
@@ -375,7 +400,6 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             .into_iter()
             .map(|req_id| SyncRequestId::DataColumnsByRange(*req_id));
         blocks_by_root_ids
-            .chain(blobs_by_root_ids)
             .chain(payload_envelopes_by_root_ids)
             .chain(data_column_by_root_ids)
             .chain(blocks_by_range_ids)
@@ -387,6 +411,168 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
     pub fn get_custodial_peers(&self, column_index: ColumnIndex) -> Vec<PeerId> {
         self.network_globals()
             .custody_peers_for_column(column_index)
+    }
+
+    /// Send an `ExecutionProofsByRange` request to the given proof-capable peer.
+    pub fn request_execution_proofs_by_range(
+        &mut self,
+        peer_id: PeerId,
+        start_slot: Slot,
+        count: u64,
+    ) -> Result<ExecutionProofsByRangeRequestId, RpcRequestSendError> {
+        let id = ExecutionProofsByRangeRequestId { id: self.next_id() };
+        let proof_types = RuntimeVariableList::new(
+            self.configured_proof_types().collect(),
+            MaxExecutionProofsPerPayload::to_usize(),
+        )
+        .map_err(|e| RpcRequestSendError::InternalError(format!("proof_types: {e:?}")))?;
+
+        self.send_network_msg(NetworkMessage::SendRequest {
+            peer_id,
+            request: RequestType::ExecutionProofsByRange(ExecutionProofsByRangeRequest {
+                start_slot: start_slot.as_u64(),
+                count,
+                proof_types,
+            }),
+            app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofsByRange(id)),
+        })
+        .map_err(|e| RpcRequestSendError::InternalError(e.to_owned()))?;
+        self.chain
+            .emit_internal_event(InternalBeaconNodeEvent::OutboundExecutionProofsByRange {
+                start_slot,
+                count,
+            });
+
+        debug!(
+            method = "ExecutionProofsByRange",
+            %start_slot,
+            count,
+            peer = %peer_id,
+            %id,
+            "Sync RPC request sent"
+        );
+        Ok(id)
+    }
+
+    /// Send an `ExecutionProofsByRoot` request for all missing proofs to `peer_id`.
+    pub fn request_execution_proofs_by_root(
+        &mut self,
+        peer_id: PeerId,
+        missing: &[MissingExecutionProofInfo],
+    ) -> Result<ExecutionProofsByRootRequestId, RpcRequestSendError> {
+        let mut identifiers = Vec::with_capacity(missing.len());
+        for info in missing {
+            let needed = self
+                .configured_proof_types()
+                .filter(|proof_type| !info.existing_proof_types.contains(proof_type))
+                .collect::<Vec<_>>();
+            let proof_types = VariableList::new(needed)
+                .map_err(|e| RpcRequestSendError::InternalError(format!("proof_types: {e:?}")))?;
+            identifiers.push(ProofByRootIdentifier {
+                block_root: info.root,
+                proof_types,
+            });
+        }
+
+        let max_request_blocks = self
+            .chain
+            .spec
+            .max_request_blocks(self.fork_context.current_fork_name());
+        let request = ExecutionProofsByRootRequest::new(identifiers, max_request_blocks)
+            .map_err(RpcRequestSendError::InternalError)?;
+        let event_identifiers = request.identifiers.to_vec();
+        let id = ExecutionProofsByRootRequestId { id: self.next_id() };
+
+        self.send_network_msg(NetworkMessage::SendRequest {
+            peer_id,
+            request: RequestType::ExecutionProofsByRoot(request),
+            app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofsByRoot(id)),
+        })
+        .map_err(|e| RpcRequestSendError::InternalError(e.to_owned()))?;
+        self.chain
+            .emit_internal_event(InternalBeaconNodeEvent::OutboundExecutionProofsByRoot {
+                identifiers: event_identifiers,
+            });
+
+        debug!(
+            method = "ExecutionProofsByRoot",
+            num_roots = missing.len(),
+            peer = %peer_id,
+            %id,
+            "Sync RPC request sent"
+        );
+        Ok(id)
+    }
+
+    /// Send an `ExecutionProofStatus` request to `peer_id`.
+    pub fn request_execution_proof_status(
+        &mut self,
+        peer_id: PeerId,
+    ) -> Result<ExecutionProofStatusRequestId, RpcRequestSendError> {
+        let id = ExecutionProofStatusRequestId { id: self.next_id() };
+        let local_status = self.local_execution_proof_status();
+        self.send_network_msg(NetworkMessage::SendRequest {
+            peer_id,
+            request: RequestType::ExecutionProofStatus(local_status),
+            app_request_id: AppRequestId::Sync(SyncRequestId::ExecutionProofStatus(id)),
+        })
+        .map_err(|e| RpcRequestSendError::InternalError(e.to_owned()))?;
+
+        debug!(
+            method = "ExecutionProofStatus",
+            peer = %peer_id,
+            %id,
+            "Sync RPC request sent"
+        );
+        Ok(id)
+    }
+
+    pub fn local_execution_proof_status(&self) -> ExecutionProofStatus {
+        let head = self.chain.canonical_head.cached_head();
+        let configured_proof_types = self.configured_proof_types_vec();
+        let (block_root, slot, mut available_proof_types) = self
+            .chain
+            .latest_execution_proof_status(&configured_proof_types)
+            .map(|status| {
+                let proof_types = status
+                    .valid_proof_types()
+                    .filter(|proof_type| configured_proof_types.contains(proof_type))
+                    .collect::<Vec<_>>();
+                (status.block_root, status.slot.as_u64(), proof_types)
+            })
+            .unwrap_or_else(|| (head.head_block_root(), head.head_slot().as_u64(), vec![]));
+        available_proof_types.sort_unstable();
+
+        let proof_types = VariableList::new(available_proof_types).unwrap_or_else(|error| {
+            debug!(?error, "Local execution proof types exceed status limit");
+            VariableList::default()
+        });
+        ExecutionProofStatus {
+            block_root,
+            slot,
+            proof_types,
+        }
+    }
+
+    pub fn configured_proof_types(&self) -> impl Iterator<Item = ProofType> + '_ {
+        self.proof_types.iter().map(|proof_type| proof_type.to_u8())
+    }
+
+    pub fn configured_proof_types_vec(&self) -> Vec<ProofType> {
+        self.configured_proof_types().collect()
+    }
+
+    /// Returns `true` if the peer has execution proof support in its ENR.
+    pub fn is_proof_capable_peer(&self, peer_id: &PeerId) -> bool {
+        self.network_globals()
+            .peers
+            .read()
+            .peer_info(peer_id)
+            .is_some_and(|info| {
+                info.enr()
+                    .map(|enr| enr.execution_proof_enabled())
+                    .unwrap_or(false)
+            })
     }
 
     pub fn network_globals(&self) -> &NetworkGlobals<T::EthSpec> {
@@ -432,7 +618,6 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             network_send: _,
             request_id: _,
             blocks_by_root_requests,
-            blobs_by_root_requests,
             payload_envelopes_by_root_requests,
             data_columns_by_root_requests,
             blocks_by_range_requests,
@@ -447,6 +632,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             network_beacon_processor: _,
             chain: _,
             fork_context: _,
+            proof_types: _,
             // Don't use a fallback match. We want to be sure that all requests are considered when
             // adding new ones
         } = self;
@@ -455,7 +641,6 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
 
         for peer_id in blocks_by_root_requests
             .iter_request_peers()
-            .chain(blobs_by_root_requests.iter_request_peers())
             .chain(payload_envelopes_by_root_requests.iter_request_peers())
             .chain(data_columns_by_root_requests.iter_request_peers())
             .chain(blocks_by_range_requests.iter_request_peers())
@@ -833,7 +1018,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
         lookup_id: SingleLookupId,
         lookup_peers: Arc<RwLock<HashSet<PeerId>>>,
         block_root: Hash256,
-    ) -> Result<LookupRequestResult, RpcRequestSendError> {
+    ) -> Result<LookupRequestResult<Arc<SignedBeaconBlock<T::EthSpec>>>, RpcRequestSendError> {
         let active_request_count_by_peer = self.active_request_count_by_peer();
         let Some(peer_id) = lookup_peers
             .read()
@@ -884,9 +1069,10 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             },
             // Block is fully validated. If it's not yet imported it's waiting for missing block
             // components. Consider this request completed and do nothing.
-            BlockProcessStatus::ExecutionValidated { .. } => {
+            BlockProcessStatus::ExecutionValidated(block) => {
                 return Ok(LookupRequestResult::NoRequestNeeded(
                     "block execution validated",
+                    block,
                 ));
             }
         }
@@ -950,12 +1136,13 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
         lookup_id: SingleLookupId,
         lookup_peers: Arc<RwLock<HashSet<PeerId>>>,
         block_root: Hash256,
-    ) -> Result<LookupRequestResult, RpcRequestSendError> {
+    ) -> Result<LookupRequestResult<()>, RpcRequestSendError> {
         // Skip the download if fork-choice already saw this envelope (e.g. imported via gossip
         // before the lookup got here).
         if self.chain.envelope_is_known_to_fork_choice(&block_root) {
             return Ok(LookupRequestResult::NoRequestNeeded(
                 "envelope already known to fork-choice",
+                (),
             ));
         }
 
@@ -1017,109 +1204,6 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
 
         Ok(LookupRequestResult::RequestSent(id.req_id))
     }
-
-    /// Request necessary blobs for `block_root`. Requests only the necessary blobs by checking:
-    /// - If we have a downloaded but not yet processed block
-    /// - If the da_checker has a pending block
-    /// - If the da_checker has pending blobs from gossip
-    ///
-    /// Returns false if no request was made, because we don't need to import (more) blobs.
-    pub fn blob_lookup_request(
-        &mut self,
-        lookup_id: SingleLookupId,
-        lookup_peers: Arc<RwLock<HashSet<PeerId>>>,
-        block_root: Hash256,
-        expected_blobs: usize,
-    ) -> Result<LookupRequestResult, RpcRequestSendError> {
-        let active_request_count_by_peer = self.active_request_count_by_peer();
-        let Some(peer_id) = lookup_peers
-            .read()
-            .iter()
-            .map(|peer| {
-                (
-                    // Prefer peers with less overall requests
-                    active_request_count_by_peer.get(peer).copied().unwrap_or(0),
-                    // Random factor to break ties, otherwise the PeerID breaks ties
-                    rand::random::<u32>(),
-                    peer,
-                )
-            })
-            .min()
-            .map(|(_, _, peer)| *peer)
-        else {
-            // Allow lookup to not have any peers and do nothing. This is an optimization to not
-            // lose progress of lookups created from a block with unknown parent before we receive
-            // attestations for said block.
-            // Lookup sync event safety: If a lookup requires peers to make progress, and does
-            // not receive any new peers for some time it will be dropped. If it receives a new
-            // peer it must attempt to make progress.
-            return Ok(LookupRequestResult::Pending("no peers"));
-        };
-
-        let imported_blob_indexes = self
-            .chain
-            .data_availability_checker
-            .cached_blob_indexes(&block_root)
-            .unwrap_or_default();
-        // Include only the blob indexes not yet imported (received through gossip)
-        let indices = (0..expected_blobs as u64)
-            .filter(|index| !imported_blob_indexes.contains(index))
-            .collect::<Vec<_>>();
-
-        if indices.is_empty() {
-            // No blobs required, do not issue any request
-            return Ok(LookupRequestResult::NoRequestNeeded("no indices to fetch"));
-        }
-
-        let id = SingleLookupReqId {
-            lookup_id,
-            req_id: self.next_id(),
-        };
-
-        let request = BlobsByRootSingleBlockRequest {
-            block_root,
-            indices: indices.clone(),
-        };
-
-        // Lookup sync event safety: Refer to `Self::block_lookup_request` `network_send.send` call
-        let network_request = RequestType::BlobsByRoot(
-            request
-                .clone()
-                .into_request(&self.fork_context)
-                .map_err(RpcRequestSendError::InternalError)?,
-        );
-        self.network_send
-            .send(NetworkMessage::SendRequest {
-                peer_id,
-                request: network_request,
-                app_request_id: AppRequestId::Sync(SyncRequestId::SingleBlob { id }),
-            })
-            .map_err(|_| RpcRequestSendError::InternalError("network send error".to_owned()))?;
-
-        debug!(
-            method = "BlobsByRoot",
-            ?block_root,
-            blob_indices = ?indices,
-            peer = %peer_id,
-            %id,
-            "Sync RPC request sent"
-        );
-
-        self.blobs_by_root_requests.insert(
-            id,
-            peer_id,
-            // true = enforce max_requests are returned for blobs_by_root. We only issue requests for
-            // blocks after we know the block has data, and only request peers after they claim to
-            // have imported the block+blobs.
-            true,
-            BlobsByRootRequestItems::new(request),
-            // Not implemented
-            Span::none(),
-        );
-
-        Ok(LookupRequestResult::RequestSent(id.req_id))
-    }
-
     /// Request to send a single `data_columns_by_root` request to the network.
     pub fn data_column_lookup_request(
         &mut self,
@@ -1127,7 +1211,7 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
         peer_id: PeerId,
         request: DataColumnsByRootSingleBlockRequest,
         expect_max_responses: bool,
-    ) -> Result<LookupRequestResult<DataColumnsByRootRequestId>, &'static str> {
+    ) -> Result<LookupRequestResult<(), DataColumnsByRootRequestId>, &'static str> {
         let id = DataColumnsByRootRequestId {
             id: self.next_id(),
             requester,
@@ -1174,34 +1258,18 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
         &mut self,
         lookup_id: SingleLookupId,
         block_root: Hash256,
+        block_slot: Slot,
         lookup_peers: Arc<RwLock<HashSet<PeerId>>>,
-    ) -> Result<LookupRequestResult, RpcRequestSendError> {
-        let slot = self
-            .chain
-            .canonical_head
-            .fork_choice_read_lock()
-            .get_block(&block_root)
-            .map(|block| block.slot)
-            .or_else(|| self.chain.slot().ok())
-            .ok_or_else(|| {
-                RpcRequestSendError::InternalError(format!(
-                    "Unable to determine slot for block {block_root:?}"
-                ))
-            })?;
-
+    ) -> Result<LookupRequestResult<DataColumnSidecarList<T::EthSpec>>, RpcRequestSendError> {
         let custody_indexes_imported = self
             .chain
-            .cached_data_column_indexes(&block_root, slot)
+            .cached_data_column_indexes(&block_root, block_slot)
             .unwrap_or_default();
-
-        let current_epoch = self.chain.epoch().map_err(|e| {
-            RpcRequestSendError::InternalError(format!("Unable to read slot clock {:?}", e))
-        })?;
 
         // Include only the blob indexes not yet imported (received through gossip)
         let mut custody_indexes_to_fetch = self
             .chain
-            .sampling_columns_for_epoch(current_epoch)
+            .sampling_columns_for_epoch(block_slot.epoch(T::EthSpec::slots_per_epoch()))
             .iter()
             .copied()
             .filter(|index| !custody_indexes_imported.contains(index))
@@ -1210,7 +1278,10 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
 
         if custody_indexes_to_fetch.is_empty() {
             // No indexes required, do not issue any request
-            return Ok(LookupRequestResult::NoRequestNeeded("no indices to fetch"));
+            return Ok(LookupRequestResult::NoRequestNeeded(
+                "no indices to fetch",
+                vec![],
+            ));
         }
 
         let id = SingleLookupReqId {
@@ -1538,35 +1609,6 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
         self.on_rpc_response_result(resp, peer_id)
     }
 
-    pub(crate) fn on_single_blob_response(
-        &mut self,
-        id: SingleLookupReqId,
-        peer_id: PeerId,
-        rpc_event: RpcEvent<Arc<BlobSidecar<T::EthSpec>>>,
-    ) -> Option<RpcResponseResult<FixedBlobSidecarList<T::EthSpec>>> {
-        let resp = self.blobs_by_root_requests.on_response(id, rpc_event);
-        let resp = resp.map(|res| {
-            res.and_then(|(blobs, seen_timestamp)| {
-                if let Some(max_len) = blobs
-                    .first()
-                    .map(|blob| self.chain.spec.max_blobs_per_block(blob.epoch()) as usize)
-                {
-                    match to_fixed_blob_sidecar_list(blobs, max_len) {
-                        Ok(blobs) => Ok((blobs, seen_timestamp)),
-                        Err(e) => Err(e.into()),
-                    }
-                } else {
-                    Err(RpcResponseError::VerifyError(
-                        LookupVerifyError::InternalError(
-                            "Requested blobs for a block that has no blobs".to_string(),
-                        ),
-                    ))
-                }
-            })
-        });
-        self.on_rpc_response_result(resp, peer_id)
-    }
-
     pub(crate) fn on_single_payload_envelope_response(
         &mut self,
         id: SingleLookupReqId,
@@ -1689,8 +1731,8 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
         // Convert a result from internal format of `ActiveCustodyRequest` (error first to use ?) to
         // an Option first to use in an `if let Some() { act on result }` block.
         match result.as_ref() {
-            Some(Ok((columns, peer_group, _))) => {
-                debug!(?id, count = columns.len(), peers = ?peer_group, "Custody request success, removing")
+            Some(Ok(data)) => {
+                debug!(?id, count = data.value.len(), peers = ?data.peer_group, "Custody request success, removing")
             }
             Some(Err(e)) => {
                 debug!(?id, error = ?e, "Custody request failure, removing" )
@@ -1729,36 +1771,6 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
                 error!(
                     error = ?e,
                     "Failed to send sync block to processor"
-                );
-                SendErrorProcessor::SendError
-            })
-    }
-
-    pub fn send_blobs_for_processing(
-        &self,
-        id: Id,
-        block_root: Hash256,
-        blobs: FixedBlobSidecarList<T::EthSpec>,
-        seen_timestamp: Duration,
-    ) -> Result<(), SendErrorProcessor> {
-        let beacon_processor = self
-            .beacon_processor_if_enabled()
-            .ok_or(SendErrorProcessor::ProcessorNotAvailable)?;
-
-        debug!(?block_root, ?id, "Sending blobs for processing");
-        // Lookup sync event safety: If `beacon_processor.send_rpc_blobs` returns Ok() sync
-        // must receive a single `SyncMessage::BlockComponentProcessed` event with this process type
-        beacon_processor
-            .send_rpc_blobs(
-                block_root,
-                blobs,
-                seen_timestamp,
-                BlockProcessType::SingleBlob { id },
-            )
-            .map_err(|e| {
-                error!(
-                    error = ?e,
-                    "Failed to send sync blobs to processor"
                 );
                 SendErrorProcessor::SendError
             })
@@ -1930,7 +1942,6 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
     pub(crate) fn register_metrics(&self) {
         for (id, count) in [
             ("blocks_by_root", self.blocks_by_root_requests.len()),
-            ("blobs_by_root", self.blobs_by_root_requests.len()),
             (
                 "data_columns_by_root",
                 self.data_columns_by_root_requests.len(),
@@ -1950,18 +1961,4 @@ impl<T: BeaconChainTypes> SyncNetworkContext<T> {
             metrics::set_gauge_vec(&metrics::SYNC_ACTIVE_NETWORK_REQUESTS, &[id], count as i64);
         }
     }
-}
-
-fn to_fixed_blob_sidecar_list<E: EthSpec>(
-    blobs: Vec<Arc<BlobSidecar<E>>>,
-    max_len: usize,
-) -> Result<FixedBlobSidecarList<E>, LookupVerifyError> {
-    let mut fixed_list = FixedBlobSidecarList::new(vec![None; max_len]);
-    for blob in blobs.into_iter() {
-        let index = blob.index as usize;
-        *fixed_list
-            .get_mut(index)
-            .ok_or(LookupVerifyError::UnrequestedIndex(index as u64))? = Some(blob)
-    }
-    Ok(fixed_list)
 }

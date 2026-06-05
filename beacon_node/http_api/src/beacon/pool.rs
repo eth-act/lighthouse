@@ -16,6 +16,7 @@ use eth2::types::{AttestationPoolQuery, EndpointVersion, Failure, GenericRespons
 use lighthouse_network::PubsubMessage;
 use network::NetworkMessage;
 use operation_pool::ReceivedPreCapella;
+use serde::{Deserialize, Serialize};
 use slot_clock::SlotClock;
 use ssz::{Decode, Encode};
 use std::collections::HashSet;
@@ -24,8 +25,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use tracing::{debug, error, info, warn};
 use types::{
     Attestation, AttestationData, AttesterSlashing, ForkName, PayloadAttestationMessage,
-    ProposerSlashing, SignedBlsToExecutionChange, SignedVoluntaryExit, SingleAttestation,
-    SyncCommitteeMessage,
+    ProofStatus, ProposerSlashing, SignedBlsToExecutionChange, SignedExecutionProof,
+    SignedVoluntaryExit, SingleAttestation, SyncCommitteeMessage,
 };
 use warp::filters::BoxedFilter;
 use warp::{Filter, Reply};
@@ -44,6 +45,123 @@ pub type BeaconPoolPathAnyFilter<T> = BoxedFilter<(
     TaskSpawner<<T as BeaconChainTypes>::EthSpec>,
     Arc<BeaconChain<T>>,
 )>;
+
+#[derive(Debug, Deserialize)]
+pub struct SubmitExecutionProofsRequest {
+    pub proofs: Vec<SignedExecutionProof>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SubmitExecutionProofsResponse {
+    pub statuses: Vec<SubmitExecutionProofStatus>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SubmitExecutionProofStatus {
+    pub status: ProofStatus,
+    pub request_root: types::Hash256,
+    pub block_root: Option<types::Hash256>,
+    pub valid_proof_type_count: usize,
+    pub proof_backed_payload_promotion: bool,
+}
+
+/// POST beacon/pool/execution_proofs
+pub fn post_beacon_pool_execution_proofs<T: BeaconChainTypes>(
+    network_tx_filter: &NetworkTxFilter<T>,
+    beacon_pool_path: &BeaconPoolPathFilter<T>,
+) -> ResponseFilter {
+    beacon_pool_path
+        .clone()
+        .and(warp::path("execution_proofs"))
+        .and(warp::path::end())
+        .and(warp_utils::json::json())
+        .and(network_tx_filter.clone())
+        .then(
+            |_task_spawner: TaskSpawner<T::EthSpec>,
+             chain: Arc<BeaconChain<T>>,
+             request: SubmitExecutionProofsRequest,
+             network_tx: UnboundedSender<NetworkMessage<T::EthSpec>>| async move {
+                convert_rejection(
+                    async move {
+                        if chain
+                            .execution_layer
+                            .as_ref()
+                            .and_then(|execution_layer| execution_layer.proof_engine())
+                            .is_none()
+                        {
+                            return Err(warp_utils::reject::custom_server_error(
+                                "proof engine not configured".to_string(),
+                            ));
+                        }
+
+                        if request.proofs.is_empty() {
+                            return Err(warp_utils::reject::custom_bad_request(
+                                "no execution proofs provided".to_string(),
+                            ));
+                        }
+
+                        let mut statuses = Vec::with_capacity(request.proofs.len());
+                        let mut failures = vec![];
+
+                        for (index, proof) in request.proofs.iter().enumerate() {
+                            match chain.verify_and_observe_execution_proof(proof, None).await {
+                                Ok(observation) => {
+                                    if observation.status == ProofStatus::Invalid {
+                                        failures.push(Failure::new(
+                                            index,
+                                            "execution proof is invalid".to_string(),
+                                        ));
+                                    } else if observation.status == ProofStatus::Valid
+                                        || (observation.status == ProofStatus::Accepted
+                                            && observation.valid_proof_type_count > 0)
+                                    {
+                                        utils::publish_pubsub_message(
+                                            &network_tx,
+                                            PubsubMessage::ExecutionProof(Arc::new(proof.clone())),
+                                        )?;
+                                    }
+                                    statuses.push(SubmitExecutionProofStatus {
+                                        status: observation.status,
+                                        request_root: observation.request_root,
+                                        block_root: observation.block_root,
+                                        valid_proof_type_count: observation.valid_proof_type_count,
+                                        proof_backed_payload_promotion: observation
+                                            .proof_backed_payload_promotion,
+                                    });
+                                }
+                                Err(error) => {
+                                    warn!(
+                                        ?error,
+                                        request_root = ?proof.request_root(),
+                                        proof_type = proof.proof_type(),
+                                        validator_index = proof.validator_index(),
+                                        "Execution proof validation failed"
+                                    );
+                                    failures
+                                        .push(Failure::new(index, format!("invalid: {error:?}")));
+                                }
+                            }
+                        }
+
+                        if failures.is_empty() {
+                            Ok(
+                                warp::reply::json(&SubmitExecutionProofsResponse { statuses })
+                                    .into_response(),
+                            )
+                        } else {
+                            Err(warp_utils::reject::indexed_bad_request(
+                                "some execution proofs failed to verify".into(),
+                                failures,
+                            ))
+                        }
+                    }
+                    .await,
+                )
+                .await
+            },
+        )
+        .boxed()
+}
 
 /// POST beacon/pool/bls_to_execution_changes
 pub fn post_beacon_pool_bls_to_execution_changes<T: BeaconChainTypes>(

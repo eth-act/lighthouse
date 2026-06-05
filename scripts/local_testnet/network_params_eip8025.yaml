@@ -1,0 +1,40 @@
+# EIP-8025 multi-node testnet configuration.
+#
+# Uses MockProofNodeClient via the http://mock/{n}/ URL pattern.
+# See start_eip8025_testnet.sh for usage.
+#
+# Full configuration reference: https://github.com/ethpandaops/ethereum-package#configuration
+participants:
+  # Supernode participants with proof engine enabled
+  - cl_type: lighthouse
+    cl_image: ethpandaops/lighthouse:eth-act-optional-proofs
+    el_type: geth
+    el_image: ethereum/client-go:latest
+    supernode: true
+    cl_extra_params:
+      - --target-peers=3
+      - --proof-engine-endpoint=http://mock/0/
+    vc_extra_params:
+      - --proof-engine-endpoint=http://mock/0/
+    count: 2
+  # Non-supernode participants with proof engine enabled
+  - cl_type: lighthouse
+    cl_image: ethpandaops/lighthouse:eth-act-optional-proofs
+    el_type: geth
+    el_image: ethereum/client-go:latest
+    supernode: false
+    cl_extra_params:
+      - --target-peers=3
+      - --proof-engine-endpoint=http://mock/0/
+    vc_extra_params:
+      - --proof-engine-endpoint=http://mock/0/
+    count: 2
+network_params:
+  fulu_fork_epoch: 0
+  seconds_per_slot: 6
+snooper_enabled: false
+global_log_level: debug
+additional_services:
+  - dora
+  - prometheus
+  - grafana

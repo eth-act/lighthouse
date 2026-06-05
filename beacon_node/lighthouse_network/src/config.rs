@@ -125,6 +125,12 @@ pub struct Config {
     /// Whether light client protocols should be enabled.
     pub enable_light_client_server: bool,
 
+    /// Whether to enable the deprecated mplex multiplexer alongside yamux.
+    pub enable_mplex: bool,
+
+    /// Whether optional EIP-8025 execution proof gossip/RPC protocols should be enabled.
+    pub enable_execution_proof: bool,
+
     /// Configuration for the outbound rate limiter (requests made by this node).
     pub outbound_rate_limiter_config: Option<OutboundRateLimiterConfig>,
 
@@ -362,6 +368,8 @@ impl Default for Config {
             proposer_only: false,
             metrics_enabled: false,
             enable_light_client_server: true,
+            enable_mplex: false,
+            enable_execution_proof: false,
             outbound_rate_limiter_config: None,
             invalid_block_storage: None,
             inbound_rate_limiter_config: None,

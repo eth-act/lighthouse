@@ -21,6 +21,9 @@ use crate::validator_pubkey_cache::ValidatorPubkeyCache;
 use crate::{
     BeaconChain, BeaconChainTypes, BeaconForkChoiceStore, BeaconSnapshot, ServerSentEventHandler,
 };
+use crate::{
+    eip8025::ExecutionProofStatusCache, observed_execution_proofs::ObservedExecutionProofs,
+};
 use bls::Signature;
 use execution_layer::ExecutionLayer;
 use fixed_bytes::FixedBytesExtended;
@@ -1007,7 +1010,9 @@ where
             // TODO: allow for persisting and loading the pool from disk.
             observed_block_producers: <_>::default(),
             observed_column_sidecars: RwLock::new(ObservedDataSidecars::new(self.spec.clone())),
-            observed_blob_sidecars: RwLock::new(ObservedDataSidecars::new(self.spec.clone())),
+            observed_execution_proofs: RwLock::new(ObservedExecutionProofs::default()),
+            execution_proof_statuses: RwLock::new(ExecutionProofStatusCache::default()),
+            internal_event_tx: std::sync::OnceLock::new(),
             observed_slashable: <_>::default(),
             pending_payload_envelopes: <_>::default(),
             observed_voluntary_exits: <_>::default(),

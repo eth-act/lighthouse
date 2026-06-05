@@ -36,6 +36,9 @@ mod validator_inclusion;
 mod validators;
 mod version;
 
+use crate::beacon::execution_payload_bid::{
+    post_beacon_execution_payload_bid, post_beacon_execution_payload_bid_ssz,
+};
 use crate::beacon::execution_payload_envelope::{
     get_beacon_execution_payload_envelope, post_beacon_execution_payload_envelope,
     post_beacon_execution_payload_envelope_ssz,
@@ -229,6 +232,7 @@ pub fn prometheus_metrics() -> warp::filters::log::Log<impl Fn(warp::filters::lo
                 .or_else(|| starts_with("v2/beacon/pool/attestations"))
                 .or_else(|| starts_with("v1/beacon/pool/attester_slashings"))
                 .or_else(|| starts_with("v1/beacon/pool/bls_to_execution_changes"))
+                .or_else(|| starts_with("v1/beacon/pool/execution_proofs"))
                 .or_else(|| starts_with("v1/beacon/pool/proposer_slashings"))
                 .or_else(|| starts_with("v1/beacon/pool/sync_committees"))
                 .or_else(|| starts_with("v1/beacon/pool/voluntary_exits"))
@@ -1523,6 +1527,10 @@ pub fn serve<T: BeaconChainTypes>(
     let post_beacon_pool_bls_to_execution_changes =
         post_beacon_pool_bls_to_execution_changes(&network_tx_filter, &beacon_pool_path);
 
+    // POST beacon/pool/execution_proofs
+    let post_beacon_pool_execution_proofs =
+        post_beacon_pool_execution_proofs(&network_tx_filter, &beacon_pool_path);
+
     // POST validator/proposer_preferences (JSON)
     let post_validator_proposer_preferences = post_validator_proposer_preferences(
         eth_v1.clone(),
@@ -1549,6 +1557,22 @@ pub fn serve<T: BeaconChainTypes>(
 
     // POST beacon/execution_payload_envelope (SSZ)
     let post_beacon_execution_payload_envelope_ssz = post_beacon_execution_payload_envelope_ssz(
+        eth_v1.clone(),
+        task_spawner_filter.clone(),
+        chain_filter.clone(),
+        network_tx_filter.clone(),
+    );
+
+    // POST beacon/execution_payload_bid
+    let post_beacon_execution_payload_bid = post_beacon_execution_payload_bid(
+        eth_v1.clone(),
+        task_spawner_filter.clone(),
+        chain_filter.clone(),
+        network_tx_filter.clone(),
+    );
+
+    // POST beacon/execution_payload_bid (SSZ)
+    let post_beacon_execution_payload_bid_ssz = post_beacon_execution_payload_bid_ssz(
         eth_v1.clone(),
         task_spawner_filter.clone(),
         chain_filter.clone(),
@@ -3445,6 +3469,7 @@ pub fn serve<T: BeaconChainTypes>(
                             .uor(post_beacon_blinded_blocks_ssz)
                             .uor(post_beacon_blinded_blocks_v2_ssz)
                             .uor(post_beacon_execution_payload_envelope_ssz)
+                            .uor(post_beacon_execution_payload_bid_ssz)
                             .uor(post_beacon_pool_payload_attestations_ssz)
                             .uor(post_validator_proposer_preferences_ssz),
                     )
@@ -3459,8 +3484,10 @@ pub fn serve<T: BeaconChainTypes>(
                     .uor(post_beacon_pool_sync_committees)
                     .uor(post_beacon_pool_payload_attestations)
                     .uor(post_beacon_pool_bls_to_execution_changes)
+                    .uor(post_beacon_pool_execution_proofs)
                     .uor(post_validator_proposer_preferences)
                     .uor(post_beacon_execution_payload_envelope)
+                    .uor(post_beacon_execution_payload_bid)
                     .uor(post_beacon_state_validators)
                     .uor(post_beacon_state_validator_balances)
                     .uor(post_beacon_state_validator_identities)

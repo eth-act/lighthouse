@@ -47,6 +47,7 @@ use validator_services::{
     latency_service,
     payload_attestation_service::PayloadAttestationService,
     preparation_service::{PreparationService, PreparationServiceBuilder},
+    proof_service::ProofService,
     proposer_preferences_service::ProposerPreferencesService,
     sync_committee_service::SyncCommitteeService,
 };
@@ -95,6 +96,7 @@ pub struct ProductionValidatorClient<E: EthSpec> {
     http_api_listen_addr: Option<SocketAddr>,
     config: Config,
     genesis_time: u64,
+    proof_service: Option<Arc<ProofService<ValidatorStore<E>, SystemTimeSlotClock>>>,
 }
 
 impl<E: EthSpec> ProductionValidatorClient<E> {
@@ -575,6 +577,35 @@ impl<E: EthSpec> ProductionValidatorClient<E> {
             context.eth2_config.spec.clone(),
         );
 
+        let proof_service = config.proof_engine_endpoint.as_ref().map(|endpoint| {
+            info!(endpoint = %endpoint, "Initializing proof engine client");
+            let url_str = endpoint.expose_full();
+            let proof_engine_client = Arc::new(
+                if let Some(idx) = execution_layer::test_utils::parse_mock_index(url_str.as_str()) {
+                    let mock = execution_layer::test_utils::get_mock_proof_engine::<E>(idx)
+                        .unwrap_or_else(|| {
+                            debug!(
+                                idx,
+                                "No pre-registered mock; creating MockProofNodeClient on the fly"
+                            );
+                            execution_layer::test_utils::register_mock_proof_engine::<E>(idx, 0)
+                        });
+                    execution_layer::eip8025::HttpProofEngine::with_proof_node(mock)
+                } else {
+                    execution_layer::eip8025::HttpProofEngine::new(endpoint.clone(), None)
+                },
+            );
+
+            Arc::new(ProofService::new(
+                validator_store.clone(),
+                beacon_nodes.clone(),
+                proof_engine_client,
+                slot_clock.clone(),
+                context.executor.clone(),
+                config.proof_types.clone(),
+            ))
+        });
+
         Ok(Self {
             context,
             duties_service,
@@ -590,6 +621,7 @@ impl<E: EthSpec> ProductionValidatorClient<E> {
             slot_clock,
             http_api_listen_addr: None,
             genesis_time,
+            proof_service,
         })
     }
 
@@ -616,6 +648,7 @@ impl<E: EthSpec> ProductionValidatorClient<E> {
                 config: self.config.http_api.clone(),
                 sse_logging_components: self.context.sse_logging_components.clone(),
                 slot_clock: self.slot_clock.clone(),
+                proof_service: self.proof_service.clone(),
             });
 
             let exit = self.context.executor.exit();
@@ -682,6 +715,13 @@ impl<E: EthSpec> ProductionValidatorClient<E> {
             .map_err(|e| format!("Unable to start doppelganger service: {}", e))?
         } else {
             info!("Doppelganger protection disabled.")
+        }
+
+        if let Some(proof_service) = &self.proof_service {
+            proof_service
+                .clone()
+                .start_service()
+                .map_err(|e| format!("Unable to start proof service: {}", e))?;
         }
 
         let context = self.context.clone();

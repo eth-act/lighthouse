@@ -8,6 +8,7 @@ use directory::{
     get_network_dir,
 };
 use eth2::types::{Graffiti, GraffitiPolicy};
+use execution_layer::eip8025::types::ProofTypes;
 use graffiti_file::GraffitiFile;
 use initialized_validators::Config as InitializedValidatorsConfig;
 use lighthouse_validator_store::Config as ValidatorStoreConfig;
@@ -18,7 +19,9 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 use tracing::{info, warn};
+use typenum::Unsigned;
 use types::GRAFFITI_BYTES_LEN;
+use types::execution::eip8025::MaxExecutionProofsPerPayload;
 use validator_http_api::{self, PK_FILENAME};
 use validator_http_metrics;
 
@@ -92,6 +95,11 @@ pub struct Config {
     #[serde(flatten)]
     pub initialized_validators: InitializedValidatorsConfig,
     pub disable_attesting: bool,
+    /// URL of the proof engine HTTP JSON-RPC endpoint for EIP-8025 execution proofs.
+    pub proof_engine_endpoint: Option<SensitiveUrl>,
+    /// Proof types to request from the proof engine.
+    #[serde(default)]
+    pub proof_types: ProofTypes,
 }
 
 impl Default for Config {
@@ -139,6 +147,8 @@ impl Default for Config {
             distributed: false,
             initialized_validators: <_>::default(),
             disable_attesting: false,
+            proof_engine_endpoint: None,
+            proof_types: ProofTypes::default(),
         }
     }
 }
@@ -283,6 +293,36 @@ impl Config {
                 .initialized_validators
                 .web3_signer_max_idle_connections = Some(n);
         }
+
+        /*
+         * Proof Engine (EIP-8025)
+         */
+        if let Some(proof_engine_endpoint) = validator_client_config.proof_engine_endpoint.as_ref()
+        {
+            config.proof_engine_endpoint = Some(
+                SensitiveUrl::parse(proof_engine_endpoint)
+                    .map_err(|e| format!("Unable to parse proof engine URL: {:?}", e))?,
+            );
+        }
+
+        config.proof_types = if let Some(vals) = &validator_client_config.proof_types {
+            use execution_layer::eip8025::types::ProofType;
+            let proof_types = vals
+                .iter()
+                .copied()
+                .map(ProofType::from_u8)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("Invalid --proof-types value: {e:?}"))?;
+            if proof_types.len() > MaxExecutionProofsPerPayload::to_usize() {
+                return Err(format!(
+                    "--proof-types supports at most {} values",
+                    MaxExecutionProofsPerPayload::to_usize()
+                ));
+            }
+            ProofTypes::from(proof_types)
+        } else {
+            ProofTypes::default()
+        };
 
         /*
          * Http API server

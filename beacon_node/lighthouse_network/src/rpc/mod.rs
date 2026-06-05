@@ -155,6 +155,7 @@ pub struct RPC<Id: ReqId, E: EthSpec> {
     events: Vec<BehaviourAction<Id, E>>,
     fork_context: Arc<ForkContext>,
     enable_light_client_server: bool,
+    enable_execution_proof: bool,
     /// A sequential counter indicating when data gets modified.
     seq_number: u64,
 }
@@ -163,6 +164,7 @@ impl<Id: ReqId, E: EthSpec> RPC<Id, E> {
     pub fn new(
         fork_context: Arc<ForkContext>,
         enable_light_client_server: bool,
+        enable_execution_proof: bool,
         inbound_rate_limiter_config: Option<InboundRateLimiterConfig>,
         outbound_rate_limiter_config: Option<OutboundRateLimiterConfig>,
         seq_number: u64,
@@ -184,6 +186,7 @@ impl<Id: ReqId, E: EthSpec> RPC<Id, E> {
             events: Vec::new(),
             fork_context,
             enable_light_client_server,
+            enable_execution_proof,
             seq_number,
         }
     }
@@ -319,6 +322,7 @@ where
                 fork_context: self.fork_context.clone(),
                 max_rpc_size: self.fork_context.spec.max_payload_size as usize,
                 enable_light_client_server: self.enable_light_client_server,
+                enable_execution_proof: self.enable_execution_proof,
                 phantom: PhantomData,
             },
             (),
@@ -342,6 +346,7 @@ where
                 fork_context: self.fork_context.clone(),
                 max_rpc_size: self.fork_context.spec.max_payload_size as usize,
                 enable_light_client_server: self.enable_light_client_server,
+                enable_execution_proof: self.enable_execution_proof,
                 phantom: PhantomData,
             },
             (),

@@ -33,6 +33,9 @@ use {
 #[cfg(not(target_family = "unix"))]
 use {futures::channel::oneshot, std::cell::RefCell};
 
+#[cfg(feature = "test-utils")]
+pub mod test_utils;
+
 pub mod tracing_common;
 
 pub const SSE_LOG_CHANNEL_SIZE: usize = 2048;
@@ -282,6 +285,25 @@ impl<E: EthSpec> EnvironmentBuilder<E> {
         self.eth2_network_config = Some(eth2_network_config);
 
         Ok(self)
+    }
+
+    #[cfg(feature = "test-utils")]
+    pub fn build_test_environment(self) -> Result<test_utils::TestEnvironment<E>, String> {
+        let (signal, exit) = async_channel::bounded(1);
+        let (signal_tx, signal_rx) = channel(1);
+        Ok(test_utils::TestEnvironment {
+            executor: TaskExecutor::new(
+                tokio::runtime::Handle::try_current().map_err(|e| e.to_string())?,
+                exit.clone(),
+                signal_tx,
+            ),
+            signal_rx: Some(signal_rx),
+            signal: Some(signal),
+            sse_logging_components: self.sse_logging_components,
+            eth_spec_instance: self.eth_spec_instance,
+            eth2_config: self.eth2_config,
+            eth2_network_config: self.eth2_network_config.map(Arc::new),
+        })
     }
 
     /// Consumes the builder, returning an `Environment`.

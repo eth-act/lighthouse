@@ -139,6 +139,10 @@ Options:
           Used by the beacon node to communicate a client version to execution
           nodes during JWT authentication. It corresponds to the 'clv' field in
           the JWT claims object.Set to empty by default
+      --execution-proof-quorum <K>
+          Non-default: mark a Gloas payload envelope as proof-valid after K
+          distinct valid EIP-8025 proof types for the same new-payload request
+          root.
       --execution-timeout-multiplier <NUM>
           Unsigned integer to multiply the default execution timeouts by.
           [default: 1]
@@ -305,6 +309,10 @@ Options:
           which don't improve their payload after the first call, and high
           values are useful for ensuring the EL is given ample notice. Default:
           1/3 of a slot.
+      --proof-engine-endpoint <PROOF-ENGINE-ENDPOINT>
+          Server endpoint for the optional EIP-8025 proof engine HTTP API.
+      --proof-types <PROOF-TYPES>
+          Comma-separated EIP-8025 proof types to request from the proof engine.
       --proposer-reorg-cutoff <MILLISECONDS>
           DEPRECATED. This flag has no effect.
       --proposer-reorg-disallowed-offsets <N1,N2,...>
@@ -494,6 +502,9 @@ Flags:
           Sets the local ENR IP address and port to match those set for
           lighthouse. Specifically, the IP address will be the value of
           --listen-address and the UDP port will be --discovery-port.
+      --enable-mplex
+          Enables mplex multiplexer alongside yamux. Yamux is preferred when
+          both are available.
       --enable-partial-columns
           Enable partial messages for data columns. This can reduce the amount
           of data sent over the network. Enabled by default on Hoodi and
