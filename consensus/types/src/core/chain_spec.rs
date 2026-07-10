@@ -757,6 +757,11 @@ impl ChainSpec {
         }
     }
 
+    /// Returns the EIP-7892 blob-parameter-only schedule, reverse sorted by epoch.
+    pub fn blob_schedule(&self) -> &BlobSchedule {
+        &self.blob_schedule
+    }
+
     // TODO(EIP-7892): remove this once we have fork-version changes on BPO forks
     pub fn max_blobs_per_block_within_fork(&self, fork_name: ForkName) -> u64 {
         if !fork_name.fulu_enabled() {

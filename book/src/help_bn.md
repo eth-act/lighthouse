@@ -314,7 +314,7 @@ Options:
           Comma-separated list of EIP-8025 proof type identifiers (u8) to
           request from peers via ExecutionProofsByRoot and
           ExecutionProofsByRange RPC. If not specified, defaults to '0,1,2,3'
-          (EthrexRisc0, EthrexSP1, EthrexZisk, RethOpenVM).
+          (EthrexOpenVM, EthrexSP1, EthrexZisk, RethOpenVM).
       --proposer-reorg-cutoff <MILLISECONDS>
           Maximum delay after the start of the slot at which to propose a
           reorging block. Lower values can prevent failed reorgs by ensuring the

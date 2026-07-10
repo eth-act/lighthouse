@@ -339,7 +339,7 @@ impl<E: EthSpec> MockBuilder<E> {
             ..Default::default()
         };
 
-        let el = ExecutionLayer::from_config(config, executor.clone()).unwrap();
+        let el = ExecutionLayer::from_config(config, executor.clone(), &spec, 0).unwrap();
 
         let max_bid = false;
 

@@ -841,7 +841,7 @@ pub fn cli_app() -> Command {
                 .help("Comma-separated list of EIP-8025 proof type identifiers (u8) to request \
                        from peers via ExecutionProofsByRoot and ExecutionProofsByRange RPC. \
                        If not specified, defaults to '0,1,2,3' \
-                       (EthrexRisc0, EthrexSP1, EthrexZisk, RethOpenVM).")
+                       (EthrexOpenVM, EthrexSP1, EthrexZisk, RethOpenVM).")
                 .requires("proof-engine-endpoint")
                 .value_delimiter(',')
                 .value_parser(clap::value_parser!(u8))

@@ -3,11 +3,12 @@
 //! Provides an HTTP implementation with an internal proof cache.
 //! HTTP transport is delegated to a [`ProofNodeClient`] implementation.
 
+use super::chain_config::{ChainConfig, ChainConfigSchedule};
 use super::errors::ProofEngineError;
 use super::metrics;
 use super::persisted_state::PersistedProofEngineState;
 use super::proof_node_client::{HttpProofNodeClient, ProofNodeClient};
-use super::types::ProofEvent;
+use super::types::{ProofEvent, ProofRequestBody, ProofVerificationBody};
 use crate::{
     ForkchoiceState, ForkchoiceUpdatedResponse, MissingProofInfo, NewPayloadRequest,
     PayloadStatusV1, PayloadStatusV1Status,
@@ -23,7 +24,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use types::execution::eip8025::{ProofAttributes, ProofStatus, SignedExecutionProof};
-use types::{EthSpec, Hash256};
+use types::{ChainSpec, EthSpec, Hash256};
 
 // ─── HttpProofEngine ─────────────────────────────────────────────────────────
 
@@ -39,12 +40,26 @@ pub struct HttpProofEngine {
     state: RwLock<State>,
     /// Buffered proofs for request roots not yet seen.
     buffered_proofs: RwLock<HashMap<Hash256, Vec<SignedExecutionProof>>>,
+    /// Chain config schedule used to resolve chain config for each request and
+    /// verification by block timestamp.
+    chain_config_schedule: ChainConfigSchedule,
 }
 
 impl HttpProofEngine {
     /// Create a new proof engine backed by the HTTP proof node client.
-    pub fn new(url: SensitiveUrl, timeout: Option<Duration>) -> Self {
-        Self::with_proof_node(HttpProofNodeClient::new(url, timeout))
+    pub fn new(
+        url: SensitiveUrl,
+        timeout: Option<Duration>,
+        spec: &ChainSpec,
+        genesis_time: u64,
+        slots_per_epoch: u64,
+    ) -> Self {
+        Self::with_proof_node(
+            HttpProofNodeClient::new(url, timeout),
+            spec,
+            genesis_time,
+            slots_per_epoch,
+        )
     }
 
     /// Create a proof engine backed by a custom [`ProofNodeClient`] implementation.
@@ -52,12 +67,27 @@ impl HttpProofEngine {
     /// Useful for injecting a [`MockProofNodeClient`] in tests.
     ///
     /// [`MockProofNodeClient`]: super::super::test_utils::MockProofNodeClient
-    pub fn with_proof_node(proof_node: impl ProofNodeClient + 'static) -> Self {
+    pub fn with_proof_node(
+        proof_node: impl ProofNodeClient + 'static,
+        spec: &ChainSpec,
+        genesis_time: u64,
+        slots_per_epoch: u64,
+    ) -> Self {
         Self {
             proof_node: Box::new(proof_node),
             state: RwLock::new(State::new()),
             buffered_proofs: RwLock::new(HashMap::new()),
+            chain_config_schedule: ChainConfigSchedule::new(spec, genesis_time, slots_per_epoch),
         }
+    }
+
+    /// Resolves the chain config activated at a block `timestamp`.
+    ///
+    /// Returns `ProofEngineError::NoActiveFork` if no active fork at the `timestamp`.
+    fn resolve_chain_config(&self, timestamp: u64) -> Result<ChainConfig, ProofEngineError> {
+        self.chain_config_schedule
+            .resolve(timestamp)
+            .ok_or(ProofEngineError::NoActiveFork(timestamp))
     }
 
     /// Subscribe to method-invocation events emitted by a mock proof node client.
@@ -115,11 +145,7 @@ impl HttpProofEngine {
             .map(|pt| pt.as_str())
             .unwrap_or("unknown");
 
-        if !self
-            .state
-            .read()
-            .contains_request_root(&proof.request_root())
-        {
+        let Some(block_timestamp) = self.state.read().get_timestamp(&proof.request_root()) else {
             tracing::info!(target: "execution_layer", "Received proof for unknown request root {}, buffering", proof.request_root());
             let mut buf = self.buffered_proofs.write();
             buf.entry(proof.request_root())
@@ -132,16 +158,20 @@ impl HttpProofEngine {
                 &[proof_type_str, metrics::BUFFERED],
             );
             return Ok(ProofStatus::Syncing);
-        }
+        };
 
+        let chain_config = self.resolve_chain_config(block_timestamp)?;
         let timer = metrics::start_timer_vec(
             &metrics::PROOF_ENGINE_VERIFICATION_DURATION,
             &[proof_type_str],
         );
-        let verify_result = self
-            .proof_node
-            .verify_proof(proof.request_root(), proof.proof_type(), proof.proof_data())
-            .await;
+        let body = ProofVerificationBody {
+            new_payload_request_root: proof.request_root(),
+            chain_config,
+            proof_type: proof.proof_type(),
+            proof: proof.proof_data(),
+        };
+        let verify_result = self.proof_node.verify_proof(body.as_ssz_bytes()).await;
         drop(timer);
 
         let status = verify_result.inspect_err(|_e| {
@@ -239,7 +269,7 @@ impl HttpProofEngine {
 
     /// Request proof generation from the proof engine.
     ///
-    /// SSZ-encodes the payload then sends it to `POST /v1/execution_proof_requests`.
+    /// SSZ-encodes `ProofRequestBody` then sends it to `POST /v1/execution_proof_requests`.
     /// Returns the `new_payload_request_root` identifying this request.
     pub async fn request_proofs<E: EthSpec>(
         &self,
@@ -251,9 +281,14 @@ impl HttpProofEngine {
                 metrics::inc_counter_vec(&metrics::PROOF_ENGINE_REQUESTS_TOTAL, &[pt.as_str()]);
             }
         }
-        self.proof_node
-            .request_proofs(new_payload_request.as_ssz_bytes(), proof_attributes)
-            .await
+        let chain_config =
+            self.resolve_chain_config(new_payload_request.execution_payload_ref().timestamp())?;
+        let body = ProofRequestBody {
+            new_payload_request,
+            chain_config,
+            proof_types: proof_attributes.proof_types,
+        };
+        self.proof_node.request_proofs(body.as_ssz_bytes()).await
     }
 
     /// Snapshot the current state into a persisted form for serialization.

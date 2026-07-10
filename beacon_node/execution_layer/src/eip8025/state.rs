@@ -267,6 +267,16 @@ impl State {
         Ok(self.forkchoice_response_valid())
     }
 
+    /// Get the timestamp of a new payload request given its root.
+    pub fn get_timestamp(&self, root: &Hash256) -> Option<u64> {
+        self.tree
+            .request_root_to_block_hash
+            .get(root)
+            .and_then(|block_hash| self.tree.proofs_by_block_hash.get(block_hash))
+            .or_else(|| self.buffer.proofs.get(root))
+            .map(|payload_request| payload_request.metadata.block_timestamp)
+    }
+
     /// Get all execution proofs associated with the given new payload request root.
     pub fn get_proofs(&self, root: &Hash256) -> Option<&[SignedExecutionProof]> {
         self.tree
@@ -691,6 +701,8 @@ pub struct RequestMetadata {
     pub parent_hash: ExecutionBlockHash,
     /// The block number of the new payload request.
     pub block_number: u64,
+    /// The block timestamp of the new payload request, used to resolve its active fork.
+    pub block_timestamp: u64,
 }
 
 impl<E: EthSpec> From<&NewPayloadRequest<'_, E>> for RequestMetadata {
@@ -700,6 +712,7 @@ impl<E: EthSpec> From<&NewPayloadRequest<'_, E>> for RequestMetadata {
             block_hash: request.block_hash(),
             parent_hash: request.parent_hash(),
             block_number: request.block_number(),
+            block_timestamp: request.execution_payload_ref().timestamp(),
         }
     }
 }
@@ -724,12 +737,14 @@ pub mod test_utils {
         block_hash: ExecutionBlockHash,
         parent_hash: ExecutionBlockHash,
         block_number: u64,
+        block_timestamp: u64,
     ) -> RequestMetadata {
         RequestMetadata {
             request_root,
             block_hash,
             parent_hash,
             block_number,
+            block_timestamp,
         }
     }
 
@@ -1023,9 +1038,15 @@ pub mod test_utils {
             let hash_seed = (chain_id * 1000 + block_index) % 256;
             let block_hash = test_exec_hash(hash_seed as u8);
             let request_root = test_hash(((hash_seed + 0x10) % 256) as u8);
+            let block_timestamp = 12 * block_number;
 
-            let metadata =
-                create_request_metadata(request_root, block_hash, parent_hash, block_number);
+            let metadata = create_request_metadata(
+                request_root,
+                block_hash,
+                parent_hash,
+                block_number,
+                block_timestamp,
+            );
 
             // Generate proofs with distinct proof types to avoid deduplication.
             let mut proofs = Vec::new();

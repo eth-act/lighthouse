@@ -538,6 +538,9 @@ impl<E: EthSpec> ProductionValidatorClient<E> {
         let proof_service = config.proof_engine_endpoint.as_ref().map(|endpoint| {
             info!(endpoint = %endpoint, "Initializing proof engine client");
             let url_str = endpoint.expose_full();
+            let spec = context.eth2_config.spec.clone();
+            let genesis_time = slot_clock.genesis_duration().as_secs();
+            let slots_per_epoch = E::slots_per_epoch();
             let proof_engine_client = Arc::new(
                 if let Some(idx) = execution_layer::test_utils::parse_mock_index(url_str.as_str()) {
                     let mock = execution_layer::test_utils::get_mock_proof_engine::<E>(idx)
@@ -548,9 +551,20 @@ impl<E: EthSpec> ProductionValidatorClient<E> {
                             );
                             execution_layer::test_utils::register_mock_proof_engine::<E>(idx, 0)
                         });
-                    execution_layer::eip8025::HttpProofEngine::with_proof_node(mock)
+                    execution_layer::eip8025::HttpProofEngine::with_proof_node(
+                        mock,
+                        &spec,
+                        genesis_time,
+                        slots_per_epoch,
+                    )
                 } else {
-                    execution_layer::eip8025::HttpProofEngine::new(endpoint.clone(), None)
+                    execution_layer::eip8025::HttpProofEngine::new(
+                        endpoint.clone(),
+                        None,
+                        &spec,
+                        genesis_time,
+                        slots_per_epoch,
+                    )
                 },
             );
 

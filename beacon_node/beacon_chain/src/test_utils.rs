@@ -480,8 +480,13 @@ where
             suggested_fee_recipient: Some(Address::repeat_byte(42)),
             ..Default::default()
         };
-        let execution_layer =
-            ExecutionLayer::from_config(config, self.runtime.task_executor.clone()).unwrap();
+        let execution_layer = ExecutionLayer::from_config(
+            config,
+            self.runtime.task_executor.clone(),
+            &test_spec::<E>(),
+            0,
+        )
+        .unwrap();
 
         self.execution_layer = Some(execution_layer);
         self

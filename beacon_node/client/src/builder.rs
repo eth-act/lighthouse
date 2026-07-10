@@ -178,15 +178,6 @@ where
             None
         };
 
-        let execution_layer = if let Some(config) = config.execution_layer.clone() {
-            let context = runtime_context.clone();
-            let execution_layer = ExecutionLayer::from_config(config, context.executor.clone())
-                .map_err(|e| format!("unable to start execution layer endpoints: {:?}", e))?;
-            Some(execution_layer)
-        } else {
-            None
-        };
-
         let kzg_err_msg = |e| format!("Failed to load trusted setup: {:?}", e);
         let kzg = if spec.is_peer_das_scheduled() {
             Kzg::new_from_trusted_setup(&config.trusted_setup).map_err(kzg_err_msg)?
@@ -209,7 +200,6 @@ where
             .chain_config(chain_config)
             .beacon_graffiti(beacon_graffiti)
             .event_handler(event_handler)
-            .execution_layer(execution_layer)
             .node_custody_type(config.chain.node_custody_type)
             .ordered_custody_column_indices(ordered_custody_column_indices)
             .validator_monitor_config(config.validator_monitor.clone())
@@ -460,6 +450,22 @@ where
                 return Err("Loading genesis from deposit contract no longer supported".to_string());
             }
             ClientGenesis::FromStore => builder.resume_from_db()?,
+        };
+
+        let beacon_chain_builder = if let Some(execution_config) = config.execution_layer.clone() {
+            let genesis_time = beacon_chain_builder
+                .genesis_time
+                .ok_or("execution layer requires a genesis time")?;
+            let execution_layer = ExecutionLayer::from_config(
+                execution_config,
+                context.executor.clone(),
+                &spec,
+                genesis_time,
+            )
+            .map_err(|e| format!("unable to start execution layer endpoints: {:?}", e))?;
+            beacon_chain_builder.execution_layer(Some(execution_layer))
+        } else {
+            beacon_chain_builder
         };
 
         self.beacon_chain_builder = Some(beacon_chain_builder);

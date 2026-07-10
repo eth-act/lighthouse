@@ -96,7 +96,7 @@ pub struct Config {
     /// URL of the proof engine HTTP JSON-RPC endpoint for EIP-8025 execution proofs
     pub proof_engine_endpoint: Option<SensitiveUrl>,
     /// Proof types to request from the proof engine. Defaults to
-    /// `[EthrexRisc0, EthrexSP1, EthrexZisk, RethOpenVM]`.
+    /// `[EthrexOpenVM, EthrexSP1, EthrexZisk, RethOpenVM]`.
     #[serde(default)]
     pub proof_types: ProofTypes,
 }

@@ -15,7 +15,7 @@ use tokio_stream::StreamExt;
 
 use super::types::{ProofEvent, ProofType, SseEventParts};
 use types::Hash256;
-use types::execution::eip8025::{ProofAttributes, ProofStatus};
+use types::execution::eip8025::ProofStatus;
 
 /// Default timeout for proof engine requests (1 second per spec).
 pub const PROOF_ENGINE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -24,9 +24,7 @@ const PATH_PROOF_REQUESTS: &str = "/v1/execution_proof_requests";
 const PATH_PROOF_VERIFICATIONS: &str = "/v1/execution_proof_verifications";
 const PATH_PROOFS: &str = "/v1/execution_proofs";
 
-const QUERY_PROOF_TYPES: &str = "proof_types";
 const QUERY_NEW_PAYLOAD_REQUEST_ROOT: &str = "new_payload_request_root";
-const QUERY_PROOF_TYPE: &str = "proof_type";
 
 const HEADER_CONTENT_TYPE: &str = "content-type";
 const HEADER_VALUE_SSZ: &str = "application/octet-stream";
@@ -44,22 +42,14 @@ const HEADER_VALUE_SSZ: &str = "application/octet-stream";
 /// [`EthSpec`]: types::EthSpec
 #[async_trait::async_trait]
 pub trait ProofNodeClient: Send + Sync {
-    /// Submit an SSZ-encoded `NewPayloadRequest` to the proof engine.
+    /// Submit an SSZ-encoded `ProofRequestBody` to the proof engine.
     ///
     /// Returns the `new_payload_request_root` assigned by the proof engine.
-    async fn request_proofs(
-        &self,
-        ssz_body: Vec<u8>,
-        proof_attributes: ProofAttributes,
-    ) -> Result<Hash256, ProofEngineError>;
+    async fn request_proofs(&self, ssz_body: Vec<u8>) -> Result<Hash256, ProofEngineError>;
 
-    /// Verify a single proof via the proof engine.
-    async fn verify_proof(
-        &self,
-        root: Hash256,
-        proof_type: u8,
-        proof_data: &[u8],
-    ) -> Result<ProofStatus, ProofEngineError>;
+    /// Verify a single proof by submitting an SSZ-encoded
+    /// `ProofVerificationBody` via the proof engine.
+    async fn verify_proof(&self, ssz_body: Vec<u8>) -> Result<ProofStatus, ProofEngineError>;
 
     /// Download a completed proof by root and proof type.
     async fn get_proof(&self, root: Hash256, proof_type: u8) -> Result<Bytes, ProofEngineError>;
@@ -144,28 +134,12 @@ impl HttpProofNodeClient {
 
 #[async_trait::async_trait]
 impl ProofNodeClient for HttpProofNodeClient {
-    /// `POST /v1/execution_proof_requests?proof_types=reth-sp1,ethrex-risc0`
-    ///
-    /// Converts EIP-8025 `u8` proof types to string identifiers for the wire
-    /// format.
-    async fn request_proofs(
-        &self,
-        ssz_body: Vec<u8>,
-        proof_attributes: ProofAttributes,
-    ) -> Result<Hash256, ProofEngineError> {
-        // Convert u8 proof types to string identifiers.
-        // proof node expects: `proof_types=reth-sp1,ethrex-risc0`
-        let proof_types_csv = proof_attributes
-            .proof_types
-            .iter()
-            .map(|t| ProofType::from_u8(*t).map(|pt| pt.as_str().to_string()))
-            .collect::<Result<Vec<_>, _>>()?
-            .join(",");
-
+    /// `POST /v1/execution_proof_requests` with an SSZ encoded
+    /// `ProofRequestBody`.
+    async fn request_proofs(&self, ssz_body: Vec<u8>) -> Result<Hash256, ProofEngineError> {
         let response: ProofRequestResponse = self
             .client
             .post(self.url(PATH_PROOF_REQUESTS))
-            .query(&[(QUERY_PROOF_TYPES, &proof_types_csv)])
             .header(HEADER_CONTENT_TYPE, HEADER_VALUE_SSZ)
             .body(ssz_body)
             .timeout(self.timeout)
@@ -178,25 +152,14 @@ impl ProofNodeClient for HttpProofNodeClient {
         Ok(response.new_payload_request_root)
     }
 
-    /// `POST /v1/execution_proof_verifications?new_payload_request_root=...&proof_type=reth-sp1`
-    ///
-    /// Converts the `u8` proof type to a string identifier for the query param.
-    async fn verify_proof(
-        &self,
-        root: Hash256,
-        proof_type: u8,
-        proof_data: &[u8],
-    ) -> Result<ProofStatus, ProofEngineError> {
-        let proof_type_str = ProofType::from_u8(proof_type)?;
+    /// `POST /v1/execution_proof_verifications` with an SSZ encoded
+    /// `ProofVerificationBody`.
+    async fn verify_proof(&self, ssz_body: Vec<u8>) -> Result<ProofStatus, ProofEngineError> {
         let response: ProofVerificationResponse = self
             .client
             .post(self.url(PATH_PROOF_VERIFICATIONS))
-            .query(&[
-                (QUERY_NEW_PAYLOAD_REQUEST_ROOT, &root.to_string()),
-                (QUERY_PROOF_TYPE, &proof_type_str.to_string()),
-            ])
             .header(HEADER_CONTENT_TYPE, HEADER_VALUE_SSZ)
-            .body(proof_data.to_vec())
+            .body(ssz_body)
             .timeout(self.timeout)
             .send()
             .await?

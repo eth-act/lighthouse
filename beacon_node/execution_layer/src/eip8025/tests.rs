@@ -2,14 +2,17 @@
 
 use crate::eip8025::proof_engine::HttpProofEngine;
 use crate::eip8025::proof_node_client::ProofNodeClient;
-use crate::test_utils::{MockClientEvent, MockProofNodeClient, make_test_fulu_ssz};
+use crate::test_utils::{
+    MockClientEvent, MockProofNodeClient, make_test_fulu_ssz, make_test_verification_ssz,
+};
+use crate::{NewPayloadRequest, NewPayloadRequestFulu};
 use bls::{FixedBytesExtended, SignatureBytes};
 use futures::StreamExt;
+use ssz_types::VariableList;
 use tokio::time::{Duration, timeout};
-use types::execution::eip8025::{
-    ExecutionProof, ProofAttributes, PublicInput, SignedExecutionProof,
-};
-use types::{Hash256, MainnetEthSpec};
+use tree_hash::TreeHash;
+use types::execution::eip8025::{ExecutionProof, PublicInput, SignedExecutionProof};
+use types::{ChainSpec, Epoch, ExecutionPayloadFulu, ExecutionRequests, Hash256, MainnetEthSpec};
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -43,13 +46,12 @@ async fn mock_client_request_proofs_emits_event() {
     let mock = MockProofNodeClient::<MainnetEthSpec>::new(0);
     let mut rx = mock.subscribe_client_events();
 
-    let (body, expected_root) = make_test_fulu_ssz::<MainnetEthSpec>(Hash256::repeat_byte(0xAA));
-    let attrs = ProofAttributes {
-        proof_types: vec![1, 2],
-    };
+    let proof_types = vec![1, 2];
+    let (body, expected_root) =
+        make_test_fulu_ssz::<MainnetEthSpec>(Hash256::repeat_byte(0xAA), proof_types.clone());
 
     let root = mock
-        .request_proofs(body.clone(), attrs.clone())
+        .request_proofs(body)
         .await
         .expect("request_proofs should succeed");
 
@@ -59,8 +61,8 @@ async fn mock_client_request_proofs_emits_event() {
     let event = next_event(&mut rx).await;
     assert!(matches!(
         event,
-        MockClientEvent::ProofRequested { ssz_body, proof_attributes, root: r }
-        if r == root && ssz_body == body && proof_attributes == attrs
+        MockClientEvent::ProofRequested { root: r, proof_types: t }
+        if r == root && t == proof_types
     ));
 }
 
@@ -71,7 +73,10 @@ async fn mock_client_verify_proof_emits_event() {
     let mut rx = mock.subscribe_client_events();
 
     let root = Hash256::repeat_byte(0xBB);
-    let _ = mock.verify_proof(root, 1, &[]).await.unwrap();
+    let _ = mock
+        .verify_proof(make_test_verification_ssz(root, 1))
+        .await
+        .unwrap();
 
     let event = next_event(&mut rx).await;
     assert!(matches!(
@@ -102,12 +107,10 @@ async fn mock_client_request_proofs_broadcasts_sse_events() {
     let mock = MockProofNodeClient::<MainnetEthSpec>::new(0);
     let mut sse = mock.subscribe_proof_events(None);
 
-    let attrs = ProofAttributes {
-        proof_types: vec![0, 1],
-    };
-    let (body, expected_root) = make_test_fulu_ssz::<MainnetEthSpec>(Hash256::repeat_byte(0x42));
+    let (body, expected_root) =
+        make_test_fulu_ssz::<MainnetEthSpec>(Hash256::repeat_byte(0x42), vec![0, 1]);
     let root = mock
-        .request_proofs(body, attrs)
+        .request_proofs(body)
         .await
         .expect("request_proofs should succeed");
 
@@ -131,16 +134,8 @@ async fn mock_client_multiple_subscribers_each_get_events() {
     let mut rx1 = mock.subscribe_client_events();
     let mut rx2 = mock.subscribe_client_events();
 
-    let (body, _) = make_test_fulu_ssz::<MainnetEthSpec>(Hash256::repeat_byte(0x01));
-    let _ = mock
-        .request_proofs(
-            body,
-            ProofAttributes {
-                proof_types: vec![],
-            },
-        )
-        .await
-        .unwrap();
+    let (body, _) = make_test_fulu_ssz::<MainnetEthSpec>(Hash256::repeat_byte(0x01), vec![]);
+    let _ = mock.request_proofs(body).await.unwrap();
 
     assert!(matches!(
         next_event(&mut rx1).await,
@@ -156,17 +151,16 @@ async fn mock_client_multiple_subscribers_each_get_events() {
 #[tokio::test]
 async fn mock_client_computes_distinct_roots_from_ssz() {
     let mock = MockProofNodeClient::<MainnetEthSpec>::new(0);
-    let attrs = ProofAttributes {
-        proof_types: vec![],
-    };
+    let (body1, expected1) =
+        make_test_fulu_ssz::<MainnetEthSpec>(Hash256::repeat_byte(0x01), vec![]);
+    let (body2, expected2) =
+        make_test_fulu_ssz::<MainnetEthSpec>(Hash256::repeat_byte(0x02), vec![]);
+    let (body3, expected3) =
+        make_test_fulu_ssz::<MainnetEthSpec>(Hash256::repeat_byte(0x03), vec![]);
 
-    let (body1, expected1) = make_test_fulu_ssz::<MainnetEthSpec>(Hash256::repeat_byte(0x01));
-    let (body2, expected2) = make_test_fulu_ssz::<MainnetEthSpec>(Hash256::repeat_byte(0x02));
-    let (body3, expected3) = make_test_fulu_ssz::<MainnetEthSpec>(Hash256::repeat_byte(0x03));
-
-    let root1 = mock.request_proofs(body1, attrs.clone()).await.unwrap();
-    let root2 = mock.request_proofs(body2, attrs.clone()).await.unwrap();
-    let root3 = mock.request_proofs(body3, attrs).await.unwrap();
+    let root1 = mock.request_proofs(body1).await.unwrap();
+    let root2 = mock.request_proofs(body2).await.unwrap();
+    let root3 = mock.request_proofs(body3).await.unwrap();
 
     assert_eq!(root1, expected1);
     assert_eq!(root2, expected2);
@@ -184,7 +178,7 @@ async fn mock_client_computes_distinct_roots_from_ssz() {
 async fn engine_verify_proof_unknown_root_returns_syncing() {
     let mock = MockProofNodeClient::<MainnetEthSpec>::new(0);
     let mut rx = mock.subscribe_client_events();
-    let engine = HttpProofEngine::with_proof_node(mock);
+    let engine = HttpProofEngine::with_proof_node(mock, &ChainSpec::mainnet(), 0, 32);
 
     let proof = make_proof(Hash256::repeat_byte(0xAB), 0);
     let status = engine
@@ -209,7 +203,7 @@ async fn engine_verify_proof_unknown_root_returns_syncing() {
 async fn engine_get_proof_delegates_to_client() {
     let mock = MockProofNodeClient::<MainnetEthSpec>::new(0);
     let mut rx = mock.subscribe_client_events();
-    let engine = HttpProofEngine::with_proof_node(mock);
+    let engine = HttpProofEngine::with_proof_node(mock, &ChainSpec::mainnet(), 0, 32);
 
     let root = Hash256::repeat_byte(0xDE);
     let bytes = engine
@@ -232,7 +226,7 @@ async fn engine_get_proof_delegates_to_client() {
 async fn engine_unknown_root_proof_is_buffered() {
     let mock = MockProofNodeClient::<MainnetEthSpec>::new(0);
     let mut rx = mock.subscribe_client_events();
-    let engine = HttpProofEngine::with_proof_node(mock);
+    let engine = HttpProofEngine::with_proof_node(mock, &ChainSpec::mainnet(), 0, 32);
 
     let root = Hash256::from_low_u64_be(42);
     let proof = make_proof(root, 0);
@@ -255,19 +249,16 @@ async fn engine_unknown_root_proof_is_buffered() {
 #[tokio::test]
 async fn engine_subscribe_proof_events_filters_by_root() {
     let mock = MockProofNodeClient::<MainnetEthSpec>::new(0);
-    let attrs = ProofAttributes {
-        proof_types: vec![0],
-    };
-
-    let (body1, root1) = make_test_fulu_ssz::<MainnetEthSpec>(Hash256::from_low_u64_be(1));
-    let (body2, _root2) = make_test_fulu_ssz::<MainnetEthSpec>(Hash256::from_low_u64_be(2));
+    let (body1, root1) = make_test_fulu_ssz::<MainnetEthSpec>(Hash256::from_low_u64_be(1), vec![0]);
+    let (body2, _root2) =
+        make_test_fulu_ssz::<MainnetEthSpec>(Hash256::from_low_u64_be(2), vec![0]);
 
     // Subscribe before making requests.
     let mut filtered = mock.subscribe_proof_events(Some(root1));
 
     // root1 matches the filter; root2 should be silently dropped.
-    let _ = mock.request_proofs(body1, attrs.clone()).await.unwrap();
-    let _ = mock.request_proofs(body2, attrs).await.unwrap();
+    let _ = mock.request_proofs(body1).await.unwrap();
+    let _ = mock.request_proofs(body2).await.unwrap();
 
     // Only the event for root1 should arrive on the filtered stream.
     let event = timeout(Duration::from_secs(2), filtered.next())
@@ -283,5 +274,101 @@ async fn engine_subscribe_proof_events_filters_by_root() {
             .await
             .is_err(),
         "filtered stream should not forward events for other roots"
+    );
+}
+
+/// The chain config schedule built at init lets `verify_execution_proof` resolve a config and send
+/// a verification body instead of buffering as `Syncing`.
+#[tokio::test]
+async fn engine_resolves_chain_config_and_verifies() {
+    let mock = MockProofNodeClient::<MainnetEthSpec>::new(0);
+    let mut rx = mock.subscribe_client_events();
+
+    let mut spec = ChainSpec::mainnet();
+    // Capella activates at epoch 1, i.e. execution timestamp 384 (0 + 1 * 12 * 32). A payload
+    // stamped before 384 resolves to no fork, so a successful verification below proves the engine
+    // reads the fork from the timestamp it recorded for this request.
+    spec.capella_fork_epoch = Some(Epoch::new(1));
+    let engine = HttpProofEngine::with_proof_node(mock, &spec, 0, 32);
+
+    // Notify the engine of a payload so it buffers the request together with its execution timestamp.
+    let payload = ExecutionPayloadFulu::<MainnetEthSpec> {
+        timestamp: 384,
+        ..Default::default()
+    };
+    let requests = ExecutionRequests::<MainnetEthSpec>::default();
+    let request = NewPayloadRequest::Fulu(NewPayloadRequestFulu {
+        execution_payload: &payload,
+        versioned_hashes: VariableList::default(),
+        parent_beacon_block_root: Hash256::zero(),
+        execution_requests: &requests,
+    });
+    let root = request.clone().tree_hash_root();
+    engine.new_payload(&request).await.unwrap();
+
+    // A proof for that root verifies against the resolved config rather than returning Syncing.
+    let proof = make_proof(root, 0);
+    let status = engine.verify_execution_proof(&proof).await.unwrap();
+    assert!(
+        !status.is_syncing(),
+        "expected verification, got {status:?}"
+    );
+
+    let event = next_event(&mut rx).await;
+    assert!(matches!(
+        event,
+        MockClientEvent::ProofVerified { root: r, proof_type: 0 } if r == root
+    ));
+}
+
+/// `request_proofs` resolves the chain config from the payload timestamp and attaches it to the SSZ
+/// body sent to the proof node.
+#[tokio::test]
+async fn engine_request_proofs_attaches_resolved_chain_config() {
+    use crate::eip8025::chain_config::{ChainConfigSchedule, ProtocolFork};
+    use crate::test_utils::OwnedProofRequestBody;
+    use ssz::Decode;
+    use types::execution::eip8025::ProofAttributes;
+
+    let mock = MockProofNodeClient::<MainnetEthSpec>::new(0);
+    let recorder = mock.clone();
+
+    let mut spec = ChainSpec::mainnet();
+    spec.capella_fork_epoch = Some(Epoch::new(1));
+    let engine = HttpProofEngine::with_proof_node(mock, &spec, 0, 32);
+
+    // Capella activates at execution timestamp 384; the payload is stamped there.
+    let payload = ExecutionPayloadFulu::<MainnetEthSpec> {
+        timestamp: 384,
+        ..Default::default()
+    };
+    let requests = ExecutionRequests::<MainnetEthSpec>::default();
+    let request = NewPayloadRequest::Fulu(NewPayloadRequestFulu {
+        execution_payload: &payload,
+        versioned_hashes: VariableList::default(),
+        parent_beacon_block_root: Hash256::zero(),
+        execution_requests: &requests,
+    });
+    engine
+        .request_proofs(
+            request,
+            ProofAttributes {
+                proof_types: vec![0],
+            },
+        )
+        .await
+        .unwrap();
+
+    // The body carries exactly the config the schedule resolves for the payload timestamp.
+    let body = recorder
+        .received_requests()
+        .pop()
+        .expect("request recorded");
+    let decoded = OwnedProofRequestBody::<MainnetEthSpec>::from_ssz_bytes(&body).unwrap();
+    let expected = ChainConfigSchedule::new(&spec, 0, 32).resolve(384).unwrap();
+    assert_eq!(decoded.chain_config, expected);
+    assert_eq!(
+        decoded.chain_config.active_fork.fork,
+        ProtocolFork::Shanghai
     );
 }

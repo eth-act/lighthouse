@@ -511,7 +511,12 @@ pub struct ExecutionLayer<E: EthSpec> {
 
 impl<E: EthSpec> ExecutionLayer<E> {
     /// Instantiate `Self` with an Execution engine specified in `Config`, using JSON-RPC via HTTP.
-    pub fn from_config(config: Config, executor: TaskExecutor) -> Result<Self, Error> {
+    pub fn from_config(
+        config: Config,
+        executor: TaskExecutor,
+        spec: &ChainSpec,
+        genesis_time: u64,
+    ) -> Result<Self, Error> {
         let Config {
             execution_endpoint,
             proof_engine_endpoint,
@@ -592,10 +597,21 @@ impl<E: EthSpec> ExecutionLayer<E> {
                         test_utils::register_mock_proof_engine::<E>(idx, 0)
                     });
                     debug!(idx, "Instantiating mock proof engine from registry");
-                    Some(Arc::new(eip8025::HttpProofEngine::with_proof_node(mock)))
+                    Some(Arc::new(eip8025::HttpProofEngine::with_proof_node(
+                        mock,
+                        spec,
+                        genesis_time,
+                        E::slots_per_epoch(),
+                    )))
                 } else {
                     debug!(endpoint = %proof_url, "Loaded proof engine endpoint");
-                    Some(Arc::new(eip8025::HttpProofEngine::new(proof_url, None)))
+                    Some(Arc::new(eip8025::HttpProofEngine::new(
+                        proof_url,
+                        None,
+                        spec,
+                        genesis_time,
+                        E::slots_per_epoch(),
+                    )))
                 }
             } else {
                 None

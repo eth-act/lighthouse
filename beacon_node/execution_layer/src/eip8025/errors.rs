@@ -35,6 +35,8 @@ pub enum ProofEngineError {
     EngineUnavailable,
     /// State-related errors.
     StateError(ProofEngineStateError),
+    /// No active fork at the timestamp.
+    NoActiveFork(u64),
 }
 
 /// Errors related to the proof engine state.
@@ -125,6 +127,9 @@ impl fmt::Display for ProofEngineError {
             }
             ProofEngineError::StateError(state_error) => {
                 write!(f, "State error: {:?}", state_error)
+            }
+            ProofEngineError::NoActiveFork(timestamp) => {
+                write!(f, "No active fork at the timestamp: {timestamp}")
             }
         }
     }
