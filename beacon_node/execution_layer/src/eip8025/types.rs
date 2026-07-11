@@ -3,23 +3,32 @@
 //! This module contains:
 //! - [`ProofType`]: an independent string enum that mirrors the
 //!   proof node API's `ProofType` exactly.
+//! - [`ProofRequestBody`]: the SSZ body posted to the proof engine's request.
+//!   endpoints.
+//! - [`ProofVerificationBody`]: the SSZ body posted to the proof engine's
+//!   verification endpoints.
 //! - SSE event types broadcast by the proof engine.
 //!
 //! ## ProofType encoding
 //!
 //! EIP-8025 uses `u8` for `ProofType` in SSZ containers (consensus layer).
 //! The proof node API uses kebab-case string identifiers
-//! (`"reth-sp1"`, `"ethrex-risc0"`, etc.) in HTTP query params, URL paths,
-//! and SSE event payloads.
+//! (`"reth-sp1"`, `"ethrex-openvm"`, etc.) in URL paths and SSE event
+//! payloads.
 //!
 //! [`ProofType`] bridges this gap: the [`HttpProofNodeClient`] converts
 //! between `u8` (internal) and string (wire) at the HTTP boundary.
 
+use super::chain_config::ChainConfig;
 use super::errors::ProofEngineError;
+use crate::NewPayloadRequest;
 use serde::{Deserialize, Deserializer, Serialize};
+use ssz_derive::Encode as SszEncode;
+use ssz_types::VariableList;
 use std::fmt;
 use std::str::FromStr;
-use types::Hash256;
+use types::execution::eip8025::MaxProofSize;
+use types::{EthSpec, Hash256};
 
 // ─── ProofType ─────────────────────────────────────────────────────────────
 
@@ -28,24 +37,22 @@ use types::Hash256;
 #[serde(into = "String", try_from = "String")]
 #[repr(u8)]
 pub enum ProofType {
-    EthrexRisc0 = 0,
+    EthrexOpenVM = 0,
     EthrexSP1 = 1,
     EthrexZisk = 2,
     RethOpenVM = 3,
-    RethRisc0 = 4,
-    RethSP1 = 5,
-    RethZisk = 6,
+    RethSP1 = 4,
+    RethZisk = 5,
 }
 
 impl ProofType {
     /// Canonical string representation, matching exactly.
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::EthrexRisc0 => "ethrex-risc0",
+            Self::EthrexOpenVM => "ethrex-openvm",
             Self::EthrexSP1 => "ethrex-sp1",
             Self::EthrexZisk => "ethrex-zisk",
             Self::RethOpenVM => "reth-openvm",
-            Self::RethRisc0 => "reth-risc0",
             Self::RethSP1 => "reth-sp1",
             Self::RethZisk => "reth-zisk",
         }
@@ -56,13 +63,12 @@ impl ProofType {
     /// The mapping follows the order defined in the `ProofType` enum.
     pub fn from_u8(value: u8) -> Result<Self, ProofEngineError> {
         match value {
-            0 => Ok(Self::EthrexRisc0),
+            0 => Ok(Self::EthrexOpenVM),
             1 => Ok(Self::EthrexSP1),
             2 => Ok(Self::EthrexZisk),
             3 => Ok(Self::RethOpenVM),
-            4 => Ok(Self::RethRisc0),
-            5 => Ok(Self::RethSP1),
-            6 => Ok(Self::RethZisk),
+            4 => Ok(Self::RethSP1),
+            5 => Ok(Self::RethZisk),
             _ => Err(ProofEngineError::InvalidProofType(format!(
                 "no mapping for proof type {value}"
             ))),
@@ -77,11 +83,10 @@ impl ProofType {
     /// All known proof type variants.
     pub fn all() -> &'static [ProofType] {
         &[
-            Self::EthrexRisc0,
+            Self::EthrexOpenVM,
             Self::EthrexSP1,
             Self::EthrexZisk,
             Self::RethOpenVM,
-            Self::RethRisc0,
             Self::RethSP1,
             Self::RethZisk,
         ]
@@ -93,11 +98,10 @@ impl FromStr for ProofType {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "ethrex-risc0" => Ok(Self::EthrexRisc0),
+            "ethrex-openvm" => Ok(Self::EthrexOpenVM),
             "ethrex-sp1" => Ok(Self::EthrexSP1),
             "ethrex-zisk" => Ok(Self::EthrexZisk),
             "reth-openvm" => Ok(Self::RethOpenVM),
-            "reth-risc0" => Ok(Self::RethRisc0),
             "reth-sp1" => Ok(Self::RethSP1),
             "reth-zisk" => Ok(Self::RethZisk),
             _ => Err(ProofEngineError::InvalidProofType(format!(
@@ -133,7 +137,7 @@ impl TryFrom<String> for ProofType {
 ///
 /// This type allows us to implement `Default` with reasonable defaults.
 ///
-/// The default is `[EthrexRisc0, EthrexSP1, EthrexZisk, RethOpenVM]` (wire
+/// The default is `[EthrexOpenVM, EthrexSP1, EthrexZisk, RethOpenVM]` (wire
 /// values 0–3), matching the `--proof-types` CLI flag default.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProofTypes(pub Vec<ProofType>);
@@ -141,7 +145,7 @@ pub struct ProofTypes(pub Vec<ProofType>);
 impl Default for ProofTypes {
     fn default() -> Self {
         Self(vec![
-            ProofType::EthrexRisc0,
+            ProofType::EthrexOpenVM,
             ProofType::EthrexSP1,
             ProofType::EthrexZisk,
             ProofType::RethOpenVM,
@@ -161,6 +165,23 @@ impl From<Vec<ProofType>> for ProofTypes {
     fn from(v: Vec<ProofType>) -> Self {
         Self(v)
     }
+}
+
+/// SSZ body for `POST /v1/execution_proof_requests`.
+#[derive(SszEncode)]
+pub struct ProofRequestBody<'block, E: EthSpec> {
+    pub new_payload_request: NewPayloadRequest<'block, E>,
+    pub chain_config: ChainConfig,
+    pub proof_types: Vec<u8>,
+}
+
+/// SSZ body for `POST /v1/execution_proof_verifications`.
+#[derive(Debug, Clone, PartialEq, SszEncode)]
+pub struct ProofVerificationBody<'proof> {
+    pub new_payload_request_root: Hash256,
+    pub chain_config: ChainConfig,
+    pub proof_type: u8,
+    pub proof: &'proof VariableList<u8, MaxProofSize>,
 }
 
 // ─── SSE Event Types ────────────────────────────────────────────────────────

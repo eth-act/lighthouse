@@ -122,7 +122,7 @@ Options:
       --proof-types <TYPES>
           Comma-separated list of proof type identifiers (u8) to request from
           the proof engine (e.g., 0,1,2). If not specified, defaults to
-          '0,1,2,3' (EthrexRisc0, EthrexSP1, EthrexZisk, RethOpenVM).
+          '0,1,2,3' (EthrexOpenVM, EthrexSP1, EthrexZisk, RethOpenVM).
       --proposer-nodes <NETWORK_ADDRESSES>
           Comma-separated addresses to one or more beacon node HTTP APIs. These
           specify nodes that are used to send beacon block proposals. A failure

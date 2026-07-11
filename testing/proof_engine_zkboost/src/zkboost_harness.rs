@@ -19,7 +19,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use zkboost_server::{
-    config::{Config, zkVMConfig},
+    config::{Config, DashboardConfig, MockProvingTime, zkVMConfig},
     server::zkBoostServer,
 };
 use zkboost_types::ProofType;
@@ -29,6 +29,9 @@ use zkboost_types::ProofType;
 /// SSZ-encoded NewPayloadRequest from zkBoost's test fixture.
 pub const FIXTURE_NEW_PAYLOAD_REQUEST: &[u8] =
     include_bytes!("../tests/fixture/new_payload_request.ssz");
+
+/// SSZ-encoded `ChainConfig` from zkBoost's test fixture.
+pub const FIXTURE_CHAIN_CONFIG_SSZ: &[u8] = include_bytes!("../tests/fixture/chain_config.ssz");
 
 /// Chain config JSON from zkBoost's test fixture.
 const FIXTURE_CHAIN_CONFIG: &str = include_str!("../tests/fixture/chain_config.json");
@@ -99,9 +102,9 @@ async fn start_zkboost_server(
         el_endpoint,
         chain_config_path: None,
         witness_timeout_secs: 120,
-        proof_timeout_secs: 120,
         proof_cache_size: 128,
         witness_cache_size: 128,
+        dashboard: DashboardConfig::default(),
         zkvm: zkvm_configs,
     };
 
@@ -146,7 +149,10 @@ impl ZkboostTestHarness {
 
         let zkvm_config = zkVMConfig::Mock {
             proof_type,
-            mock_proving_time_ms,
+            proof_timeout_secs: 120,
+            mock_proving_time: MockProvingTime::Constant {
+                ms: mock_proving_time_ms,
+            },
             mock_proof_size: 1024,
             mock_failure: false,
         };

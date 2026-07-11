@@ -7,6 +7,7 @@
 //! - HttpProofNodeClient for production HTTP transport
 //! - SSE event types for proof completion streaming
 
+pub mod chain_config;
 pub mod errors;
 pub mod metrics;
 pub mod persisted_state;

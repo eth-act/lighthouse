@@ -12,8 +12,8 @@
 //!
 //! ## What is validated
 //!
-//! - Lighthouse sends zkBoost string proof types in query params, URL paths, SSE
-//! - The real server accepts Lighthouse's requests and returns valid responses
+//! - Lighthouse maps u8 proof types to zkBoost strings in URL paths and SSE
+//! - The real server accepts Lighthouse's SSZ request and verification bodies
 //! - SSE events with string `proof_type` values are correctly deserialized to u8
 //! - Full lifecycle: request → SSE event → proof download → verification
 
@@ -21,17 +21,22 @@ pub mod zkboost_harness;
 
 #[cfg(test)]
 mod tests {
-    use crate::zkboost_harness::{FIXTURE_NEW_PAYLOAD_REQUEST, ZkboostTestHarness};
+    use crate::zkboost_harness::{
+        FIXTURE_CHAIN_CONFIG_SSZ, FIXTURE_NEW_PAYLOAD_REQUEST, ZkboostTestHarness,
+    };
+    use execution_layer::eip8025::chain_config::ChainConfig;
     use execution_layer::eip8025::{HttpProofNodeClient, ProofNodeClient, ProofType};
-    use execution_layer::test_utils::OwnedNewPayloadRequest;
+    use execution_layer::test_utils::{
+        OwnedNewPayloadRequest, OwnedProofRequestBody, OwnedProofVerificationBody,
+    };
     use futures::StreamExt;
     use sensitive_url::SensitiveUrl;
-    use ssz::Decode;
+    use ssz::{Decode, Encode};
+    use ssz_types::VariableList;
     use std::time::Duration;
     use tokio::time::timeout;
     use tree_hash::TreeHash;
-    use types::MainnetEthSpec;
-    use types::execution::eip8025::ProofAttributes;
+    use types::{Hash256, MainnetEthSpec};
     use zkboost_types::ProofType as ZkBoostProofType;
 
     /// Helper: create an `HttpProofNodeClient` pointing at the test server.
@@ -45,29 +50,57 @@ mod tests {
         ProofType::EthrexZisk.to_u8()
     }
 
+    /// The chain config the fixtures were generated for, decoded from the SSZ
+    /// fixture. Both the proof request and verification bodies carry it.
+    fn fixture_chain_config() -> ChainConfig {
+        ChainConfig::from_ssz_bytes(FIXTURE_CHAIN_CONFIG_SSZ)
+            .expect("fixture chain config SSZ should decode")
+    }
+
+    /// Decode the fixture new-payload request.
+    fn fixture_new_payload_request() -> OwnedNewPayloadRequest<MainnetEthSpec> {
+        OwnedNewPayloadRequest::<MainnetEthSpec>::from_ssz_bytes(FIXTURE_NEW_PAYLOAD_REQUEST)
+            .expect("fixture SSZ should decode to a valid NewPayloadRequest")
+    }
+
+    /// SSZ-encode the `ProofRequestBody` sent to `request_proofs`, matching the
+    /// wire body `HttpProofEngine` produces for a payload.
+    fn request_body_ssz(proof_types: Vec<u8>) -> Vec<u8> {
+        OwnedProofRequestBody {
+            new_payload_request: fixture_new_payload_request(),
+            chain_config: fixture_chain_config(),
+            proof_types: VariableList::new(proof_types).expect("proof types within bound"),
+        }
+        .as_ssz_bytes()
+    }
+
+    /// SSZ-encode the `ProofVerificationBody` sent to `verify_proof`.
+    fn verification_body_ssz(root: Hash256, proof_type: u8, proof: &[u8]) -> Vec<u8> {
+        OwnedProofVerificationBody {
+            new_payload_request_root: root,
+            chain_config: fixture_chain_config(),
+            proof_type,
+            proof: VariableList::new(proof.to_vec()).expect("proof within bound"),
+        }
+        .as_ssz_bytes()
+    }
+
     // ─── Test 1: request_proofs succeeds against real server ─────────────────
 
     /// Verifies that `HttpProofNodeClient::request_proofs` sends the correct
-    /// wire format (string proof types in query param, SSZ body) and the real
-    /// zkBoost server accepts it and returns a root.
+    /// SSZ request body and the real zkBoost server accepts it and returns a
+    /// root matching the payload's tree hash.
     #[tokio::test]
     async fn test_request_proofs_accepted_by_real_server() {
         let harness = ZkboostTestHarness::start(3000).await;
         let client = client_for(&harness.url());
 
-        let attrs = ProofAttributes {
-            proof_types: vec![ethrex_zisk_u8()],
-        };
-
         let root = client
-            .request_proofs(FIXTURE_NEW_PAYLOAD_REQUEST.to_vec(), attrs)
+            .request_proofs(request_body_ssz(vec![ethrex_zisk_u8()]))
             .await
             .expect("request_proofs should succeed against real server");
 
-        let expected_root =
-            OwnedNewPayloadRequest::<MainnetEthSpec>::from_ssz_bytes(FIXTURE_NEW_PAYLOAD_REQUEST)
-                .expect("fixture SSZ should decode to a valid NewPayloadRequest")
-                .tree_hash_root();
+        let expected_root = fixture_new_payload_request().tree_hash_root();
 
         assert_eq!(
             root, expected_root,
@@ -85,15 +118,11 @@ mod tests {
         let harness = ZkboostTestHarness::start(1000).await;
         let client = client_for(&harness.url());
 
-        let attrs = ProofAttributes {
-            proof_types: vec![ethrex_zisk_u8()],
-        };
-
         // Subscribe to events before requesting proofs.
         let mut event_stream = client.subscribe_proof_events(None);
 
         let root = client
-            .request_proofs(FIXTURE_NEW_PAYLOAD_REQUEST.to_vec(), attrs)
+            .request_proofs(request_body_ssz(vec![ethrex_zisk_u8()]))
             .await
             .expect("request_proofs should succeed");
 
@@ -122,15 +151,11 @@ mod tests {
         let harness = ZkboostTestHarness::start(1000).await;
         let client = client_for(&harness.url());
 
-        let attrs = ProofAttributes {
-            proof_types: vec![ethrex_zisk_u8()],
-        };
-
         // Subscribe and wait for proof completion.
         let mut events = client.subscribe_proof_events(None);
 
         let root = client
-            .request_proofs(FIXTURE_NEW_PAYLOAD_REQUEST.to_vec(), attrs)
+            .request_proofs(request_body_ssz(vec![ethrex_zisk_u8()]))
             .await
             .expect("request should succeed");
 
@@ -152,21 +177,17 @@ mod tests {
 
     // ─── Test 4: verify_proof against real server ────────────────────────────
 
-    /// Verifies that `verify_proof` sends the string proof type in query params
-    /// and the real server accepts the verification request.
+    /// Verifies that `verify_proof` sends the SSZ verification body and the real
+    /// server accepts it, returning a valid status.
     #[tokio::test]
     async fn test_verify_proof_against_real_server() {
         let harness = ZkboostTestHarness::start(1000).await;
         let client = client_for(&harness.url());
 
-        let attrs = ProofAttributes {
-            proof_types: vec![ethrex_zisk_u8()],
-        };
-
         let mut events = client.subscribe_proof_events(None);
 
         let root = client
-            .request_proofs(FIXTURE_NEW_PAYLOAD_REQUEST.to_vec(), attrs)
+            .request_proofs(request_body_ssz(vec![ethrex_zisk_u8()]))
             .await
             .expect("request should succeed");
 
@@ -185,7 +206,7 @@ mod tests {
 
         // Verify proof.
         let status = client
-            .verify_proof(root, ethrex_zisk_u8(), &proof)
+            .verify_proof(verification_body_ssz(root, ethrex_zisk_u8(), &proof))
             .await
             .expect("verify_proof should succeed against real server");
 
@@ -265,15 +286,11 @@ mod tests {
         let harness = ZkboostTestHarness::start(1000).await;
         let client = client_for(&harness.url());
 
-        let attrs = ProofAttributes {
-            proof_types: vec![ethrex_zisk_u8()],
-        };
-
         let mut events = client.subscribe_proof_events(None);
 
         // Step 1: Request proof.
         let root = client
-            .request_proofs(FIXTURE_NEW_PAYLOAD_REQUEST.to_vec(), attrs)
+            .request_proofs(request_body_ssz(vec![ethrex_zisk_u8()]))
             .await
             .expect("request should succeed");
 
@@ -298,7 +315,7 @@ mod tests {
 
         // Step 4: Verify proof.
         let status = client
-            .verify_proof(root, ethrex_zisk_u8(), &proof)
+            .verify_proof(verification_body_ssz(root, ethrex_zisk_u8(), &proof))
             .await
             .expect("verify_proof should succeed");
         assert_eq!(status, types::execution::eip8025::ProofStatus::Valid);

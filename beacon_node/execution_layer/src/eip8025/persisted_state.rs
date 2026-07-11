@@ -46,6 +46,7 @@ pub struct PersistedBlockProofs {
     pub request_root: Hash256,
     pub parent_hash: ExecutionBlockHash,
     pub block_number: u64,
+    pub block_timestamp: u64,
     pub proofs: Vec<SignedExecutionProof>,
 }
 
@@ -150,6 +151,7 @@ impl PersistedTreeState {
                 request_root: payload_req.metadata.request_root,
                 parent_hash: payload_req.metadata.parent_hash,
                 block_number: payload_req.metadata.block_number,
+                block_timestamp: payload_req.metadata.block_timestamp,
                 proofs: payload_req.proofs.clone(),
             })
             .collect();
@@ -203,6 +205,7 @@ impl PersistedTreeState {
                             block_hash: p.block_hash,
                             parent_hash: p.parent_hash,
                             block_number: p.block_number,
+                            block_timestamp: p.block_timestamp,
                         },
                         proofs: p.proofs.clone(),
                     },
@@ -248,6 +251,7 @@ impl PersistedRequestBuffer {
                 request_root: payload_req.metadata.request_root,
                 parent_hash: payload_req.metadata.parent_hash,
                 block_number: payload_req.metadata.block_number,
+                block_timestamp: payload_req.metadata.block_timestamp,
                 proofs: payload_req.proofs.clone(),
             })
             .collect();
@@ -267,6 +271,7 @@ impl PersistedRequestBuffer {
                             block_hash: p.block_hash,
                             parent_hash: p.parent_hash,
                             block_number: p.block_number,
+                            block_timestamp: p.block_timestamp,
                         },
                         proofs: p.proofs.clone(),
                     },
@@ -335,6 +340,7 @@ mod tests {
             assert_eq!(r.metadata.block_hash, req.metadata.block_hash);
             assert_eq!(r.metadata.parent_hash, req.metadata.parent_hash);
             assert_eq!(r.metadata.block_number, req.metadata.block_number);
+            assert_eq!(r.metadata.block_timestamp, req.metadata.block_timestamp);
             assert_eq!(r.proofs, req.proofs);
         }
 
@@ -370,6 +376,7 @@ mod tests {
             assert_eq!(r.metadata.block_hash, req.metadata.block_hash);
             assert_eq!(r.metadata.parent_hash, req.metadata.parent_hash);
             assert_eq!(r.metadata.block_number, req.metadata.block_number);
+            assert_eq!(r.metadata.block_timestamp, req.metadata.block_timestamp);
             assert_eq!(r.proofs, req.proofs);
         }
     }

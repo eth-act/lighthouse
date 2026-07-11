@@ -7,6 +7,9 @@
 //! [`ProofNodeClient`]: crate::eip8025::ProofNodeClient
 //! [`HttpProofEngine`]: crate::eip8025::HttpProofEngine
 
+use crate::eip8025::chain_config::{
+    BlobSchedule, ChainConfig, ForkActivation, ForkConfig, ProtocolFork,
+};
 use crate::eip8025::errors::ProofEngineError;
 use crate::eip8025::proof_node_client::ProofNodeClient;
 use crate::eip8025::types::{ProofComplete, ProofEvent};
@@ -27,7 +30,8 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
 use tree_hash::TreeHash;
 use tree_hash_derive::TreeHash as TreeHashDerive;
-use types::execution::eip8025::{ProofAttributes, ProofStatus};
+use types::eip8025::MaxProofSize;
+use types::execution::eip8025::{MaxExecutionProofsPerPayload, ProofStatus};
 use types::{
     BeaconStateError, EthSpec, ExecutionPayloadBellatrix, ExecutionPayloadCapella,
     ExecutionPayloadDeneb, ExecutionPayloadElectra, ExecutionPayloadFulu, ExecutionPayloadGloas,
@@ -79,6 +83,39 @@ pub struct OwnedNewPayloadRequest<E: EthSpec> {
     pub execution_requests: ExecutionRequests<E>,
 }
 
+/// Owned SSZ mirror of `ProofRequestBody`, used to decode request bodies inside the mock.
+#[derive(SszEncode, SszDecode)]
+pub struct OwnedProofRequestBody<E: EthSpec> {
+    pub new_payload_request: OwnedNewPayloadRequest<E>,
+    pub chain_config: ChainConfig,
+    pub proof_types: VariableList<u8, MaxExecutionProofsPerPayload>,
+}
+
+/// Owned SSZ mirror of `ProofVerificationBody`, used to decode request bodies inside the mock.
+#[derive(Debug, Clone, PartialEq, SszEncode, SszDecode)]
+pub struct OwnedProofVerificationBody {
+    pub new_payload_request_root: Hash256,
+    pub chain_config: ChainConfig,
+    pub proof_type: u8,
+    pub proof: VariableList<u8, MaxProofSize>,
+}
+
+/// A minimal chain config for building test request bodies.
+fn sample_chain_config() -> ChainConfig {
+    ChainConfig {
+        chain_id: 1,
+        active_fork: ForkConfig::new(
+            ProtocolFork::Bpo2,
+            ForkActivation::at_timestamp(0),
+            Some(BlobSchedule {
+                target: 0,
+                max: 21,
+                base_fee_update_fraction: 0,
+            }),
+        ),
+    }
+}
+
 /// Events emitted by [`MockProofNodeClient`] for each method invocation.
 ///
 /// Subscribe via [`MockProofNodeClient::subscribe_client_events`] to observe
@@ -86,11 +123,7 @@ pub struct OwnedNewPayloadRequest<E: EthSpec> {
 #[derive(Debug, Clone)]
 pub enum MockClientEvent {
     /// Emitted when [`ProofNodeClient::request_proofs`] is called.
-    ProofRequested {
-        ssz_body: Vec<u8>,
-        proof_attributes: ProofAttributes,
-        root: Hash256,
-    },
+    ProofRequested { root: Hash256, proof_types: Vec<u8> },
     /// Emitted when [`ProofNodeClient::verify_proof`] is called.
     ProofVerified { root: Hash256, proof_type: u8 },
     /// Emitted when [`ProofNodeClient::get_proof`] is called.
@@ -160,17 +193,38 @@ pub fn parse_mock_index(url: &str) -> Option<usize> {
     })
 }
 
-/// Build a test SSZ body encoding a `NewPayloadRequestFulu<E>` with the given
-/// parent beacon block root. Returns `(ssz_bytes, expected_tree_hash_root)`.
-pub fn make_test_fulu_ssz<E: EthSpec>(parent_root: Hash256) -> (Vec<u8>, Hash256) {
-    let request = OwnedNewPayloadRequestFulu::<E> {
+/// Build a test SSZ body encoding a `ProofRequestBody` with
+/// `NewPayloadRequestFulu<E>` and the given parent beacon block root.
+/// Returns `(ssz_bytes, expected_tree_hash_root)`.
+pub fn make_test_fulu_ssz<E: EthSpec>(
+    parent_root: Hash256,
+    proof_types: Vec<u8>,
+) -> (Vec<u8>, Hash256) {
+    let request = OwnedNewPayloadRequest::Fulu(OwnedNewPayloadRequestFulu::<E> {
         execution_payload: ExecutionPayloadFulu::default(),
         versioned_hashes: VariableList::default(),
         parent_beacon_block_root: parent_root,
         execution_requests: ExecutionRequests::default(),
+    });
+    let root = request.tree_hash_root();
+    let body = OwnedProofRequestBody {
+        new_payload_request: request,
+        chain_config: sample_chain_config(),
+        proof_types: VariableList::new(proof_types).expect("proof types within bound"),
     };
-    let request = OwnedNewPayloadRequest::Fulu(request);
-    (request.as_ssz_bytes(), request.tree_hash_root())
+    (body.as_ssz_bytes(), root)
+}
+
+/// Build a test SSZ body encoding a `ProofVerificationBody` for the given root
+/// and proof type.
+pub fn make_test_verification_ssz(root: Hash256, proof_type: u8) -> Vec<u8> {
+    OwnedProofVerificationBody {
+        new_payload_request_root: root,
+        chain_config: sample_chain_config(),
+        proof_type,
+        proof: VariableList::default(),
+    }
+    .as_ssz_bytes()
 }
 
 /// In-memory proof node client for testing, generic over [`EthSpec`].
@@ -248,26 +302,21 @@ impl<E: EthSpec> MockProofNodeClient<E> {
 
 #[async_trait::async_trait]
 impl<E: EthSpec> ProofNodeClient for MockProofNodeClient<E> {
-    async fn request_proofs(
-        &self,
-        ssz_body: Vec<u8>,
-        proof_attributes: ProofAttributes,
-    ) -> Result<Hash256, ProofEngineError> {
-        let root = OwnedNewPayloadRequest::<E>::from_ssz_bytes(&ssz_body)
-            .map_err(|e| ProofEngineError::InvalidPayload(format!("SSZ decode failed: {e:?}")))?
-            .tree_hash_root();
+    async fn request_proofs(&self, ssz_body: Vec<u8>) -> Result<Hash256, ProofEngineError> {
+        let body = OwnedProofRequestBody::<E>::from_ssz_bytes(&ssz_body)
+            .map_err(|e| ProofEngineError::InvalidPayload(format!("SSZ decode failed: {e:?}")))?;
+        let root = body.new_payload_request.tree_hash_root();
+        let proof_types = body.proof_types.to_vec();
 
         self.requests.lock().push(ssz_body.clone());
 
         let _ = self.call_tx.send(MockClientEvent::ProofRequested {
-            ssz_body,
-            proof_attributes: proof_attributes.clone(),
             root,
+            proof_types: proof_types.clone(),
         });
 
         let event_tx = self.event_tx.clone();
         let delay = self.proof_generation_delay;
-        let proof_types = proof_attributes.proof_types.clone();
 
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(delay)).await;
@@ -282,15 +331,13 @@ impl<E: EthSpec> ProofNodeClient for MockProofNodeClient<E> {
         Ok(root)
     }
 
-    async fn verify_proof(
-        &self,
-        root: Hash256,
-        proof_type: u8,
-        _proof_data: &[u8],
-    ) -> Result<ProofStatus, ProofEngineError> {
-        let _ = self
-            .call_tx
-            .send(MockClientEvent::ProofVerified { root, proof_type });
+    async fn verify_proof(&self, ssz_body: Vec<u8>) -> Result<ProofStatus, ProofEngineError> {
+        let body = OwnedProofVerificationBody::from_ssz_bytes(&ssz_body)
+            .map_err(|e| ProofEngineError::InvalidPayload(format!("SSZ decode failed: {e:?}")))?;
+        let _ = self.call_tx.send(MockClientEvent::ProofVerified {
+            root: body.new_payload_request_root,
+            proof_type: body.proof_type,
+        });
         Ok(ProofStatus::Valid)
     }
 
