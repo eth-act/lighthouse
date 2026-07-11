@@ -26,6 +26,7 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 sensitive_url = { version = "0.1", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+ssz_types = { version = "0.14.0", features = ["context_deserialize", "runtime_types"] }
 strum = { version = "0.27", features = ["derive"] }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "signal", "macros"] }
 tokio-stream = { version = "0.1", features = ["sync"] }

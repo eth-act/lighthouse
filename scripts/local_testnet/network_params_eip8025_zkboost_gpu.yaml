@@ -21,10 +21,10 @@ participants:
     cl_extra_params:
       - --target-peers=3
       - --proof-engine-endpoint=http://zkboost-1:3000
-      - --proof-types=6
+      - --proof-types=5
     vc_extra_params:
       - --proof-engine-endpoint=http://zkboost-1:3000
-      - --proof-types=6
+      - --proof-types=5
     count: 2
   # Non-supernode participants
   - cl_type: lighthouse
@@ -35,10 +35,10 @@ participants:
     cl_extra_params:
       - --target-peers=3
       - --proof-engine-endpoint=http://zkboost-1:3000
-      - --proof-types=6
+      - --proof-types=5
     vc_extra_params:
       - --proof-engine-endpoint=http://zkboost-1:3000
-      - --proof-types=6
+      - --proof-types=5
     count: 2
 
 network_params:
@@ -56,7 +56,7 @@ additional_services:
 
 # ── zkboost configuration ─────────────────────────────────────────────────────
 zkboost_params:
-  image: ghcr.io/eth-act/zkboost/zkboost:0.5.0
+  image: ghcr.io/eth-act/zkboost/zkboost:0.9.0
   env:
     RUST_LOG: info,zkboost=debug
   instances:
@@ -66,8 +66,8 @@ zkboost_params:
     # reth-zisk GPU prover — uses GPUs 0-3 on the host
     - kind: ere
       proof_type: reth-zisk
-      image: ghcr.io/eth-act/ere/ere-server-zisk:0.6.1-cuda
-      program_url: https://github.com/eth-act/ere-guests/releases/download/v0.7.0/stateless-validator-reth-zisk
+      image: ghcr.io/eth-act/ere/ere-server-zisk:0.13.0-cuda
+      program_url: https://github.com/eth-act/ere-guests/releases/download/v0.13.0/stateless-validator-reth-zisk
       port: 3000
       gpu:
         device_ids: ["0", "1", "2", "3"]
@@ -81,8 +81,8 @@ zkboost_params:
     # ethrex-zisk GPU prover — uses GPUs 4-7 on the host
     - kind: ere
       proof_type: ethrex-zisk
-      image: ghcr.io/eth-act/ere/ere-server-zisk:0.6.1-cuda
-      program_url: https://github.com/eth-act/ere-guests/releases/download/v0.7.0/stateless-validator-ethrex-zisk
+      image: ghcr.io/eth-act/ere/ere-server-zisk:0.13.0-cuda
+      program_url: https://github.com/eth-act/ere-guests/releases/download/v0.13.0/stateless-validator-ethrex-zisk
       port: 3000
       gpu:
         device_ids: ["4", "5", "6", "7"]

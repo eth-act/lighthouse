@@ -26,6 +26,11 @@
       "max": 15,
       "target": 10
     },
+    "bpo2": {
+      "baseFeeUpdateFraction": 11684671,
+      "max": 21,
+      "target": 14
+    },
     "cancun": {
       "baseFeeUpdateFraction": 3338477,
       "max": 6,
