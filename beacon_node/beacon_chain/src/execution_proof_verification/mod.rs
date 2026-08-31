@@ -35,6 +35,10 @@ pub enum Error {
     },
     /// `proof_data` is empty (REJECT).
     EmptyProofData,
+    /// `proof_data` exceeds `MAX_PROOF_SIZE` (REJECT).
+    OversizedProofData {
+        size: usize,
+    },
     /// The proof type is not assigned by the current specification (REJECT).
     UnsupportedProofType {
         proof_type: ProofType,

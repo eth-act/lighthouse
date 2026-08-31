@@ -4210,6 +4210,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     }
                     // REJECT: the proof is invalid.
                     ExecutionProofError::EmptyProofData
+                    | ExecutionProofError::OversizedProofData { .. }
                     | ExecutionProofError::UnsupportedProofType { .. }
                     | ExecutionProofError::PayloadBlockRootMismatch { .. }
                     | ExecutionProofError::UnknownValidatorIndex(_)

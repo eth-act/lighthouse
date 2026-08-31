@@ -14,7 +14,7 @@ use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_h
 use std::sync::Arc;
 use tree_hash::TreeHash;
 use types::execution::{
-    ExecutionProof, ExecutionProofEnvelope, PublicInput, SSZNewPayloadRequest,
+    ExecutionProof, ExecutionProofEnvelope, MAX_PROOF_SIZE, PublicInput, SSZNewPayloadRequest,
     STATELESS_INPUT_SCHEMA_ID, SignedExecutionProofEnvelope, VersionedHashes,
     is_supported_proof_type,
 };
@@ -46,10 +46,15 @@ impl GossipVerifiedExecutionProof {
         proof: Arc<SignedExecutionProofEnvelope>,
         ctx: &GossipVerificationContext<'_, T>,
     ) -> Result<Self, Error> {
-        // [REJECT] `proof_data` is non-empty. The upper bound is enforced before SSZ decoding by
-        // `PubsubMessage::decode`.
-        if proof.message.proof_data.is_empty() {
+        // [REJECT] Apply static size checks before hashing or consulting local state.
+        let proof_data_len = proof.message.proof_data.len();
+        if proof_data_len == 0 {
             return Err(Error::EmptyProofData);
+        }
+        if proof_data_len > MAX_PROOF_SIZE {
+            return Err(Error::OversizedProofData {
+                size: proof_data_len,
+            });
         }
 
         let proof_root = proof.message.tree_hash_root();
