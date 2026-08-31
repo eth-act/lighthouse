@@ -46,6 +46,17 @@ impl GossipVerifiedExecutionProof {
         proof: Arc<SignedExecutionProofEnvelope>,
         ctx: &GossipVerificationContext<'_, T>,
     ) -> Result<Self, Error> {
+        // [REJECT] Apply static size checks before hashing or consulting local state.
+        let proof_data_len = proof.message.proof_data.len();
+        if proof_data_len == 0 {
+            return Err(Error::EmptyProofData);
+        }
+        if proof_data_len > MAX_PROOF_SIZE {
+            return Err(Error::OversizedProofData {
+                size: proof_data_len,
+            });
+        }
+
         let proof_root = proof.message.tree_hash_root();
         let block_root = proof.beacon_block_root();
         let proof_type = proof.proof_type();
@@ -103,15 +114,6 @@ impl GossipVerifiedExecutionProof {
         }
 
         // [REJECT] The proof envelope is structurally valid.
-        let proof_data_len = proof.message.proof_data.len();
-        if proof_data_len == 0 {
-            return Err(Error::EmptyProofData);
-        }
-        if proof_data_len > MAX_PROOF_SIZE {
-            return Err(Error::OversizedProofData {
-                size: proof_data_len,
-            });
-        }
         if !is_supported_proof_type(proof_type) {
             return Err(Error::UnsupportedProofType { proof_type });
         }
