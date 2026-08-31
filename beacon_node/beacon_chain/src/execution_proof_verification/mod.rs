@@ -2,7 +2,7 @@
 
 use crate::BeaconChainError;
 use proof_engine::ProofEngineError;
-use types::{Hash256, Slot};
+use types::{Hash256, Slot, execution::ProofType};
 
 pub mod gossip_verified_execution_proof;
 pub mod observed_execution_proofs;
@@ -35,6 +35,23 @@ pub enum Error {
     },
     /// `proof_data` is empty (REJECT).
     EmptyProofData,
+    /// `proof_data` exceeds `MAX_PROOF_SIZE` (REJECT).
+    OversizedProofData {
+        size: usize,
+    },
+    /// The proof type is not assigned by the current specification (REJECT).
+    UnsupportedProofType {
+        proof_type: ProofType,
+    },
+    /// The execution payload for the referenced block is not yet available (IGNORE).
+    PayloadUnavailable {
+        beacon_block_root: Hash256,
+    },
+    /// The stored payload envelope does not refer to the signed block root (REJECT).
+    PayloadBlockRootMismatch {
+        expected: Hash256,
+        actual: Hash256,
+    },
     /// The validator index does not exist (REJECT).
     UnknownValidatorIndex(u64),
     /// The validator is not active at the referenced block's epoch (REJECT).

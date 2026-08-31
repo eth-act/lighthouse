@@ -21,7 +21,7 @@ use types::{
     SignedBlsToExecutionChange, SignedContributionAndProof, SignedExecutionPayloadBid,
     SignedExecutionPayloadEnvelope, SignedProposerPreferences, SignedVoluntaryExit,
     SingleAttestation, SubnetId, SyncCommitteeMessage, SyncSubnetId,
-    execution::SignedExecutionProof,
+    execution::{MAX_SIGNED_EXECUTION_PROOF_ENVELOPE_SIZE, SignedExecutionProofEnvelope},
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -55,7 +55,7 @@ pub enum PubsubMessage<E: EthSpec> {
     /// Gossipsub message providing notification of signed proposer preferences.
     ProposerPreferences(Arc<SignedProposerPreferences>),
     /// Gossipsub message providing notification of an EIP-8025 execution proof.
-    ExecutionProof(Arc<SignedExecutionProof>),
+    ExecutionProof(Arc<SignedExecutionProofEnvelope>),
     /// Gossipsub message providing notification of a light client finality update.
     LightClientFinalityUpdate(Box<LightClientFinalityUpdate<E>>),
     /// Gossipsub message providing notification of a light client optimistic update.
@@ -443,7 +443,13 @@ impl<E: EthSpec> PubsubMessage<E> {
                         )))
                     }
                     GossipKind::ExecutionProof => {
-                        let execution_proof = SignedExecutionProof::from_ssz_bytes(data)
+                        if data.len() > MAX_SIGNED_EXECUTION_PROOF_ENVELOPE_SIZE {
+                            return Err(format!(
+                                "SignedExecutionProofEnvelope exceeds {} bytes",
+                                MAX_SIGNED_EXECUTION_PROOF_ENVELOPE_SIZE
+                            ));
+                        }
+                        let execution_proof = SignedExecutionProofEnvelope::from_ssz_bytes(data)
                             .map_err(|e| format!("{:?}", e))?;
                         Ok(PubsubMessage::ExecutionProof(Arc::new(execution_proof)))
                     }
@@ -825,6 +831,21 @@ mod tests {
         let err = decode_oversized(GossipKind::ExecutionPayloadBid, max).unwrap_err();
         assert!(
             !err.contains("MAX_SIGNED_EXECUTION_PAYLOAD_BID_SIZE"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn execution_proof_size_bound() {
+        let max = MAX_SIGNED_EXECUTION_PROOF_ENVELOPE_SIZE;
+        let err = decode_oversized(GossipKind::ExecutionProof, max + 1).unwrap_err();
+        assert!(
+            err.contains("SignedExecutionProofEnvelope exceeds"),
+            "{err}"
+        );
+        let err = decode_oversized(GossipKind::ExecutionProof, max).unwrap_err();
+        assert!(
+            !err.contains("SignedExecutionProofEnvelope exceeds"),
             "{err}"
         );
     }
