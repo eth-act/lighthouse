@@ -14,7 +14,7 @@ use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_h
 use std::sync::Arc;
 use tree_hash::TreeHash;
 use types::execution::{
-    ExecutionProof, ExecutionProofEnvelope, MAX_PROOF_SIZE, PublicInput, SSZNewPayloadRequest,
+    ExecutionProof, ExecutionProofEnvelope, PublicInput, SSZNewPayloadRequest,
     STATELESS_INPUT_SCHEMA_ID, SignedExecutionProofEnvelope, VersionedHashes,
     is_supported_proof_type,
 };
@@ -46,15 +46,10 @@ impl GossipVerifiedExecutionProof {
         proof: Arc<SignedExecutionProofEnvelope>,
         ctx: &GossipVerificationContext<'_, T>,
     ) -> Result<Self, Error> {
-        // [REJECT] Apply static size checks before hashing or consulting local state.
-        let proof_data_len = proof.message.proof_data.len();
-        if proof_data_len == 0 {
+        // [REJECT] `proof.proof_data` is non-empty. The `MAX_PROOF_SIZE` upper bound is enforced
+        // structurally by the SSZ type at decode.
+        if proof.message.proof_data.is_empty() {
             return Err(Error::EmptyProofData);
-        }
-        if proof_data_len > MAX_PROOF_SIZE {
-            return Err(Error::OversizedProofData {
-                size: proof_data_len,
-            });
         }
 
         let proof_root = proof.message.tree_hash_root();
@@ -72,16 +67,6 @@ impl GossipVerifiedExecutionProof {
                 beacon_block_root: block_root,
             })?;
         let block_slot = proto_block.slot;
-
-        // [REJECT] The block passed consensus validation. Presence in fork choice establishes
-        // this, while loading the persisted block supplies the bid committed by the proposer.
-        let block = ctx
-            .store
-            .get_blinded_block(&block_root)
-            .map_err(BeaconChainError::from)?
-            .ok_or_else(|| {
-                Error::BeaconChainError(Box::new(BeaconChainError::MissingBeaconBlock(block_root)))
-            })?;
 
         // [IGNORE] The execution payload is available.
         let payload_envelope = ctx
@@ -116,12 +101,6 @@ impl GossipVerifiedExecutionProof {
         // [REJECT] The proof envelope is structurally valid.
         if !is_supported_proof_type(proof_type) {
             return Err(Error::UnsupportedProofType { proof_type });
-        }
-        if payload_envelope.beacon_block_root() != block_root {
-            return Err(Error::PayloadBlockRootMismatch {
-                expected: block_root,
-                actual: payload_envelope.beacon_block_root(),
-            });
         }
 
         // [REJECT] The validator is active at the epoch of the referenced block. The committee
@@ -191,6 +170,13 @@ impl GossipVerifiedExecutionProof {
         // embedded in-process in the future), so awaiting it here does not hold up the processor
         // significantly.
         let proof_engine = ctx.proof_engine.as_ref().ok_or(Error::ProofEngineMissing)?;
+        let block = ctx
+            .store
+            .get_blinded_block(&block_root)
+            .map_err(BeaconChainError::from)?
+            .ok_or_else(|| {
+                Error::BeaconChainError(Box::new(BeaconChainError::MissingBeaconBlock(block_root)))
+            })?;
         let execution_proof =
             reconstruct_execution_proof(&proof.message, &payload_envelope, &block, ctx.spec)?;
         match proof_engine
