@@ -3,23 +3,34 @@ use crate::{EthSpec, ForkName, Hash256, SignedRoot, VersionedHash};
 use bls::Signature;
 use context_deserialize::context_deserialize;
 use educe::Educe;
-use milhouse::ProgressiveList;
 use serde::{Deserialize, Serialize};
 use ssz_derive::{Decode, Encode};
 use ssz_types::VariableList;
 use tree_hash_derive::TreeHash;
+use typenum::{U4194304, Unsigned};
 
 /// Maximum size of `proof_data` in bytes (EIP-8025 `MAX_PROOF_SIZE`).
-pub const MAX_PROOF_SIZE: usize = 4_194_304;
+pub const MAX_PROOF_SIZE: usize = U4194304::USIZE;
+
+/// SSZ size of a `ProofType` in bytes.
+pub const PROOF_TYPE_SSZ_SIZE: usize = 1;
+
+/// SSZ size of a validator index in bytes.
+pub const VALIDATOR_INDEX_SSZ_SIZE: usize = 8;
 
 /// Maximum SSZ size of a signed execution proof envelope.
-pub const MAX_SIGNED_EXECUTION_PROOF_ENVELOPE_SIZE: usize = 4_194_449;
+pub const MAX_SIGNED_EXECUTION_PROOF_ENVELOPE_SIZE: usize = MAX_PROOF_SIZE
+    + 2 * ssz::BYTES_PER_LENGTH_OFFSET
+    + PROOF_TYPE_SSZ_SIZE
+    + Hash256::len_bytes()
+    + VALIDATOR_INDEX_SSZ_SIZE
+    + bls::SIGNATURE_BYTES_LEN;
 
 /// Schema identifier for the Amsterdam stateless execution input, revision 1.
 pub const STATELESS_INPUT_SCHEMA_ID: u16 = 0x1501;
 
-/// Opaque proof bytes, merkleized as an EIP-7916 progressive list.
-pub type ProofData = ProgressiveList<u8>;
+/// Opaque proof bytes, bounded by EIP-8025 `MAX_PROOF_SIZE`.
+pub type ProofData = VariableList<u8, U4194304>;
 
 /// Identifier for an immutable proof-system, guest-program, and version tuple.
 pub type ProofType = u8;
@@ -113,7 +124,7 @@ mod tests {
     use super::*;
     use crate::MainnetEthSpec;
     use fixed_bytes::FixedBytesExtended;
-    use ssz::Encode as _;
+    use ssz::{Decode as _, Encode as _};
 
     mod new_payload_request {
         use super::*;
@@ -141,7 +152,7 @@ mod tests {
 
     #[test]
     fn signed_envelope_max_size_matches_spec() {
-        let proof_data = ProofData::new(vec![0; MAX_PROOF_SIZE]).expect("valid progressive list");
+        let proof_data = ProofData::new(vec![0; MAX_PROOF_SIZE]).expect("valid proof data");
         let envelope = SignedExecutionProofEnvelope {
             message: ExecutionProofEnvelope {
                 proof_data,
@@ -156,5 +167,29 @@ mod tests {
             envelope.as_ssz_bytes().len(),
             MAX_SIGNED_EXECUTION_PROOF_ENVELOPE_SIZE
         );
+    }
+
+    #[test]
+    fn proof_data_enforces_max_size() {
+        assert!(ProofData::new(vec![0; MAX_PROOF_SIZE]).is_ok());
+        assert!(ProofData::new(vec![0; MAX_PROOF_SIZE + 1]).is_err());
+    }
+
+    #[test]
+    fn signed_envelope_decode_enforces_proof_data_max_size() {
+        let proof_data = ProofData::new(vec![0; MAX_PROOF_SIZE]).expect("valid proof data");
+        let envelope = SignedExecutionProofEnvelope {
+            message: ExecutionProofEnvelope {
+                proof_data,
+                proof_type: SUPPORTED_PROOF_TYPES[0],
+                beacon_block_root: Hash256::zero(),
+            },
+            validator_index: 0,
+            signature: Signature::empty(),
+        };
+        let mut bytes = envelope.as_ssz_bytes();
+        bytes.push(0);
+
+        assert!(SignedExecutionProofEnvelope::from_ssz_bytes(&bytes).is_err());
     }
 }
