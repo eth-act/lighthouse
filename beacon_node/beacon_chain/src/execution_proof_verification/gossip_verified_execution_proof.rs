@@ -9,14 +9,14 @@ use crate::validator_pubkey_cache::ValidatorPubkeyCache;
 use crate::{BeaconChain, BeaconChainError, BeaconChainTypes};
 use parking_lot::RwLock;
 use proof_engine::{ProofEngine, ProofVerificationOutcome};
+use ssz_types::VariableList;
 use state_processing::builder_deposits_cache::OnboardBuildersCache;
 use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
 use std::sync::Arc;
 use tree_hash::TreeHash;
 use types::execution::{
     ExecutionProof, ExecutionProofEnvelope, PublicInput, SSZNewPayloadRequest,
-    STATELESS_INPUT_SCHEMA_ID, SignedExecutionProofEnvelope, VersionedHashes,
-    is_supported_proof_type,
+    STATELESS_INPUT_SCHEMA_ID, SignedExecutionProofEnvelope, is_supported_proof_type,
 };
 use types::{
     ChainSpec, Domain, EthSpec, Hash256, SignedBlindedBeaconBlock, SignedExecutionPayloadEnvelope,
@@ -258,8 +258,7 @@ fn build_ssz_new_payload_request<E: EthSpec>(
         .iter()
         .map(kzg_commitment_to_versioned_hash)
         .collect();
-    let versioned_hashes =
-        VersionedHashes::<E>::new(versioned_hashes).map_err(BeaconChainError::from)?;
+    let versioned_hashes = VariableList::new(versioned_hashes).map_err(BeaconChainError::from)?;
     Ok(SSZNewPayloadRequest {
         execution_payload: payload_envelope.message.payload.clone(),
         versioned_hashes,
