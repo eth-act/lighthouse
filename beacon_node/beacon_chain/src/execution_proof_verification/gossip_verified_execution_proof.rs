@@ -190,7 +190,7 @@ impl GossipVerifiedExecutionProof {
 
         ctx.observed_execution_proofs
             .write()
-            .observe_valid_proof(block_root, Arc::clone(&proof));
+            .observe_valid_proof(block_root, proof_type);
         Ok(Self { proof, block_slot })
     }
 }

@@ -5,8 +5,7 @@
 //! DoS risks.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use types::execution::{ExecutionProofEnvelope, ProofType, SignedExecutionProofEnvelope};
+use types::execution::ProofType;
 use types::{Hash256, Slot};
 
 type ValidatorIndex = u64;
@@ -31,8 +30,8 @@ struct BlockProofObservations {
     slot: Slot,
     /// Message roots of proofs already processed, regardless of outcome.
     seen_proof_roots: HashSet<Hash256>,
-    /// Verified proof envelopes, keyed by proof type.
-    valid_proofs: HashMap<ProofType, Arc<SignedExecutionProofEnvelope>>,
+    /// Proof types for which a valid proof has been observed.
+    valid_proof_types: HashSet<ProofType>,
     /// `(proof_type, validator_index)` pairs for which proofs have been observed.
     seen_validators: HashSet<(ProofType, ValidatorIndex)>,
 }
@@ -65,7 +64,7 @@ impl ObservedExecutionProofs {
         };
         let observation = if entry.seen_proof_roots.contains(&proof_root) {
             ProofObservation::ProofAlreadySeen
-        } else if entry.valid_proofs.contains_key(&proof_type) {
+        } else if entry.valid_proof_types.contains(&proof_type) {
             ProofObservation::ValidProofAlreadyKnown
         } else if entry
             .seen_validators
@@ -106,27 +105,10 @@ impl ObservedExecutionProofs {
     ///
     /// The entry always exists: a proof only reaches the proof engine after
     /// `observe_signature_verified_proof`.
-    pub fn observe_valid_proof(
-        &mut self,
-        block_root: Hash256,
-        proof: Arc<SignedExecutionProofEnvelope>,
-    ) {
+    pub fn observe_valid_proof(&mut self, block_root: Hash256, proof_type: ProofType) {
         if let Some(entry) = self.items.get_mut(&block_root) {
-            entry.valid_proofs.insert(proof.proof_type(), proof);
+            entry.valid_proof_types.insert(proof_type);
         }
-    }
-
-    /// Return the verified proof envelope for `(block_root, proof_type)`, if retained.
-    pub fn valid_proof(
-        &self,
-        block_root: Hash256,
-        proof_type: ProofType,
-    ) -> Option<&ExecutionProofEnvelope> {
-        self.items
-            .get(&block_root)?
-            .valid_proofs
-            .get(&proof_type)
-            .map(|proof| &proof.message)
     }
 
     /// Prune all entries for slots at or below `finalized_slot`.
@@ -153,23 +135,6 @@ impl ObservedExecutionProofs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bls::Signature;
-    use types::execution::{ExecutionProofEnvelope, ProofData, SignedExecutionProofEnvelope};
-
-    fn signed_proof(
-        block_root: Hash256,
-        proof_type: ProofType,
-    ) -> Arc<SignedExecutionProofEnvelope> {
-        Arc::new(SignedExecutionProofEnvelope {
-            message: ExecutionProofEnvelope {
-                proof_data: ProofData::new(vec![1]).expect("valid proof data"),
-                proof_type,
-                beacon_block_root: block_root,
-            },
-            validator_index: 0,
-            signature: Signature::empty(),
-        })
-    }
 
     #[test]
     fn simple_observations() {
@@ -211,9 +176,7 @@ mod tests {
             "different validator is new"
         );
 
-        let valid_proof = signed_proof(block_root, 0);
-        cache.observe_valid_proof(block_root, Arc::clone(&valid_proof));
-        assert_eq!(cache.valid_proof(block_root, 0), Some(&valid_proof.message));
+        cache.observe_valid_proof(block_root, 0);
         assert_eq!(
             cache.check(Hash256::repeat_byte(3), block_root, 0, 1, slot),
             Ok(ProofObservation::ValidProofAlreadyKnown),
