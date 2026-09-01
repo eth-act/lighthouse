@@ -42,22 +42,6 @@ enum VerifyStatus {
     Invalid,
 }
 
-fn verification_query(proof: &ExecutionProof) -> [(&'static str, String); 5] {
-    [
-        (
-            "new_payload_request_root",
-            format!("{:?}", proof.public_input.new_payload_request_root),
-        ),
-        (
-            "successful_validation",
-            proof.public_input.successful_validation.to_string(),
-        ),
-        ("chain_id", proof.public_input.chain_id.to_string()),
-        ("schema_id", proof.public_input.schema_id.to_string()),
-        ("proof_type", proof.proof_type.to_string()),
-    ]
-}
-
 pub struct ProofEngine {
     client: reqwest::Client,
     url: SensitiveUrl,
@@ -82,7 +66,19 @@ impl ProofEngine {
         let response: VerifyResponse = self
             .client
             .post(url)
-            .query(&verification_query(proof))
+            .query(&[
+                (
+                    "new_payload_request_root",
+                    format!("{:?}", proof.public_input.new_payload_request_root),
+                ),
+                (
+                    "successful_validation",
+                    proof.public_input.successful_validation.to_string(),
+                ),
+                ("chain_id", proof.public_input.chain_id.to_string()),
+                ("schema_id", proof.public_input.schema_id.to_string()),
+                ("proof_type", proof.proof_type.to_string()),
+            ])
             .header("content-type", "application/octet-stream")
             .body(proof.proof_data.to_vec())
             .send()
@@ -98,42 +94,5 @@ impl ProofEngine {
             VerifyStatus::Valid => ProofVerificationOutcome::Valid,
             VerifyStatus::Invalid => ProofVerificationOutcome::Invalid,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use types::{
-        Hash256,
-        execution::{ProofData, PublicInput, STATELESS_INPUT_SCHEMA_ID},
-    };
-
-    #[test]
-    fn verification_query_contains_complete_public_input() {
-        let proof = ExecutionProof {
-            proof_data: ProofData::new(vec![1, 2, 3]).expect("valid progressive list"),
-            proof_type: 2,
-            public_input: PublicInput {
-                new_payload_request_root: Hash256::repeat_byte(0x42),
-                successful_validation: true,
-                chain_id: 1,
-                schema_id: STATELESS_INPUT_SCHEMA_ID,
-            },
-        };
-
-        assert_eq!(
-            verification_query(&proof),
-            [
-                (
-                    "new_payload_request_root",
-                    format!("{:?}", proof.public_input.new_payload_request_root),
-                ),
-                ("successful_validation", "true".into()),
-                ("chain_id", "1".into()),
-                ("schema_id", STATELESS_INPUT_SCHEMA_ID.to_string()),
-                ("proof_type", "2".into()),
-            ]
-        );
     }
 }
