@@ -71,6 +71,18 @@ impl GossipVerifiedExecutionProof {
                 beacon_block_root: block_root,
             })?;
         let block_slot = proto_block.slot;
+
+        // [IGNORE] No valid proof is known for this beacon block and proof type. Check this before
+        // hashing the proof data.
+        if ctx
+            .observed_execution_proofs
+            .read()
+            .has_valid_proof(block_root, proof_type, block_slot)
+            .map_err(Error::from)?
+        {
+            return Err(Error::ValidProofAlreadyKnown);
+        }
+
         let proof_root = proof.message.tree_hash_root();
 
         // [IGNORE] Deduplication rules, checked before cryptographic work.
@@ -360,7 +372,7 @@ mod tests {
             .observed_execution_proofs
             .write()
             .observe_valid_proof(genesis_root, proof_type);
-        let proof_for_known_type = execution_proof(genesis_root, proof_type, vec![2], 1);
+        let proof_for_known_type = execution_proof(genesis_root, proof_type, vec![1], 0);
         assert!(matches!(
             chain
                 .verify_execution_proof_for_gossip(Arc::new(proof_for_known_type))
