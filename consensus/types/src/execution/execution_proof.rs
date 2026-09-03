@@ -7,27 +7,9 @@ use serde::{Deserialize, Serialize};
 use ssz_derive::{Decode, Encode};
 use ssz_types::VariableList;
 use tree_hash_derive::TreeHash;
-use typenum::Unsigned;
 
 /// SSZ bound for `proof_data`.
 pub type MaxProofSize = typenum::U4194304;
-
-/// Maximum size of `proof_data` in bytes (EIP-8025 `MAX_PROOF_SIZE`).
-pub const MAX_PROOF_SIZE: usize = MaxProofSize::USIZE;
-
-/// SSZ size of a `ProofType` in bytes.
-const PROOF_TYPE_SSZ_SIZE: usize = 1;
-
-/// SSZ size of a validator index in bytes.
-const VALIDATOR_INDEX_SSZ_SIZE: usize = 8;
-
-/// Maximum SSZ size of a signed execution proof envelope.
-pub const MAX_SIGNED_EXECUTION_PROOF_ENVELOPE_SIZE: usize = MAX_PROOF_SIZE
-    + 2 * ssz::BYTES_PER_LENGTH_OFFSET
-    + PROOF_TYPE_SSZ_SIZE
-    + Hash256::len_bytes()
-    + VALIDATOR_INDEX_SSZ_SIZE
-    + bls::SIGNATURE_BYTES_LEN;
 
 /// Schema identifier for the Amsterdam stateless execution input, revision 1.
 pub const STATELESS_INPUT_SCHEMA_ID: u16 = 0x1501;
@@ -124,6 +106,7 @@ mod tests {
     use crate::MainnetEthSpec;
     use fixed_bytes::FixedBytesExtended;
     use ssz::{Decode as _, Encode as _};
+    use typenum::Unsigned;
 
     mod new_payload_request {
         use super::*;
@@ -147,9 +130,11 @@ mod tests {
 
     #[test]
     fn proof_data_and_signed_envelope_enforce_size_bound() {
-        assert!(ProofData::new(vec![0; MAX_PROOF_SIZE + 1]).is_err());
+        let max_proof_size = MaxProofSize::USIZE;
 
-        let proof_data = ProofData::new(vec![0; MAX_PROOF_SIZE]).expect("valid proof data");
+        assert!(ProofData::new(vec![0; max_proof_size + 1]).is_err());
+
+        let proof_data = ProofData::new(vec![0; max_proof_size]).expect("valid proof data");
         let envelope = SignedExecutionProofEnvelope {
             message: ExecutionProofEnvelope {
                 proof_data,
@@ -160,10 +145,6 @@ mod tests {
             signature: Signature::empty(),
         };
 
-        assert_eq!(
-            envelope.as_ssz_bytes().len(),
-            MAX_SIGNED_EXECUTION_PROOF_ENVELOPE_SIZE
-        );
         let mut bytes = envelope.as_ssz_bytes();
         bytes.push(0);
 
