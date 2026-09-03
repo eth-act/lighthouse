@@ -48,6 +48,20 @@ pub struct ObservedExecutionProofs {
 }
 
 impl ObservedExecutionProofs {
+    /// Return whether a valid proof is already known for `(block_root, proof_type)`.
+    pub fn has_valid_proof(
+        &self,
+        block_root: Hash256,
+        proof_type: ProofType,
+        slot: Slot,
+    ) -> Result<bool, Error> {
+        self.sanitize_slot(slot)?;
+        Ok(self
+            .items
+            .get(&block_root)
+            .is_some_and(|entry| entry.valid_proof_types.contains(&proof_type)))
+    }
+
     /// Check the IGNORE rules without mutating the cache.
     pub fn check(
         &self,
@@ -159,6 +173,11 @@ mod tests {
             "second observation indicates proof observed"
         );
         assert_eq!(cache.items.len(), 1, "only one block should be present");
+        assert_eq!(
+            cache.has_valid_proof(block_root, 0, slot),
+            Ok(false),
+            "no valid proof has been observed"
+        );
 
         assert_eq!(
             cache.check(proof_root, block_root, 0, 0, slot),
@@ -177,6 +196,11 @@ mod tests {
         );
 
         cache.observe_valid_proof(block_root, 0);
+        assert_eq!(
+            cache.has_valid_proof(block_root, 0, slot),
+            Ok(true),
+            "valid proof is known"
+        );
         assert_eq!(
             cache.check(Hash256::repeat_byte(3), block_root, 0, 1, slot),
             Ok(ProofObservation::ValidProofAlreadyKnown),
