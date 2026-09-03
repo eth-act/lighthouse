@@ -197,12 +197,12 @@ impl GossipVerifiedExecutionProof {
         }
 
         match verification_outcome {
-            ProofVerificationOutcome::Invalid => Err(Error::InvalidProof),
-            ProofVerificationOutcome::Valid => {
-                observed_execution_proofs.observe_valid_proof(block_root, proof_type);
-                Ok(Self { proof, block_slot })
-            }
+            ProofVerificationOutcome::Invalid => return Err(Error::InvalidProof),
+            ProofVerificationOutcome::Valid => {}
         }
+
+        observed_execution_proofs.observe_valid_proof(block_root, proof_type);
+        Ok(Self { proof, block_slot })
     }
 }
 
