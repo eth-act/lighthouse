@@ -159,24 +159,6 @@ impl GossipVerifiedExecutionProof {
             }
         }
 
-        // Only record the validator's attempt after the signature binds `validator_index`;
-        // recording earlier would let unauthenticated messages suppress honest provers.
-        if !ctx
-            .observed_execution_proofs
-            .write()
-            .observe_signature_verified_proof(
-                proof_root,
-                block_root,
-                proof_type,
-                validator_index,
-                block_slot,
-            )
-            .map_err(Error::from)?
-        {
-            // Lost a race against a concurrent copy of the same proof.
-            return Err(Error::ProofAlreadySeen);
-        }
-
         // [REJECT] The proof verifies via the proof engine.
         //
         // Proof verification is a fast crypto check against a localhost sidecar (and may be
@@ -192,19 +174,35 @@ impl GossipVerifiedExecutionProof {
             })?;
         let execution_proof =
             reconstruct_execution_proof(&proof.message, &payload_envelope, &block, ctx.spec)?;
-        match proof_engine
+        let verification_outcome = proof_engine
             .verify_execution_proof(&execution_proof)
             .await
-            .map_err(Error::ProofEngine)?
+            .map_err(Error::ProofEngine)?;
+
+        // Only record the authenticated proof and prover after the proof engine returns a
+        // definitive result. Local setup and proof engine communication failures remain retryable.
+        let mut observed_execution_proofs = ctx.observed_execution_proofs.write();
+        if !observed_execution_proofs
+            .observe_processed_proof(
+                proof_root,
+                block_root,
+                proof_type,
+                validator_index,
+                block_slot,
+            )
+            .map_err(Error::from)?
         {
-            ProofVerificationOutcome::Invalid => return Err(Error::InvalidProof),
-            ProofVerificationOutcome::Valid => {}
+            // Lost a race against a concurrent copy of the same proof.
+            return Err(Error::ProofAlreadySeen);
         }
 
-        ctx.observed_execution_proofs
-            .write()
-            .observe_valid_proof(block_root, proof_type);
-        Ok(Self { proof, block_slot })
+        match verification_outcome {
+            ProofVerificationOutcome::Invalid => Err(Error::InvalidProof),
+            ProofVerificationOutcome::Valid => {
+                observed_execution_proofs.observe_valid_proof(block_root, proof_type);
+                Ok(Self { proof, block_slot })
+            }
+        }
     }
 }
 
@@ -352,7 +350,7 @@ mod tests {
             chain
                 .observed_execution_proofs
                 .write()
-                .observe_signature_verified_proof(
+                .observe_processed_proof(
                     exact_proof.message.tree_hash_root(),
                     genesis_root,
                     proof_type,
@@ -386,7 +384,7 @@ mod tests {
             chain
                 .observed_execution_proofs
                 .write()
-                .observe_signature_verified_proof(
+                .observe_processed_proof(
                     prior_proof.message.tree_hash_root(),
                     genesis_root,
                     second_proof_type,
