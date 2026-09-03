@@ -29,6 +29,13 @@ pub enum ProofVerificationOutcome {
     Invalid,
 }
 
+impl ProofVerificationOutcome {
+    /// Returns `true` if the proof engine verified the proof.
+    pub fn is_valid(self) -> bool {
+        matches!(self, Self::Valid)
+    }
+}
+
 #[derive(Deserialize)]
 struct VerifyResponse {
     status: VerifyStatus,
