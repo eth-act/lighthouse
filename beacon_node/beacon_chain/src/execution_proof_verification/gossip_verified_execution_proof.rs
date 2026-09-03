@@ -52,10 +52,14 @@ impl GossipVerifiedExecutionProof {
             return Err(Error::EmptyProofData);
         }
 
-        let proof_root = proof.message.tree_hash_root();
         let block_root = proof.beacon_block_root();
         let proof_type = proof.proof_type();
         let validator_index = proof.validator_index;
+
+        // [REJECT] The proof type is supported.
+        if !is_supported_proof_type(proof_type) {
+            return Err(Error::UnsupportedProofType { proof_type });
+        }
 
         // [IGNORE] The referenced beacon block is known. Its slot determines the fork for the
         // signing domain.
@@ -67,15 +71,7 @@ impl GossipVerifiedExecutionProof {
                 beacon_block_root: block_root,
             })?;
         let block_slot = proto_block.slot;
-
-        // [IGNORE] The execution payload is available.
-        let payload_envelope = ctx
-            .store
-            .get_payload_envelope(&block_root)
-            .map_err(BeaconChainError::from)?
-            .ok_or(Error::PayloadUnavailable {
-                beacon_block_root: block_root,
-            })?;
+        let proof_root = proof.message.tree_hash_root();
 
         // [IGNORE] Deduplication rules, checked before cryptographic work.
         match ctx
@@ -98,10 +94,15 @@ impl GossipVerifiedExecutionProof {
             ProofObservation::New => {}
         }
 
-        // [REJECT] The proof envelope is structurally valid.
-        if !is_supported_proof_type(proof_type) {
-            return Err(Error::UnsupportedProofType { proof_type });
-        }
+        // [IGNORE] The execution payload is available. Delay this database read until after the
+        // cheap message-local and deduplication checks.
+        let payload_envelope = ctx
+            .store
+            .get_payload_envelope(&block_root)
+            .map_err(BeaconChainError::from)?
+            .ok_or(Error::PayloadUnavailable {
+                beacon_block_root: block_root,
+            })?;
 
         // [REJECT] The validator is active at the epoch of the referenced block. The committee
         // cache is keyed by the block's shuffling id, so proofs for blocks on non-canonical
@@ -270,11 +271,136 @@ fn build_ssz_new_payload_request<E: EthSpec>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::BeaconChainHarness;
     use bls::Signature;
     use types::{
         ExecutionPayloadEnvelope, MinimalEthSpec,
+        execution::{ProofData, SUPPORTED_PROOF_TYPES},
         kzg_ext::{KzgCommitment, ProgressiveKzgCommitments},
     };
+
+    type E = MinimalEthSpec;
+    fn execution_proof(
+        beacon_block_root: Hash256,
+        proof_type: u8,
+        proof_data: Vec<u8>,
+        validator_index: u64,
+    ) -> SignedExecutionProofEnvelope {
+        SignedExecutionProofEnvelope {
+            message: ExecutionProofEnvelope {
+                proof_data: ProofData::new(proof_data).expect("valid proof data"),
+                proof_type,
+                beacon_block_root,
+            },
+            validator_index,
+            signature: Signature::empty(),
+        }
+    }
+
+    #[tokio::test]
+    async fn applies_cheap_checks_before_payload_lookup() {
+        let harness = BeaconChainHarness::builder(E::default())
+            .default_spec()
+            .deterministic_keypairs(8)
+            .fresh_ephemeral_store()
+            .mock_execution_layer()
+            .build();
+        let chain = &harness.chain;
+        let genesis_root = chain.genesis_block_root;
+
+        assert!(
+            chain
+                .store
+                .get_payload_envelope(&genesis_root)
+                .expect("payload lookup succeeds")
+                .is_none(),
+            "test requires a known block without a stored payload envelope"
+        );
+
+        let unknown_root = Hash256::repeat_byte(0xaa);
+        let empty_proof = execution_proof(unknown_root, SUPPORTED_PROOF_TYPES[0], vec![], 0);
+        assert!(matches!(
+            chain
+                .verify_execution_proof_for_gossip(Arc::new(empty_proof))
+                .await,
+            Err(Error::EmptyProofData)
+        ));
+
+        let unsupported_proof = execution_proof(unknown_root, 0, vec![1], 0);
+        assert!(matches!(
+            chain
+                .verify_execution_proof_for_gossip(Arc::new(unsupported_proof))
+                .await,
+            Err(Error::UnsupportedProofType { proof_type: 0 })
+        ));
+
+        let proof_type = SUPPORTED_PROOF_TYPES[0];
+        let exact_proof = execution_proof(genesis_root, proof_type, vec![1], 0);
+        assert!(
+            chain
+                .observed_execution_proofs
+                .write()
+                .observe_signature_verified_proof(
+                    exact_proof.message.tree_hash_root(),
+                    genesis_root,
+                    proof_type,
+                    exact_proof.validator_index,
+                    Slot::new(0),
+                )
+                .expect("proof observation succeeds")
+        );
+        assert!(matches!(
+            chain
+                .verify_execution_proof_for_gossip(Arc::new(exact_proof))
+                .await,
+            Err(Error::ProofAlreadySeen)
+        ));
+
+        chain
+            .observed_execution_proofs
+            .write()
+            .observe_valid_proof(genesis_root, proof_type);
+        let proof_for_known_type = execution_proof(genesis_root, proof_type, vec![2], 1);
+        assert!(matches!(
+            chain
+                .verify_execution_proof_for_gossip(Arc::new(proof_for_known_type))
+                .await,
+            Err(Error::ValidProofAlreadyKnown)
+        ));
+
+        let second_proof_type = SUPPORTED_PROOF_TYPES[1];
+        let prior_proof = execution_proof(genesis_root, second_proof_type, vec![3], 0);
+        assert!(
+            chain
+                .observed_execution_proofs
+                .write()
+                .observe_signature_verified_proof(
+                    prior_proof.message.tree_hash_root(),
+                    genesis_root,
+                    second_proof_type,
+                    prior_proof.validator_index,
+                    Slot::new(0),
+                )
+                .expect("proof observation succeeds")
+        );
+        let duplicate_prover = execution_proof(genesis_root, second_proof_type, vec![4], 0);
+        assert!(matches!(
+            chain
+                .verify_execution_proof_for_gossip(Arc::new(duplicate_prover))
+                .await,
+            Err(Error::DuplicateFromValidator { validator_index: 0 })
+        ));
+
+        let payload_unavailable = execution_proof(genesis_root, second_proof_type, vec![5], 1);
+        assert!(matches!(
+            chain
+                .verify_execution_proof_for_gossip(Arc::new(payload_unavailable))
+                .await,
+            Err(Error::PayloadUnavailable {
+                beacon_block_root
+            }) if beacon_block_root == genesis_root
+        ));
+    }
 
     #[test]
     fn builds_spec_new_payload_request_from_accepted_envelope() {
@@ -283,7 +409,7 @@ mod tests {
             signature: Signature::empty(),
         };
         let commitment = KzgCommitment::empty_for_testing();
-        let commitments = ProgressiveKzgCommitments::new(vec![commitment.clone()]);
+        let commitments = ProgressiveKzgCommitments::new(vec![commitment]);
 
         let request =
             build_ssz_new_payload_request(&payload_envelope, &commitments).expect("valid request");
