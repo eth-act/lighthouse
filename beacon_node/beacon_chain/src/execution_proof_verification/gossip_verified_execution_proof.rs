@@ -178,17 +178,20 @@ impl GossipVerifiedExecutionProof {
             .verify_execution_proof(&execution_proof)
             .await
             .map_err(Error::ProofEngine)?;
+        let is_valid = verification_outcome.is_valid();
 
         // Only record the authenticated proof and prover after the proof engine returns a
         // definitive result. Local setup and proof engine communication failures remain retryable.
-        let mut observed_execution_proofs = ctx.observed_execution_proofs.write();
-        if !observed_execution_proofs
+        if !ctx
+            .observed_execution_proofs
+            .write()
             .observe_processed_proof(
                 proof_root,
                 block_root,
                 proof_type,
                 validator_index,
                 block_slot,
+                is_valid,
             )
             .map_err(Error::from)?
         {
@@ -201,7 +204,6 @@ impl GossipVerifiedExecutionProof {
             ProofVerificationOutcome::Valid => {}
         }
 
-        observed_execution_proofs.observe_valid_proof(block_root, proof_type);
         Ok(Self { proof, block_slot })
     }
 }
@@ -356,6 +358,7 @@ mod tests {
                     proof_type,
                     exact_proof.validator_index,
                     Slot::new(0),
+                    false,
                 )
                 .expect("proof observation succeeds")
         );
@@ -366,10 +369,21 @@ mod tests {
             Err(Error::ProofAlreadySeen)
         ));
 
-        chain
-            .observed_execution_proofs
-            .write()
-            .observe_valid_proof(genesis_root, proof_type);
+        let valid_proof = execution_proof(genesis_root, proof_type, vec![2], 1);
+        assert!(
+            chain
+                .observed_execution_proofs
+                .write()
+                .observe_processed_proof(
+                    valid_proof.message.tree_hash_root(),
+                    genesis_root,
+                    proof_type,
+                    valid_proof.validator_index,
+                    Slot::new(0),
+                    true,
+                )
+                .expect("proof observation succeeds")
+        );
         let proof_for_known_type = execution_proof(genesis_root, proof_type, vec![1], 0);
         assert!(matches!(
             chain
@@ -390,6 +404,7 @@ mod tests {
                     second_proof_type,
                     prior_proof.validator_index,
                     Slot::new(0),
+                    false,
                 )
                 .expect("proof observation succeeds")
         );
