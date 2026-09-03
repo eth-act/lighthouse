@@ -8,7 +8,7 @@ use ssz_derive::{Decode, Encode};
 use ssz_types::VariableList;
 use tree_hash_derive::TreeHash;
 
-/// SSZ bound for `proof_data`.
+/// SSZ bound for `proof_data`: 4 MiB (4,194,304 bytes).
 pub type MaxProofSize = typenum::U4194304;
 
 /// Schema identifier for the Amsterdam stateless execution input, revision 1.
