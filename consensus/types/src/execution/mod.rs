@@ -33,8 +33,7 @@ pub use execution_payload_header::{
     ExecutionPayloadHeaderRef, ExecutionPayloadHeaderRefMut,
 };
 pub use execution_proof::{
-    ExecutionProof, ExecutionProofEnvelope, MAX_PROOF_SIZE,
-    MAX_SIGNED_EXECUTION_PROOF_ENVELOPE_SIZE, MaxProofSize, ProofData, ProofType, PublicInput,
+    ExecutionProof, ExecutionProofEnvelope, MaxProofSize, ProofData, ProofType, PublicInput,
     SSZNewPayloadRequest, STATELESS_INPUT_SCHEMA_ID, SUPPORTED_PROOF_TYPES,
     SignedExecutionProofEnvelope, is_supported_proof_type,
 };
