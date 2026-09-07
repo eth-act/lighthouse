@@ -1,8 +1,6 @@
-use crate::execution::{ExecutionPayloadGloas, ExecutionRequestsGloas};
-use crate::{EthSpec, ForkName, Hash256, SignedRoot, VersionedHash};
+use crate::{ForkName, Hash256, SignedRoot};
 use bls::Signature;
 use context_deserialize::context_deserialize;
-use educe::Educe;
 use serde::{Deserialize, Serialize};
 use ssz_derive::{Decode, Encode};
 use ssz_types::VariableList;
@@ -12,7 +10,7 @@ use tree_hash_derive::TreeHash;
 pub type MaxProofSize = typenum::U4194304;
 
 /// Schema identifier for the Amsterdam stateless execution input, revision 1.
-pub const STATELESS_INPUT_SCHEMA_ID: u16 = 0x1501;
+const STATELESS_INPUT_SCHEMA_ID: u16 = 0x1501;
 
 /// Opaque proof bytes, bounded by EIP-8025 `MAX_PROOF_SIZE`.
 pub type ProofData = VariableList<u8, MaxProofSize>;
@@ -21,29 +19,11 @@ pub type ProofData = VariableList<u8, MaxProofSize>;
 pub type ProofType = u8;
 
 /// Proof types supported by the current EIP-8025 specification.
-pub const SUPPORTED_PROOF_TYPES: [ProofType; 3] = [1, 2, 3];
+const SUPPORTED_PROOF_TYPES: [ProofType; 3] = [1, 2, 3];
 
 /// Return whether `proof_type` is assigned by the current EIP-8025 specification.
 pub fn is_supported_proof_type(proof_type: ProofType) -> bool {
     SUPPORTED_PROOF_TYPES.contains(&proof_type)
-}
-
-/// SSZ representation of the Gloas `engine_newPayload` request committed by a proof.
-#[cfg_attr(
-    feature = "arbitrary",
-    derive(arbitrary::Arbitrary),
-    arbitrary(bound = "E: EthSpec")
-)]
-#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode, TreeHash, Educe)]
-#[educe(PartialEq, Hash(bound(E: EthSpec)))]
-#[serde(bound = "E: EthSpec")]
-#[context_deserialize(ForkName)]
-#[tree_hash(struct_behaviour = "progressive_container", active_fields(1, 1, 1, 1))]
-pub struct SSZNewPayloadRequest<E: EthSpec> {
-    pub execution_payload: ExecutionPayloadGloas<E>,
-    pub versioned_hashes: VariableList<VersionedHash, <E as EthSpec>::MaxBlobCommitmentsPerBlock>,
-    pub parent_beacon_block_root: Hash256,
-    pub execution_requests: ExecutionRequestsGloas<E>,
 }
 
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -66,6 +46,27 @@ pub struct ExecutionProof {
     pub proof_data: ProofData,
     pub proof_type: ProofType,
     pub public_input: PublicInput,
+}
+
+impl ExecutionProof {
+    /// Construct an execution proof from proof data and public input values.
+    pub fn new(
+        proof_data: ProofData,
+        proof_type: ProofType,
+        new_payload_request_root: Hash256,
+        chain_id: u64,
+    ) -> Self {
+        Self {
+            proof_data,
+            proof_type,
+            public_input: PublicInput {
+                new_payload_request_root,
+                successful_validation: true,
+                chain_id,
+                schema_id: STATELESS_INPUT_SCHEMA_ID,
+            },
+        }
+    }
 }
 
 /// Gossip envelope binding opaque proof bytes to a beacon block.
@@ -103,16 +104,9 @@ impl SignedExecutionProofEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::MainnetEthSpec;
     use fixed_bytes::FixedBytesExtended;
     use ssz::{Decode as _, Encode as _};
     use typenum::Unsigned;
-
-    mod new_payload_request {
-        use super::*;
-
-        ssz_and_tree_hash_tests!(SSZNewPayloadRequest<MainnetEthSpec>);
-    }
 
     ssz_and_tree_hash_tests!(SignedExecutionProofEnvelope);
 
@@ -149,5 +143,27 @@ mod tests {
         bytes.push(0);
 
         assert!(SignedExecutionProofEnvelope::from_ssz_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn execution_proof_constructor_uses_proof_and_public_input_context() {
+        let proof_data = ProofData::new(vec![1, 2, 3]).expect("valid proof data");
+        let proof_type = SUPPORTED_PROOF_TYPES[0];
+        let new_payload_request_root = Hash256::repeat_byte(0x22);
+
+        let proof =
+            ExecutionProof::new(proof_data.clone(), proof_type, new_payload_request_root, 1);
+
+        assert_eq!(proof.proof_data, proof_data);
+        assert_eq!(proof.proof_type, proof_type);
+        assert_eq!(
+            proof.public_input,
+            PublicInput {
+                new_payload_request_root,
+                successful_validation: true,
+                chain_id: 1,
+                schema_id: STATELESS_INPUT_SCHEMA_ID,
+            }
+        );
     }
 }
