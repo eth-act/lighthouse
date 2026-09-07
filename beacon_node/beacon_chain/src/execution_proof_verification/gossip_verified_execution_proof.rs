@@ -177,12 +177,6 @@ impl GossipVerifiedExecutionProof {
             return Err(Error::ProofAlreadySeen);
         }
 
-        // [REJECT] The proof verifies via the proof engine.
-        //
-        // Proof verification is a fast crypto check against a localhost sidecar (and may be
-        // embedded in-process in the future), so awaiting it here does not hold up the processor
-        // significantly.
-        let proof_engine = ctx.proof_engine.as_ref().ok_or(Error::ProofEngineMissing)?;
         let block = ctx
             .store
             .get_blinded_block(&block_root)
@@ -193,19 +187,25 @@ impl GossipVerifiedExecutionProof {
         let execution_proof =
             reconstruct_execution_proof(&proof.message, &payload_envelope, &block, ctx.spec)?;
 
+        // [REJECT] The proof verifies via the proof engine.
+        //
+        // Proof verification is a fast crypto check against a localhost sidecar (and may be
+        // embedded in-process in the future), so awaiting it here does not hold up the processor
+        // significantly.
+        let proof_engine = ctx.proof_engine.as_ref().ok_or(Error::ProofEngineMissing)?;
         match proof_engine
             .verify_execution_proof(&execution_proof)
             .await
             .map_err(Error::ProofEngine)?
         {
-            ProofVerificationOutcome::Invalid => Err(Error::InvalidProof),
-            ProofVerificationOutcome::Valid => {
-                ctx.observed_execution_proofs
-                    .write()
-                    .observe_valid_proof(block_root, proof_type);
-                Ok(Self { proof, block_slot })
-            }
+            ProofVerificationOutcome::Invalid => return Err(Error::InvalidProof),
+            ProofVerificationOutcome::Valid => {}
         }
+
+        ctx.observed_execution_proofs
+            .write()
+            .observe_valid_proof(block_root, proof_type);
+        Ok(Self { proof, block_slot })
     }
 }
 
