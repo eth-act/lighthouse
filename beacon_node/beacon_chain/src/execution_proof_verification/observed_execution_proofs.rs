@@ -1,8 +1,8 @@
 //! Provides the `ObservedExecutionProofs` struct which allows for ignoring
 //! `SignedExecutionProofEnvelope`s
 //! that we have already seen over the gossip network.
-//! Only authenticated proofs that have received a definitive proof engine result can be added to
-//! this cache to reduce DoS risks without suppressing retries after transient failures.
+//! Only authenticated proofs can be added to this cache, preventing unauthenticated messages from
+//! suppressing proofs from honest provers.
 
 use std::collections::{HashMap, HashSet};
 use types::execution::ProofType;
@@ -91,16 +91,15 @@ impl ObservedExecutionProofs {
         Ok(observation)
     }
 
-    /// Record an authenticated proof with a definitive proof engine result. Returns `true` if the
-    /// proof was not already observed.
-    pub fn observe_processed_proof(
+    /// Record a proof whose signature has been verified. Returns `true` if the proof was not
+    /// already observed.
+    pub fn observe_signature_verified_proof(
         &mut self,
         proof_root: Hash256,
         block_root: Hash256,
         proof_type: ProofType,
         validator_index: ValidatorIndex,
         slot: Slot,
-        is_valid: bool,
     ) -> Result<bool, Error> {
         self.sanitize_slot(slot)?;
 
@@ -113,10 +112,17 @@ impl ObservedExecutionProofs {
             });
         let did_not_exist = entry.seen_proof_roots.insert(proof_root);
         entry.seen_validators.insert((proof_type, validator_index));
-        if is_valid {
+        Ok(did_not_exist)
+    }
+
+    /// Record that a proof for `(block_root, proof_type)` was verified by the proof engine.
+    ///
+    /// The entry always exists: a proof only reaches the proof engine after
+    /// `observe_signature_verified_proof`.
+    pub fn observe_valid_proof(&mut self, block_root: Hash256, proof_type: ProofType) {
+        if let Some(entry) = self.items.get_mut(&block_root) {
             entry.valid_proof_types.insert(proof_type);
         }
-        Ok(did_not_exist)
     }
 
     /// Prune all entries for slots at or below `finalized_slot`.
@@ -157,12 +163,12 @@ mod tests {
             "unknown proof is new"
         );
         assert_eq!(
-            cache.observe_processed_proof(proof_root, block_root, 0, 0, slot, false),
+            cache.observe_signature_verified_proof(proof_root, block_root, 0, 0, slot),
             Ok(true),
             "first observation indicates proof unobserved"
         );
         assert_eq!(
-            cache.observe_processed_proof(proof_root, block_root, 0, 0, slot, false),
+            cache.observe_signature_verified_proof(proof_root, block_root, 0, 0, slot),
             Ok(false),
             "second observation indicates proof observed"
         );
@@ -190,10 +196,12 @@ mod tests {
         );
 
         assert_eq!(
-            cache.observe_processed_proof(Hash256::repeat_byte(4), block_root, 0, 1, slot, true),
+            cache
+                .observe_signature_verified_proof(Hash256::repeat_byte(4), block_root, 0, 1, slot,),
             Ok(true),
             "valid proof is newly observed"
         );
+        cache.observe_valid_proof(block_root, 0);
         assert_eq!(
             cache.has_valid_proof(block_root, 0, slot),
             Ok(true),
@@ -219,7 +227,7 @@ mod tests {
         let slot = Slot::new(5);
 
         cache
-            .observe_processed_proof(proof_root, block_root, 0, 0, slot, false)
+            .observe_signature_verified_proof(proof_root, block_root, 0, 0, slot)
             .expect("should observe proof");
 
         assert_eq!(cache.finalized_slot, 0, "finalized slot is zero");
@@ -242,7 +250,7 @@ mod tests {
         assert_eq!(cache.items.len(), 0, "no items left");
 
         assert_eq!(
-            cache.observe_processed_proof(proof_root, block_root, 0, 0, slot, false),
+            cache.observe_signature_verified_proof(proof_root, block_root, 0, 0, slot),
             Err(Error::FinalizedProof {
                 slot,
                 finalized_slot: slot,
