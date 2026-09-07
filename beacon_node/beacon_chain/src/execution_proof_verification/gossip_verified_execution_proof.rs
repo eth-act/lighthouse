@@ -7,6 +7,7 @@ use crate::execution_proof_verification::observed_execution_proofs::{
 use crate::shuffling_cache::{ShufflingCache, with_cached_shuffling};
 use crate::validator_pubkey_cache::ValidatorPubkeyCache;
 use crate::{BeaconChain, BeaconChainError, BeaconChainTypes};
+use execution_layer::NewPayloadRequestGloas;
 use parking_lot::RwLock;
 use proof_engine::{ProofEngine, ProofVerificationOutcome};
 use ssz_types::VariableList;
@@ -14,14 +15,8 @@ use state_processing::builder_deposits_cache::OnboardBuildersCache;
 use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
 use std::sync::Arc;
 use tree_hash::TreeHash;
-use types::execution::{
-    ExecutionProof, ExecutionProofEnvelope, PublicInput, SSZNewPayloadRequest,
-    STATELESS_INPUT_SCHEMA_ID, SignedExecutionProofEnvelope, is_supported_proof_type,
-};
-use types::{
-    ChainSpec, Domain, EthSpec, Hash256, SignedBlindedBeaconBlock, SignedExecutionPayloadEnvelope,
-    SignedRoot, Slot, kzg_ext::ProgressiveKzgCommitments,
-};
+use types::execution::{ExecutionProof, SignedExecutionProofEnvelope, is_supported_proof_type};
+use types::{BeaconStateError, ChainSpec, Domain, EthSpec, Hash256, SignedRoot, Slot};
 
 pub struct GossipVerificationContext<'a, T: BeaconChainTypes> {
     pub canonical_head: &'a CanonicalHead<T>,
@@ -106,16 +101,6 @@ impl GossipVerifiedExecutionProof {
             ProofObservation::New => {}
         }
 
-        // [IGNORE] The execution payload is available. Delay this database read until after the
-        // cheap message-local and deduplication checks.
-        let payload_envelope = ctx
-            .store
-            .get_payload_envelope(&block_root)
-            .map_err(BeaconChainError::from)?
-            .ok_or(Error::PayloadUnavailable {
-                beacon_block_root: block_root,
-            })?;
-
         // [REJECT] The validator is active at the epoch of the referenced block. The committee
         // cache is keyed by the block's shuffling id, so proofs for blocks on non-canonical
         // forks are judged against their own fork's active set without loading a state.
@@ -159,8 +144,52 @@ impl GossipVerifiedExecutionProof {
             }
         }
 
-        // Only record the validator's attempt after the signature binds `validator_index`;
-        // recording earlier would let unauthenticated messages suppress honest provers.
+        let block = ctx
+            .store
+            .get_blinded_block(&block_root)
+            .map_err(BeaconChainError::from)?
+            .ok_or_else(|| {
+                Error::BeaconChainError(Box::new(BeaconChainError::MissingBeaconBlock(block_root)))
+            })?;
+        let bid = &block
+            .message()
+            .body()
+            .signed_execution_payload_bid()
+            .map_err(BeaconChainError::from)?
+            .message;
+        let versioned_hashes = VariableList::new(
+            bid.blob_kzg_commitments
+                .iter()
+                .map(kzg_commitment_to_versioned_hash)
+                .collect(),
+        )
+        .map_err(BeaconStateError::from)
+        .map_err(BeaconChainError::from)?;
+        // [IGNORE] The execution payload is available. Read it only when all other inputs needed
+        // to reconstruct the execution proof are available.
+        let payload_envelope = ctx
+            .store
+            .get_payload_envelope(&block_root)
+            .map_err(BeaconChainError::from)?
+            .ok_or(Error::PayloadUnavailable {
+                beacon_block_root: block_root,
+            })?;
+        let new_payload_request = NewPayloadRequestGloas {
+            execution_payload: &payload_envelope.message.payload,
+            versioned_hashes,
+            parent_beacon_block_root: payload_envelope.message.parent_beacon_block_root,
+            execution_requests: &payload_envelope.message.execution_requests,
+        };
+        let execution_proof = ExecutionProof::new(
+            proof.message.proof_data.clone(),
+            proof_type,
+            new_payload_request.tree_hash_root(),
+            ctx.spec.deposit_chain_id,
+        );
+
+        // Only record the validator's attempt after the signature binds `validator_index` and the
+        // execution proof can be reconstructed; recording earlier would let unauthenticated or
+        // incomplete messages suppress honest provers.
         if !ctx
             .observed_execution_proofs
             .write()
@@ -176,16 +205,6 @@ impl GossipVerifiedExecutionProof {
             // Lost a race against a concurrent copy of the same proof.
             return Err(Error::ProofAlreadySeen);
         }
-
-        let block = ctx
-            .store
-            .get_blinded_block(&block_root)
-            .map_err(BeaconChainError::from)?
-            .ok_or_else(|| {
-                Error::BeaconChainError(Box::new(BeaconChainError::MissingBeaconBlock(block_root)))
-            })?;
-        let execution_proof =
-            reconstruct_execution_proof(&proof.message, &payload_envelope, &block, ctx.spec)?;
 
         // [REJECT] The proof verifies via the proof engine.
         //
@@ -236,60 +255,14 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     }
 }
 
-fn reconstruct_execution_proof<E: EthSpec>(
-    proof_envelope: &ExecutionProofEnvelope,
-    payload_envelope: &SignedExecutionPayloadEnvelope<E>,
-    block: &SignedBlindedBeaconBlock<E>,
-    spec: &ChainSpec,
-) -> Result<ExecutionProof, Error> {
-    let bid = &block
-        .message()
-        .body()
-        .signed_execution_payload_bid()
-        .map_err(BeaconChainError::from)?
-        .message;
-    let new_payload_request =
-        build_ssz_new_payload_request(payload_envelope, &bid.blob_kzg_commitments)?;
-    let public_input = PublicInput {
-        new_payload_request_root: new_payload_request.tree_hash_root(),
-        successful_validation: true,
-        chain_id: spec.deposit_chain_id,
-        schema_id: STATELESS_INPUT_SCHEMA_ID,
-    };
-
-    Ok(ExecutionProof {
-        proof_data: proof_envelope.proof_data.clone(),
-        proof_type: proof_envelope.proof_type,
-        public_input,
-    })
-}
-
-fn build_ssz_new_payload_request<E: EthSpec>(
-    payload_envelope: &SignedExecutionPayloadEnvelope<E>,
-    blob_kzg_commitments: &ProgressiveKzgCommitments,
-) -> Result<SSZNewPayloadRequest<E>, Error> {
-    let versioned_hashes = blob_kzg_commitments
-        .iter()
-        .map(kzg_commitment_to_versioned_hash)
-        .collect();
-    let versioned_hashes = VariableList::new(versioned_hashes).map_err(BeaconChainError::from)?;
-    Ok(SSZNewPayloadRequest {
-        execution_payload: payload_envelope.message.payload.clone(),
-        versioned_hashes,
-        parent_beacon_block_root: payload_envelope.message.parent_beacon_block_root,
-        execution_requests: payload_envelope.message.execution_requests.clone(),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_utils::BeaconChainHarness;
     use bls::Signature;
     use types::{
-        ExecutionPayloadEnvelope, MinimalEthSpec,
-        execution::{ProofData, SUPPORTED_PROOF_TYPES},
-        kzg_ext::{KzgCommitment, ProgressiveKzgCommitments},
+        ForkName, MinimalEthSpec,
+        execution::{ExecutionProofEnvelope, ProofData},
     };
 
     type E = MinimalEthSpec;
@@ -312,8 +285,9 @@ mod tests {
 
     #[tokio::test]
     async fn applies_cheap_checks_before_payload_lookup() {
+        let spec = ForkName::Gloas.make_genesis_spec(E::default_spec());
         let harness = BeaconChainHarness::builder(E::default())
-            .default_spec()
+            .spec(Arc::new(spec))
             .deterministic_keypairs(8)
             .fresh_ephemeral_store()
             .mock_execution_layer()
@@ -331,7 +305,7 @@ mod tests {
         );
 
         let unknown_root = Hash256::repeat_byte(0xaa);
-        let empty_proof = execution_proof(unknown_root, SUPPORTED_PROOF_TYPES[0], vec![], 0);
+        let empty_proof = execution_proof(unknown_root, 1, vec![], 0);
         assert!(matches!(
             chain
                 .verify_execution_proof_for_gossip(Arc::new(empty_proof))
@@ -347,7 +321,7 @@ mod tests {
             Err(Error::UnsupportedProofType { proof_type: 0 })
         ));
 
-        let proof_type = SUPPORTED_PROOF_TYPES[0];
+        let proof_type = 1;
         let exact_proof = execution_proof(genesis_root, proof_type, vec![1], 0);
         assert!(
             chain
@@ -395,7 +369,7 @@ mod tests {
             Err(Error::ValidProofAlreadyKnown)
         ));
 
-        let second_proof_type = SUPPORTED_PROOF_TYPES[1];
+        let second_proof_type = 2;
         let prior_proof = execution_proof(genesis_root, second_proof_type, vec![3], 0);
         assert!(
             chain
@@ -418,41 +392,24 @@ mod tests {
             Err(Error::DuplicateFromValidator { validator_index: 0 })
         ));
 
-        let payload_unavailable = execution_proof(genesis_root, second_proof_type, vec![5], 1);
-        assert!(matches!(
-            chain
-                .verify_execution_proof_for_gossip(Arc::new(payload_unavailable))
-                .await,
-            Err(Error::PayloadUnavailable {
-                beacon_block_root
-            }) if beacon_block_root == genesis_root
-        ));
-    }
-
-    #[test]
-    fn builds_spec_new_payload_request_from_accepted_envelope() {
-        let payload_envelope = SignedExecutionPayloadEnvelope {
-            message: ExecutionPayloadEnvelope::<MinimalEthSpec>::empty(),
-            signature: Signature::empty(),
-        };
-        let commitment = KzgCommitment::empty_for_testing();
-        let commitments = ProgressiveKzgCommitments::new(vec![commitment]);
-
-        let request =
-            build_ssz_new_payload_request(&payload_envelope, &commitments).expect("valid request");
-
-        assert_eq!(request.execution_payload, payload_envelope.message.payload);
-        assert_eq!(
-            &request.versioned_hashes[..],
-            &[kzg_commitment_to_versioned_hash(&commitment)]
+        let mut payload_unavailable = execution_proof(genesis_root, second_proof_type, vec![5], 1);
+        let fork_name = chain.spec.fork_name_at_slot::<E>(Slot::new(0));
+        let domain = chain.spec.compute_domain(
+            Domain::ExecutionProof,
+            chain.spec.fork_version_for_name(fork_name),
+            chain.genesis_validators_root,
         );
-        assert_eq!(
-            request.parent_beacon_block_root,
-            payload_envelope.message.parent_beacon_block_root
-        );
-        assert_eq!(
-            request.execution_requests,
-            payload_envelope.message.execution_requests
-        );
+        payload_unavailable.signature = harness.validator_keypairs[1]
+            .sk
+            .sign(payload_unavailable.message.signing_root(domain));
+        match chain
+            .verify_execution_proof_for_gossip(Arc::new(payload_unavailable))
+            .await
+        {
+            Err(Error::PayloadUnavailable { beacon_block_root })
+                if beacon_block_root == genesis_root => {}
+            Err(error) => panic!("expected payload-unavailable error, got {error:?}"),
+            Ok(_) => panic!("expected payload-unavailable error, got success"),
+        }
     }
 }

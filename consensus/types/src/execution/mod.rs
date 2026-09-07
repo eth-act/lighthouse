@@ -34,7 +34,6 @@ pub use execution_payload_header::{
 };
 pub use execution_proof::{
     ExecutionProof, ExecutionProofEnvelope, MaxProofSize, ProofData, ProofType, PublicInput,
-    SSZNewPayloadRequest, STATELESS_INPUT_SCHEMA_ID, SUPPORTED_PROOF_TYPES,
     SignedExecutionProofEnvelope, is_supported_proof_type,
 };
 pub use execution_requests::{
