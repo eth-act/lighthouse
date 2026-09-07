@@ -159,6 +159,24 @@ impl GossipVerifiedExecutionProof {
             }
         }
 
+        // Only record the validator's attempt after the signature binds `validator_index`;
+        // recording earlier would let unauthenticated messages suppress honest provers.
+        if !ctx
+            .observed_execution_proofs
+            .write()
+            .observe_signature_verified_proof(
+                proof_root,
+                block_root,
+                proof_type,
+                validator_index,
+                block_slot,
+            )
+            .map_err(Error::from)?
+        {
+            // Lost a race against a concurrent copy of the same proof.
+            return Err(Error::ProofAlreadySeen);
+        }
+
         // [REJECT] The proof verifies via the proof engine.
         //
         // Proof verification is a fast crypto check against a localhost sidecar (and may be
@@ -174,37 +192,20 @@ impl GossipVerifiedExecutionProof {
             })?;
         let execution_proof =
             reconstruct_execution_proof(&proof.message, &payload_envelope, &block, ctx.spec)?;
-        let verification_outcome = proof_engine
+
+        match proof_engine
             .verify_execution_proof(&execution_proof)
             .await
-            .map_err(Error::ProofEngine)?;
-        let is_valid = verification_outcome.is_valid();
-
-        // Only record the authenticated proof and prover after the proof engine returns a
-        // definitive result. Local setup and proof engine communication failures remain retryable.
-        if !ctx
-            .observed_execution_proofs
-            .write()
-            .observe_processed_proof(
-                proof_root,
-                block_root,
-                proof_type,
-                validator_index,
-                block_slot,
-                is_valid,
-            )
-            .map_err(Error::from)?
+            .map_err(Error::ProofEngine)?
         {
-            // Lost a race against a concurrent copy of the same proof.
-            return Err(Error::ProofAlreadySeen);
+            ProofVerificationOutcome::Invalid => Err(Error::InvalidProof),
+            ProofVerificationOutcome::Valid => {
+                ctx.observed_execution_proofs
+                    .write()
+                    .observe_valid_proof(block_root, proof_type);
+                Ok(Self { proof, block_slot })
+            }
         }
-
-        match verification_outcome {
-            ProofVerificationOutcome::Invalid => return Err(Error::InvalidProof),
-            ProofVerificationOutcome::Valid => {}
-        }
-
-        Ok(Self { proof, block_slot })
     }
 }
 
@@ -352,13 +353,12 @@ mod tests {
             chain
                 .observed_execution_proofs
                 .write()
-                .observe_processed_proof(
+                .observe_signature_verified_proof(
                     exact_proof.message.tree_hash_root(),
                     genesis_root,
                     proof_type,
                     exact_proof.validator_index,
                     Slot::new(0),
-                    false,
                 )
                 .expect("proof observation succeeds")
         );
@@ -374,16 +374,19 @@ mod tests {
             chain
                 .observed_execution_proofs
                 .write()
-                .observe_processed_proof(
+                .observe_signature_verified_proof(
                     valid_proof.message.tree_hash_root(),
                     genesis_root,
                     proof_type,
                     valid_proof.validator_index,
                     Slot::new(0),
-                    true,
                 )
                 .expect("proof observation succeeds")
         );
+        chain
+            .observed_execution_proofs
+            .write()
+            .observe_valid_proof(genesis_root, proof_type);
         let proof_for_known_type = execution_proof(genesis_root, proof_type, vec![1], 0);
         assert!(matches!(
             chain
@@ -398,13 +401,12 @@ mod tests {
             chain
                 .observed_execution_proofs
                 .write()
-                .observe_processed_proof(
+                .observe_signature_verified_proof(
                     prior_proof.message.tree_hash_root(),
                     genesis_root,
                     second_proof_type,
                     prior_proof.validator_index,
                     Slot::new(0),
-                    false,
                 )
                 .expect("proof observation succeeds")
         );
