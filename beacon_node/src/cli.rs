@@ -846,13 +846,14 @@ pub fn cli_app() -> Command {
                 .display_order(0)
         )
         .arg(
-            Arg::new("proof-engine-endpoint")
-                .long("proof-engine-endpoint")
-                .value_name("PROOF-ENGINE-ENDPOINT")
-                .help("Server endpoint for an EIP-8025 proof engine used to verify execution \
-                       proofs. When present, the node subscribes to the execution_proof gossip \
-                       topic and propagates proofs that verify. Experimental.")
-                .action(ArgAction::Set)
+            Arg::new("proof-engine-verifier")
+                .long("proof-engine-verifier")
+                .value_name("PROOF-TYPE:ZKVM:PROGRAM-VK-PATH")
+                .help("Configure an in-process EIP-8025 proof verifier. May be repeated once per \
+                       proof type. ZKVM is one of openvm, sp1, or zisk. When present, the node \
+                       subscribes to the execution_proof gossip topic and propagates proofs that \
+                       verify. Experimental.")
+                .action(ArgAction::Append)
                 .display_order(0)
         )
         .arg(

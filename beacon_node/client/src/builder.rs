@@ -189,15 +189,15 @@ where
             None
         };
 
-        let proof_engine = config
-            .proof_engine_endpoint
-            .clone()
-            .map(|url| {
-                ProofEngine::new(url)
+        let proof_engine = if config.proof_engine_verifiers.is_empty() {
+            None
+        } else {
+            Some(
+                ProofEngine::new(config.proof_engine_verifiers.clone())
                     .map(Arc::new)
-                    .map_err(|e| format!("unable to start proof engine client: {:?}", e))
-            })
-            .transpose()?;
+                    .map_err(|e| format!("unable to start proof engine: {:?}", e))?,
+            )
+        };
 
         // Construct the Gloas builder handle (Builder API client) when the Gloas fork is scheduled.
         // The client is stateless w.r.t. the target builder — each request carries its own URL — but

@@ -208,9 +208,7 @@ impl GossipVerifiedExecutionProof {
 
         // [REJECT] The proof verifies via the proof engine.
         //
-        // Proof verification is a fast crypto check against a localhost sidecar (and may be
-        // embedded in-process in the future), so awaiting it here does not hold up the processor
-        // significantly.
+        // Proof verification is CPU-bound and runs on Tokio's blocking thread pool.
         let proof_engine = ctx.proof_engine.as_ref().ok_or(Error::ProofEngineMissing)?;
         match proof_engine
             .verify_execution_proof(&execution_proof)

@@ -5,7 +5,12 @@ edition = { workspace = true }
 authors = ["Sigma Prime <contact@sigmaprime.io>"]
 
 [dependencies]
-reqwest = { workspace = true }
-sensitive_url = { workspace = true }
+ere-catalog = { workspace = true }
+ere-verifier = { workspace = true }
 serde = { workspace = true }
+tokio = { workspace = true }
+tree_hash = { workspace = true }
 types = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

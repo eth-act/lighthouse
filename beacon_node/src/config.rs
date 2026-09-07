@@ -335,13 +335,15 @@ pub fn get_config<E: EthSpec>(
         return Err("Error! Please set either --execution-jwt file_path or --execution-jwt-secret-key directly via cli when using --execution-endpoint".to_string());
     }
 
-    // Parse and set the EIP-8025 proof engine, if any.
-    if let Some(endpoint) = cli_args.get_one::<String>("proof-engine-endpoint") {
-        client_config.proof_engine_endpoint = Some(parse_only_one_value(
-            endpoint,
-            SensitiveUrl::parse,
-            "--proof-engine-endpoint",
-        )?);
+    // Parse and set the in-process EIP-8025 proof verifiers, if any.
+    if let Some(verifiers) = cli_args.get_many::<String>("proof-engine-verifier") {
+        client_config.proof_engine_verifiers = verifiers
+            .map(|verifier| {
+                verifier
+                    .parse()
+                    .map_err(|e| format!("Invalid --proof-engine-verifier `{verifier}`: {e}"))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         client_config.network.enable_execution_proof = true;
     }
 
