@@ -9,7 +9,7 @@ use crate::validator_pubkey_cache::ValidatorPubkeyCache;
 use crate::{BeaconChain, BeaconChainError, BeaconChainTypes};
 use execution_layer::NewPayloadRequestGloas;
 use parking_lot::RwLock;
-use proof_engine::{ProofEngine, ProofVerificationOutcome};
+use proof_engine::{ProofEngineT, ProofVerificationOutcome};
 use ssz_types::VariableList;
 use state_processing::builder_deposits_cache::OnboardBuildersCache;
 use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
@@ -24,7 +24,7 @@ pub struct GossipVerificationContext<'a, T: BeaconChainTypes> {
     pub validator_pubkey_cache: &'a RwLock<ValidatorPubkeyCache<T>>,
     pub shuffling_cache: &'a RwLock<ShufflingCache<T::EthSpec>>,
     pub store: &'a BeaconStore<T>,
-    pub proof_engine: &'a Option<Arc<ProofEngine>>,
+    pub proof_engine: &'a Option<Arc<T::ProofEngine>>,
     pub builder_onboarding_cache: Option<&'a OnboardBuildersCache>,
     pub spec: &'a ChainSpec,
     pub genesis_validators_root: Hash256,
@@ -209,11 +209,13 @@ impl GossipVerifiedExecutionProof {
         // [REJECT] The proof verifies via the proof engine.
         //
         // Proof verification is CPU-bound and runs on Tokio's blocking thread pool.
-        let proof_engine = ctx.proof_engine.as_ref().ok_or(Error::ProofEngineMissing)?;
-        match proof_engine
-            .verify_execution_proof(&execution_proof)
-            .await
-            .map_err(Error::ProofEngine)?
+        let proof_engine = Arc::clone(ctx.proof_engine.as_ref().ok_or(Error::ProofEngineMissing)?);
+        match tokio::task::spawn_blocking(move || {
+            proof_engine.verify_execution_proof(&execution_proof)
+        })
+        .await
+        .map_err(|error| Error::ProofEngineTask(error.to_string()))?
+        .map_err(Error::ProofEngine)?
         {
             ProofVerificationOutcome::Invalid => return Err(Error::InvalidProof),
             ProofVerificationOutcome::Valid => {}
@@ -284,14 +286,34 @@ mod tests {
     #[tokio::test]
     async fn applies_cheap_checks_before_payload_lookup() {
         let spec = ForkName::Gloas.make_genesis_spec(E::default_spec());
+        let valid_proof_data = vec![9];
         let harness = BeaconChainHarness::builder(E::default())
             .spec(Arc::new(spec))
             .deterministic_keypairs(8)
             .fresh_ephemeral_store()
             .mock_execution_layer()
+            .proof_engine(Some(Arc::new(proof_engine::MockProofEngine::new([
+                valid_proof_data.clone(),
+            ]))))
             .build();
         let chain = &harness.chain;
         let genesis_root = chain.genesis_block_root;
+
+        let mock_proof = ExecutionProof::new(
+            ProofData::new(valid_proof_data).expect("valid proof data"),
+            1,
+            Hash256::default(),
+            chain.spec.deposit_chain_id,
+        );
+        assert_eq!(
+            chain
+                .proof_engine
+                .as_ref()
+                .expect("mock proof engine is installed")
+                .verify_execution_proof(&mock_proof)
+                .expect("mock proof verification succeeds"),
+            ProofVerificationOutcome::Valid
+        );
 
         assert!(
             chain

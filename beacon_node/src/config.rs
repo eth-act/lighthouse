@@ -9,7 +9,7 @@ use bls::PublicKeyBytes;
 use clap::{ArgMatches, Id, parser::ValueSource};
 use clap_utils::flags::DISABLE_MALLOC_TUNING_FLAG;
 use clap_utils::{parse_flag, parse_optional, parse_required};
-use client::{ClientConfig, ClientGenesis};
+use client::{ClientConfig, ClientGenesis, ExecutionProofConfig, ProofEngineConfig};
 use directory::{DEFAULT_BEACON_NODE_DIR, DEFAULT_NETWORK_DIR, DEFAULT_ROOT_DIR};
 use environment::RuntimeContext;
 use execution_layer::DEFAULT_JWT_FILE;
@@ -335,15 +335,17 @@ pub fn get_config<E: EthSpec>(
         return Err("Error! Please set either --execution-jwt file_path or --execution-jwt-secret-key directly via cli when using --execution-endpoint".to_string());
     }
 
-    // Parse and set the in-process EIP-8025 proof verifiers, if any.
-    if let Some(verifiers) = cli_args.get_many::<String>("proof-engine-verifier") {
-        client_config.proof_engine_verifiers = verifiers
-            .map(|verifier| {
-                verifier
-                    .parse()
-                    .map_err(|e| format!("Invalid --proof-engine-verifier `{verifier}`: {e}"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+    // Configure the in-process EIP-8025 proof verifiers, if enabled.
+    if let Some(path) = cli_args.get_one::<String>("proof-engine") {
+        client_config.proof_engine = Some(if path.is_empty() {
+            ProofEngineConfig::new(vec![ExecutionProofConfig::default()])
+                .map_err(|e| format!("Invalid built-in proof engine configuration: {e}"))?
+        } else {
+            let json = fs::read_to_string(path)
+                .map_err(|e| format!("Unable to read --proof-engine `{path}`: {e}"))?;
+            parse_explicit_proof_engine_config(&json)
+                .map_err(|e| format!("Invalid --proof-engine `{path}`: {e}"))?
+        });
         client_config.network.enable_execution_proof = true;
     }
 
@@ -1524,6 +1526,11 @@ pub fn set_network_config(
     Ok(())
 }
 
+fn parse_explicit_proof_engine_config(json: &str) -> Result<ProofEngineConfig, String> {
+    json.parse::<ProofEngineConfig>()
+        .map_err(|error| error.to_string())
+}
+
 /// Gets the datadir which should be used.
 pub fn get_data_dir(cli_args: &ArgMatches) -> PathBuf {
     // Read the `--datadir` flag.
@@ -1598,4 +1605,27 @@ fn purge_db(chain_db: PathBuf, freezer_db: PathBuf, blobs_db: PathBuf) -> Result
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_explicit_proof_engine_config;
+
+    #[test]
+    fn explicit_proof_engine_config_rejects_empty_execution_proofs() {
+        let error = parse_explicit_proof_engine_config(r#"{"execution_proofs":[]}"#)
+            .expect_err("explicit empty configuration must be rejected");
+
+        assert_eq!(error, "`execution_proofs` must contain at least one entry");
+    }
+
+    #[test]
+    fn explicit_proof_engine_config_accepts_configured_proof_type() {
+        let config = parse_explicit_proof_engine_config(
+            r#"{"execution_proofs":[{"proof_type":2,"zkvm":"sp1","program_vk":"0x00"}]}"#,
+        )
+        .expect("configured proof type must be accepted");
+
+        assert_eq!(config.execution_proofs().len(), 1);
+    }
 }

@@ -31,7 +31,7 @@ use kzg::Kzg;
 use logging::crit;
 use operation_pool::{OperationPool, PersistedOperationPool};
 use parking_lot::{Mutex, RwLock};
-use proof_engine::ProofEngine;
+use proof_engine::{ProofEngine, ProofEngineT};
 use rand::RngCore;
 use rayon::prelude::*;
 use slasher::Slasher;
@@ -55,22 +55,24 @@ use types::{
 
 /// An empty struct used to "witness" all the `BeaconChainTypes` traits. It has no user-facing
 /// functionality and only exists to satisfy the type system.
-pub struct Witness<TSlotClock, E, THotStore, TColdStore>(
-    PhantomData<(TSlotClock, E, THotStore, TColdStore)>,
+pub struct Witness<TSlotClock, E, THotStore, TColdStore, TProofEngine = ProofEngine>(
+    PhantomData<(TSlotClock, E, THotStore, TColdStore, TProofEngine)>,
 );
 
-impl<TSlotClock, E, THotStore, TColdStore> BeaconChainTypes
-    for Witness<TSlotClock, E, THotStore, TColdStore>
+impl<TSlotClock, E, THotStore, TColdStore, TProofEngine> BeaconChainTypes
+    for Witness<TSlotClock, E, THotStore, TColdStore, TProofEngine>
 where
     THotStore: ItemStore + 'static,
     TColdStore: ItemStore + 'static,
     TSlotClock: SlotClock + 'static,
     E: EthSpec + 'static,
+    TProofEngine: ProofEngineT,
 {
     type HotStore = THotStore;
     type ColdStore = TColdStore;
     type SlotClock = TSlotClock;
     type EthSpec = E;
+    type ProofEngine = TProofEngine;
 }
 
 /// Builds a `BeaconChain` by either creating anew from genesis, or, resuming from an existing chain
@@ -94,7 +96,7 @@ pub struct BeaconChainBuilder<T: BeaconChainTypes> {
     >,
     op_pool: Option<OperationPool<T::EthSpec>>,
     execution_layer: Option<ExecutionLayer<T::EthSpec>>,
-    proof_engine: Option<Arc<ProofEngine>>,
+    proof_engine: Option<Arc<T::ProofEngine>>,
     builders: Option<Arc<Builders>>,
     event_handler: Option<ServerSentEventHandler<T::EthSpec>>,
     slot_clock: Option<T::SlotClock>,
@@ -116,13 +118,14 @@ pub struct BeaconChainBuilder<T: BeaconChainTypes> {
     rng: Option<Box<dyn RngCore + Send>>,
 }
 
-impl<TSlotClock, E, THotStore, TColdStore>
-    BeaconChainBuilder<Witness<TSlotClock, E, THotStore, TColdStore>>
+impl<TSlotClock, E, THotStore, TColdStore, TProofEngine>
+    BeaconChainBuilder<Witness<TSlotClock, E, THotStore, TColdStore, TProofEngine>>
 where
     THotStore: ItemStore + 'static,
     TColdStore: ItemStore + 'static,
     TSlotClock: SlotClock + 'static,
     E: EthSpec + 'static,
+    TProofEngine: ProofEngineT,
 {
     /// Returns a new builder.
     ///
@@ -240,15 +243,16 @@ where
                     .to_string()
             })?;
 
-        let fork_choice = BeaconChain::<Witness<TSlotClock, _, _, _>>::load_fork_choice(
-            store.clone(),
-            ResetPayloadStatuses::always_reset_conditionally(
-                self.chain_config.always_reset_payload_statuses,
-            ),
-            &self.spec,
-        )
-        .map_err(|e| format!("Unable to load fork choice from disk: {:?}", e))?
-        .ok_or("Fork choice not found in store")?;
+        let fork_choice =
+            BeaconChain::<Witness<TSlotClock, _, _, _, TProofEngine>>::load_fork_choice(
+                store.clone(),
+                ResetPayloadStatuses::always_reset_conditionally(
+                    self.chain_config.always_reset_payload_statuses,
+                ),
+                &self.spec,
+            )
+            .map_err(|e| format!("Unable to load fork choice from disk: {:?}", e))?
+            .ok_or("Fork choice not found in store")?;
 
         let genesis_block = store
             .get_blinded_block(&chain.genesis_block_root)
@@ -639,7 +643,7 @@ where
     }
 
     /// Sets the `BeaconChain` proof engine.
-    pub fn proof_engine(mut self, proof_engine: Option<Arc<ProofEngine>>) -> Self {
+    pub fn proof_engine(mut self, proof_engine: Option<Arc<TProofEngine>>) -> Self {
         self.proof_engine = proof_engine;
         self
     }
@@ -744,7 +748,8 @@ where
     #[allow(clippy::type_complexity)] // I think there's nothing to be gained here from a type alias.
     pub fn build(
         mut self,
-    ) -> Result<BeaconChain<Witness<TSlotClock, E, THotStore, TColdStore>>, String> {
+    ) -> Result<BeaconChain<Witness<TSlotClock, E, THotStore, TColdStore, TProofEngine>>, String>
+    {
         let slot_clock = self
             .slot_clock
             .ok_or("Cannot build without a slot_clock.")?;
@@ -910,12 +915,12 @@ where
         // This *must* be stored before constructing the `BeaconChain`, so that its `Drop` instance
         // doesn't write a `PersistedBeaconChain` without the rest of the batch.
         self.pending_io_batch.push(BeaconChain::<
-            Witness<TSlotClock,  E, THotStore, TColdStore>,
+            Witness<TSlotClock, E, THotStore, TColdStore, TProofEngine>,
         >::persist_head_in_batch_standalone(
             genesis_block_root
         ));
         self.pending_io_batch.push(BeaconChain::<
-            Witness<TSlotClock,  E, THotStore, TColdStore>,
+            Witness<TSlotClock, E, THotStore, TColdStore, TProofEngine>,
         >::persist_fork_choice_in_batch_standalone(
             &fork_choice,
             store.get_config(),
@@ -1215,12 +1220,13 @@ where
     }
 }
 
-impl<E, THotStore, TColdStore>
-    BeaconChainBuilder<Witness<TestingSlotClock, E, THotStore, TColdStore>>
+impl<E, THotStore, TColdStore, TProofEngine>
+    BeaconChainBuilder<Witness<TestingSlotClock, E, THotStore, TColdStore, TProofEngine>>
 where
     THotStore: ItemStore + 'static,
     TColdStore: ItemStore + 'static,
     E: EthSpec + 'static,
+    TProofEngine: ProofEngineT,
 {
     /// Sets the `BeaconChain` slot clock to `TestingSlotClock`.
     ///

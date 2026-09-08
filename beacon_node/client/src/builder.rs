@@ -189,14 +189,14 @@ where
             None
         };
 
-        let proof_engine = if config.proof_engine_verifiers.is_empty() {
-            None
-        } else {
+        let proof_engine = if let Some(config) = config.proof_engine.clone() {
             Some(
-                ProofEngine::new(config.proof_engine_verifiers.clone())
+                ProofEngine::new(config)
                     .map(Arc::new)
                     .map_err(|e| format!("unable to start proof engine: {:?}", e))?,
             )
+        } else {
+            None
         };
 
         // Construct the Gloas builder handle (Builder API client) when the Gloas fork is scheduled.

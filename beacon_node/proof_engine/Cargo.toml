@@ -5,12 +5,8 @@ edition = { workspace = true }
 authors = ["Sigma Prime <contact@sigmaprime.io>"]
 
 [dependencies]
-ere-catalog = { workspace = true }
-ere-verifier = { workspace = true }
+hex = { workspace = true }
 serde = { workspace = true }
-tokio = { workspace = true }
+serde_json = { workspace = true }
 tree_hash = { workspace = true }
 types = { workspace = true }
-
-[dev-dependencies]
-tempfile = { workspace = true }

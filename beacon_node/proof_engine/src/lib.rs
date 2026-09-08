@@ -1,208 +1,500 @@
 //! In-process EIP-8025 proof verification using ERE.
 
-use ere_catalog::zkVMKind;
-use ere_verifier::Verifier;
-use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fs, path::PathBuf, str::FromStr, sync::Arc};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
+#[cfg(ere_verifier_c)]
+use std::collections::HashMap;
+use std::{collections::HashSet, str::FromStr};
+#[cfg(ere_verifier_c)]
 use tree_hash::TreeHash;
 use types::execution::{ExecutionProof, ProofType, is_supported_proof_type};
 
 #[derive(Debug)]
 pub enum ProofEngineError {
-    DuplicateProofType(ProofType),
-    UnsupportedProofType(ProofType),
-    ReadProgramVk {
-        path: PathBuf,
-        error: String,
-    },
-    InvalidProgramVk {
-        proof_type: ProofType,
-        error: String,
-    },
+    EreVerifierUnavailable,
+    InvalidProgramVk { proof_type: ProofType, status: i32 },
     UnconfiguredProofType(ProofType),
-    VerifierTask(String),
+    Verifier { proof_type: ProofType, status: i32 },
 }
 
-/// Outcome of `verify_execution_proof`. `Invalid` means the artifact does not verify; it says
-/// nothing about the validity of the payload it claims to prove.
+/// Outcome of proof verification. `Invalid` means the artifact does not verify; it says nothing
+/// about the validity of the payload it claims to prove.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProofVerificationOutcome {
     Valid,
     Invalid,
 }
 
-/// Configuration for the verifier assigned to an EIP-8025 proof type.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VerifierConfig {
-    pub proof_type: ProofType,
-    pub zkvm_kind: zkVMKind,
-    pub program_vk_path: PathBuf,
+/// Interface used by the beacon chain to verify reconstructed execution proofs.
+pub trait ProofEngineT: Send + Sync + 'static {
+    fn verify_execution_proof(
+        &self,
+        proof: &ExecutionProof,
+    ) -> Result<ProofVerificationOutcome, ProofEngineError>;
 }
 
-impl FromStr for VerifierConfig {
-    type Err = String;
+/// zkVM verifier supported by the ERE v0.17.0 C API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ZkvmKind {
+    Openvm,
+    Sp1,
+    Zisk,
+}
 
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let mut fields = value.splitn(3, ':');
-        let proof_type = fields
-            .next()
-            .ok_or_else(|| verifier_config_format_error(value))?
-            .parse()
-            .map_err(|e| format!("invalid proof type in `{value}`: {e}"))?;
-        let zkvm_kind = fields
-            .next()
-            .ok_or_else(|| verifier_config_format_error(value))?
-            .parse()
-            .map_err(|e| format!("invalid zkVM kind in `{value}`: {e}"))?;
-        let program_vk_path = fields
-            .next()
-            .filter(|path| !path.is_empty())
-            .ok_or_else(|| verifier_config_format_error(value))?
-            .into();
-
-        Ok(Self {
-            proof_type,
-            zkvm_kind,
-            program_vk_path,
-        })
+impl ZkvmKind {
+    #[cfg(ere_verifier_c)]
+    const fn ere_discriminant(self) -> u32 {
+        match self {
+            Self::Openvm => 0,
+            Self::Sp1 => 1,
+            Self::Zisk => 2,
+        }
     }
 }
 
-fn verifier_config_format_error(value: &str) -> String {
-    format!("invalid verifier configuration `{value}`; expected PROOF-TYPE:ZKVM:PROGRAM-VK-PATH")
+/// Configuration for the verifier assigned to an EIP-8025 proof type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionProofConfig {
+    pub proof_type: ProofType,
+    #[serde(rename = "zkvm")]
+    pub zkvm_kind: ZkvmKind,
+    #[serde(with = "hex_bytes")]
+    pub program_vk: Vec<u8>,
 }
 
+impl Default for ExecutionProofConfig {
+    /// Built-in verifier configuration for the reth SP1 stateless-validator guest v0.1.0-rc.2 in
+    /// `eth-act/ere-guests` at commit `dd6ac1a43fc14a34e0dc764937ba64f4b0237885`.
+    /// The proof-type assignment is provisional while EIP-8025 is under development.
+    fn default() -> Self {
+        Self {
+            proof_type: 2,
+            zkvm_kind: ZkvmKind::Sp1,
+            program_vk: hex::decode(DEFAULT_RETH_SP1_PROGRAM_VK)
+                .expect("embedded ERE program verification key is valid hex"),
+        }
+    }
+}
+
+/// Configuration for the in-process EIP-8025 proof engine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ProofEngineConfig {
+    execution_proofs: Vec<ExecutionProofConfig>,
+}
+
+impl ProofEngineConfig {
+    pub fn new(execution_proofs: Vec<ExecutionProofConfig>) -> Result<Self, String> {
+        if execution_proofs.is_empty() {
+            return Err("`execution_proofs` must contain at least one entry".to_string());
+        }
+
+        let mut proof_types = HashSet::with_capacity(execution_proofs.len());
+
+        for config in &execution_proofs {
+            if !is_supported_proof_type(config.proof_type) {
+                return Err(format!("unsupported proof type `{}`", config.proof_type));
+            }
+            if !proof_types.insert(config.proof_type) {
+                return Err(format!(
+                    "duplicate configuration for proof type `{}`",
+                    config.proof_type
+                ));
+            }
+            if config.program_vk.is_empty() {
+                return Err(format!(
+                    "empty program verification key for proof type `{}`",
+                    config.proof_type
+                ));
+            }
+        }
+
+        Ok(Self { execution_proofs })
+    }
+
+    pub fn execution_proofs(&self) -> &[ExecutionProofConfig] {
+        &self.execution_proofs
+    }
+}
+
+impl<'de> Deserialize<'de> for ProofEngineConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Config {
+            execution_proofs: Vec<ExecutionProofConfig>,
+        }
+
+        let config = Config::deserialize(deserializer)?;
+        Self::new(config.execution_proofs).map_err(D::Error::custom)
+    }
+}
+
+impl FromStr for ProofEngineConfig {
+    type Err = serde_json::Error;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        serde_json::from_str(value)
+    }
+}
+
+/// Production proof engine backed by ERE's statically linked C verifier library.
 pub struct ProofEngine {
-    verifiers: HashMap<ProofType, Arc<Verifier>>,
+    #[cfg(ere_verifier_c)]
+    verifiers: HashMap<ProofType, ere::Verifier>,
 }
 
 impl ProofEngine {
-    pub fn new(configs: Vec<VerifierConfig>) -> Result<Self, ProofEngineError> {
-        let mut verifiers = HashMap::with_capacity(configs.len());
+    pub fn new(config: ProofEngineConfig) -> Result<Self, ProofEngineError> {
+        #[cfg(ere_verifier_c)]
+        {
+            let mut verifiers = HashMap::with_capacity(config.execution_proofs.len());
 
-        for config in configs {
-            if !is_supported_proof_type(config.proof_type) {
-                return Err(ProofEngineError::UnsupportedProofType(config.proof_type));
+            for config in config.execution_proofs {
+                let verifier =
+                    ere::Verifier::new(config.zkvm_kind, &config.program_vk).map_err(|status| {
+                        ProofEngineError::InvalidProgramVk {
+                            proof_type: config.proof_type,
+                            status,
+                        }
+                    })?;
+                verifiers.insert(config.proof_type, verifier);
             }
-            if verifiers.contains_key(&config.proof_type) {
-                return Err(ProofEngineError::DuplicateProofType(config.proof_type));
-            }
 
-            let program_vk =
-                fs::read(&config.program_vk_path).map_err(|e| ProofEngineError::ReadProgramVk {
-                    path: config.program_vk_path.clone(),
-                    error: e.to_string(),
-                })?;
-            let verifier = Verifier::new(config.zkvm_kind, &program_vk).map_err(|e| {
-                ProofEngineError::InvalidProgramVk {
-                    proof_type: config.proof_type,
-                    error: e.to_string(),
-                }
-            })?;
-
-            verifiers.insert(config.proof_type, Arc::new(verifier));
+            Ok(Self { verifiers })
         }
 
-        Ok(Self { verifiers })
+        #[cfg(not(ere_verifier_c))]
+        {
+            let _ = config;
+            Err(ProofEngineError::EreVerifierUnavailable)
+        }
     }
+}
 
-    /// EIP-8025 `ProofEngine.verify_execution_proof`.
-    pub async fn verify_execution_proof(
+impl ProofEngineT for ProofEngine {
+    fn verify_execution_proof(
         &self,
         proof: &ExecutionProof,
     ) -> Result<ProofVerificationOutcome, ProofEngineError> {
-        let verifier = self
-            .verifiers
-            .get(&proof.proof_type)
-            .cloned()
-            .ok_or(ProofEngineError::UnconfiguredProofType(proof.proof_type))?;
-        let encoded_proof = proof.proof_data.to_vec();
-        let expected_public_values = proof.public_input.tree_hash_root();
+        #[cfg(ere_verifier_c)]
+        {
+            let verifier = self
+                .verifiers
+                .get(&proof.proof_type)
+                .ok_or(ProofEngineError::UnconfiguredProofType(proof.proof_type))?;
+            let expected_public_values = proof.public_input.tree_hash_root();
+            verify_with_ere(
+                verifier,
+                proof.proof_type,
+                proof.proof_data.as_ref(),
+                expected_public_values.as_slice(),
+            )
+        }
 
-        tokio::task::spawn_blocking(move || {
-            verify_with_ere(&verifier, &encoded_proof, expected_public_values.as_slice())
-        })
-        .await
-        .map_err(|e| ProofEngineError::VerifierTask(e.to_string()))
+        #[cfg(not(ere_verifier_c))]
+        {
+            let _ = proof;
+            Err(ProofEngineError::EreVerifierUnavailable)
+        }
     }
 }
 
+/// Deterministic proof engine used by beacon-chain tests.
+#[derive(Debug, Default)]
+pub struct MockProofEngine {
+    valid_proof_data: HashSet<Vec<u8>>,
+}
+
+impl MockProofEngine {
+    pub fn new(valid_proof_data: impl IntoIterator<Item = Vec<u8>>) -> Self {
+        Self {
+            valid_proof_data: valid_proof_data.into_iter().collect(),
+        }
+    }
+}
+
+impl ProofEngineT for MockProofEngine {
+    fn verify_execution_proof(
+        &self,
+        proof: &ExecutionProof,
+    ) -> Result<ProofVerificationOutcome, ProofEngineError> {
+        Ok(
+            if self.valid_proof_data.contains(proof.proof_data.as_ref()) {
+                ProofVerificationOutcome::Valid
+            } else {
+                ProofVerificationOutcome::Invalid
+            },
+        )
+    }
+}
+
+#[cfg(ere_verifier_c)]
 fn verify_with_ere(
-    verifier: &Verifier,
+    verifier: &ere::Verifier,
+    proof_type: ProofType,
     encoded_proof: &[u8],
     expected_public_values: &[u8],
-) -> ProofVerificationOutcome {
+) -> Result<ProofVerificationOutcome, ProofEngineError> {
     let public_values = match verifier.verify(encoded_proof) {
         Ok(public_values) => public_values,
-        Err(_) => return ProofVerificationOutcome::Invalid,
+        Err(ere::ERE_ERR_DECODE_PROOF | ere::ERE_ERR_VERIFY) => {
+            return Ok(ProofVerificationOutcome::Invalid);
+        }
+        Err(status) => return Err(ProofEngineError::Verifier { proof_type, status }),
     };
 
-    if matches_public_values(public_values.as_ref(), expected_public_values) {
-        ProofVerificationOutcome::Valid
-    } else {
-        ProofVerificationOutcome::Invalid
-    }
+    Ok(
+        if matches_public_values(&public_values, expected_public_values) {
+            ProofVerificationOutcome::Valid
+        } else {
+            ProofVerificationOutcome::Invalid
+        },
+    )
 }
 
 // OpenVM and Zisk may zero-pad the guest's public-value buffer.
+#[cfg(any(test, ere_verifier_c))]
 fn matches_public_values(actual: &[u8], expected: &[u8]) -> bool {
     actual
         .split_at_checked(expected.len())
         .is_some_and(|(value, padding)| value == expected && padding.iter().all(|byte| *byte == 0))
 }
 
+#[cfg(ere_verifier_c)]
+mod ere {
+    use super::ZkvmKind;
+    use std::{ptr::NonNull, slice};
+
+    pub const ERE_OK: i32 = 0;
+    pub const ERE_ERR_DECODE_PROOF: i32 = 4;
+    pub const ERE_ERR_VERIFY: i32 = 5;
+    const ERE_ERR_INTERNAL: i32 = 6;
+
+    #[repr(C)]
+    struct EreVerifier {
+        _private: [u8; 0],
+    }
+
+    unsafe extern "C" {
+        fn ere_verifier_new(
+            zkvm_kind: u32,
+            encoded_program_vk_ptr: *const u8,
+            encoded_program_vk_len: usize,
+            output: *mut *mut EreVerifier,
+        ) -> i32;
+        fn ere_verifier_verify(
+            handle: *const EreVerifier,
+            encoded_proof_ptr: *const u8,
+            encoded_proof_len: usize,
+            public_values_ptr: *mut *mut u8,
+            public_values_len: *mut usize,
+        ) -> i32;
+        fn ere_verifier_free(handle: *mut EreVerifier);
+        fn ere_bytes_free(ptr: *mut u8, len: usize);
+    }
+
+    pub struct Verifier(NonNull<EreVerifier>);
+
+    // ERE's Rust verifier trait requires Send + Sync, and the C handle only exposes shared
+    // verification plus exclusive destruction after the last Arc is dropped.
+    unsafe impl Send for Verifier {}
+    unsafe impl Sync for Verifier {}
+
+    impl Verifier {
+        pub fn new(zkvm_kind: ZkvmKind, encoded_program_vk: &[u8]) -> Result<Self, i32> {
+            let mut output = std::ptr::null_mut();
+            // SAFETY: the input slice is readable for its length and `output` is writable.
+            let status = unsafe {
+                ere_verifier_new(
+                    zkvm_kind.ere_discriminant(),
+                    encoded_program_vk.as_ptr(),
+                    encoded_program_vk.len(),
+                    &mut output,
+                )
+            };
+            if status != ERE_OK {
+                return Err(status);
+            }
+            NonNull::new(output).map(Self).ok_or(ERE_ERR_INTERNAL)
+        }
+
+        pub fn verify(&self, encoded_proof: &[u8]) -> Result<Vec<u8>, i32> {
+            let mut output = std::ptr::null_mut();
+            let mut output_len = 0;
+            // SAFETY: the handle is live, the proof slice is readable for its length, and both
+            // output pointers are writable.
+            let status = unsafe {
+                ere_verifier_verify(
+                    self.0.as_ptr(),
+                    encoded_proof.as_ptr(),
+                    encoded_proof.len(),
+                    &mut output,
+                    &mut output_len,
+                )
+            };
+            if status != ERE_OK {
+                if !output.is_null() {
+                    // SAFETY: ERE initialized this output allocation and reports its length.
+                    unsafe { ere_bytes_free(output, output_len) };
+                }
+                return Err(status);
+            }
+            if output.is_null() {
+                return (output_len == 0).then(Vec::new).ok_or(ERE_ERR_INTERNAL);
+            }
+
+            // SAFETY: ERE returned a readable allocation of exactly `output_len` bytes.
+            let public_values = unsafe { slice::from_raw_parts(output, output_len) }.to_vec();
+            // SAFETY: this is the exact pointer/length pair returned above and is freed once.
+            unsafe { ere_bytes_free(output, output_len) };
+            Ok(public_values)
+        }
+    }
+
+    impl Drop for Verifier {
+        fn drop(&mut self) {
+            // SAFETY: the handle is live, uniquely owned by this value, and dropped once.
+            unsafe { ere_verifier_free(self.0.as_ptr()) };
+        }
+    }
+}
+
+mod hex_bytes {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
+
+    pub fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&format!("0x{}", hex::encode(bytes)))
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        let encoded = value
+            .strip_prefix("0x")
+            .ok_or_else(|| D::Error::custom("program_vk must be 0x-prefixed hex"))?;
+        let bytes = hex::decode(encoded)
+            .map_err(|error| D::Error::custom(format!("invalid program_vk hex: {error}")))?;
+        if bytes.is_empty() {
+            return Err(D::Error::custom("program_vk must not be empty"));
+        }
+        Ok(bytes)
+    }
+}
+
+// Program verification key from reth SP1 stateless-validator guest v0.1.0-rc.2.
+const DEFAULT_RETH_SP1_PROGRAM_VK: &str =
+    "00cf96ecee478c118cba3ac169054a25d7cb2d06df2d2dcb4bd9ab62dd47ef56";
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
     use types::{Hash256, execution::ProofData};
 
-    // Encoded SP1 program VK from ERE's verifier fixture at the pinned revision.
-    const SP1_PROGRAM_VK: [u8; 32] = [
-        0x00, 0x2d, 0x67, 0x59, 0x7a, 0x7a, 0xfd, 0xbb, 0x45, 0xa2, 0x4a, 0x31, 0x1e, 0xa7, 0x7a,
-        0x6b, 0x07, 0xcc, 0xde, 0xba, 0xb8, 0xb9, 0x2d, 0xb5, 0xa9, 0x5f, 0xe8, 0x37, 0x1b, 0xee,
-        0xd3, 0x80,
-    ];
-
     #[test]
-    fn parses_verifier_config() {
-        let config: VerifierConfig = "2:sp1:/tmp/program.vk"
-            .parse()
-            .expect("valid verifier configuration");
+    fn parses_and_serializes_json_config() {
+        let json = format!(
+            r#"{{"execution_proofs":[{{"proof_type":2,"zkvm":"sp1","program_vk":"0x{}"}}]}}"#,
+            DEFAULT_RETH_SP1_PROGRAM_VK
+        );
+        let config: ProofEngineConfig = json.parse().expect("valid JSON configuration");
 
-        assert_eq!(config.proof_type, 2);
-        assert_eq!(config.zkvm_kind, zkVMKind::SP1);
-        assert_eq!(config.program_vk_path, PathBuf::from("/tmp/program.vk"));
+        assert_eq!(config.execution_proofs().len(), 1);
+        assert_eq!(config.execution_proofs()[0].proof_type, 2);
+        assert_eq!(config.execution_proofs()[0].zkvm_kind, ZkvmKind::Sp1);
+        assert_eq!(
+            config.execution_proofs()[0].program_vk,
+            hex::decode(DEFAULT_RETH_SP1_PROGRAM_VK).expect("valid embedded key")
+        );
+        assert_eq!(
+            serde_json::from_str::<ProofEngineConfig>(
+                &serde_json::to_string(&config).expect("serialize configuration")
+            )
+            .expect("deserialize configuration"),
+            config
+        );
     }
 
     #[test]
-    fn rejects_invalid_verifier_configs() {
-        assert!("2:sp1".parse::<VerifierConfig>().is_err());
-        assert!(
-            "proof:sp1:/tmp/program.vk"
-                .parse::<VerifierConfig>()
-                .is_err()
-        );
-        assert!(
-            "2:unknown:/tmp/program.vk"
-                .parse::<VerifierConfig>()
-                .is_err()
-        );
-        assert!("2:sp1:".parse::<VerifierConfig>().is_err());
+    fn rejects_invalid_json_fields() {
+        for json in [
+            r#"{"execution_proofs":[{"proof_type":2,"zkvm":"unknown","program_vk":"0x00"}]}"#,
+            r#"{"execution_proofs":[{"proof_type":2,"zkvm":"sp1","program_vk":"00"}]}"#,
+            r#"{"execution_proofs":[{"proof_type":2,"zkvm":"sp1","program_vk":"0x0g"}]}"#,
+            r#"{"execution_proofs":[{"proof_type":2,"zkvm":"sp1","program_vk":"0x"}]}"#,
+        ] {
+            assert!(
+                json.parse::<ProofEngineConfig>().is_err(),
+                "accepted {json}"
+            );
+        }
     }
 
     #[test]
-    fn rejects_unsupported_proof_type_before_reading_vk() {
-        let result = ProofEngine::new(vec![VerifierConfig {
+    fn proof_engine_config_rejects_unsupported_and_duplicate_proof_types() {
+        let empty = ProofEngineConfig::new(vec![]);
+        assert_eq!(
+            empty.unwrap_err(),
+            "`execution_proofs` must contain at least one entry"
+        );
+
+        let unsupported = ProofEngineConfig::new(vec![ExecutionProofConfig {
             proof_type: 0,
-            zkvm_kind: zkVMKind::SP1,
-            program_vk_path: PathBuf::from("missing.vk"),
+            ..ExecutionProofConfig::default()
         }]);
+        assert_eq!(unsupported.unwrap_err(), "unsupported proof type `0`");
 
-        assert!(matches!(
-            result,
-            Err(ProofEngineError::UnsupportedProofType(0))
-        ));
+        let execution_proof = ExecutionProofConfig::default();
+        let duplicate = ProofEngineConfig::new(vec![execution_proof.clone(), execution_proof]);
+        assert_eq!(
+            duplicate.unwrap_err(),
+            "duplicate configuration for proof type `2`"
+        );
+    }
+
+    #[test]
+    fn default_config_matches_ere_guests_reth_v0_1_0_rc_2() {
+        let config = ExecutionProofConfig::default();
+        assert_eq!(
+            (config.proof_type, config.zkvm_kind, config.program_vk.len()),
+            (2, ZkvmKind::Sp1, 32)
+        );
+        assert_eq!(hex::encode(config.program_vk), DEFAULT_RETH_SP1_PROGRAM_VK);
+    }
+
+    #[cfg(ere_verifier_c)]
+    #[test]
+    fn default_config_initializes_ere_verifier() {
+        let config = ProofEngineConfig::new(vec![ExecutionProofConfig::default()])
+            .expect("default configurations are valid");
+        ProofEngine::new(config).expect("ERE accepts the embedded program verification key");
+    }
+
+    #[cfg(ere_verifier_c)]
+    #[test]
+    fn malformed_ere_proof_is_invalid() {
+        let config = ProofEngineConfig::new(vec![ExecutionProofConfig::default()])
+            .expect("SP1 configuration is valid");
+        let proof_engine = ProofEngine::new(config).expect("SP1 verifier initializes");
+        let proof = ExecutionProof::new(
+            ProofData::new(vec![0xff]).expect("proof data within bound"),
+            2,
+            Hash256::default(),
+            1,
+        );
+
+        assert_eq!(
+            proof_engine
+                .verify_execution_proof(&proof)
+                .expect("ERE reports a verification outcome"),
+            ProofVerificationOutcome::Invalid
+        );
     }
 
     #[test]
@@ -214,28 +506,29 @@ mod tests {
         assert!(!matches_public_values(&[1, 2, 3, 0, 1], &[1, 2, 3]));
     }
 
-    #[tokio::test]
-    async fn malformed_ere_proof_is_invalid() {
-        let program_vk = NamedTempFile::new().expect("create program VK file");
-        fs::write(program_vk.path(), SP1_PROGRAM_VK).expect("write program VK");
-        let proof_engine = ProofEngine::new(vec![VerifierConfig {
-            proof_type: 2,
-            zkvm_kind: zkVMKind::SP1,
-            program_vk_path: program_vk.path().into(),
-        }])
-        .expect("create proof engine");
-        let proof = ExecutionProof::new(
-            ProofData::new(vec![0xff]).expect("proof data within bound"),
-            2,
-            Hash256::default(),
-            1,
-        );
+    #[test]
+    fn mock_proof_engine_matches_configured_proof_data() {
+        let valid_data = vec![1, 2, 3];
+        let proof_engine = MockProofEngine::new([valid_data.clone()]);
+        let proof = |proof_data| {
+            ExecutionProof::new(
+                ProofData::new(proof_data).expect("proof data within bound"),
+                2,
+                Hash256::default(),
+                1,
+            )
+        };
 
         assert_eq!(
             proof_engine
-                .verify_execution_proof(&proof)
-                .await
-                .expect("verifier task completes"),
+                .verify_execution_proof(&proof(valid_data))
+                .expect("mock verification succeeds"),
+            ProofVerificationOutcome::Valid
+        );
+        assert_eq!(
+            proof_engine
+                .verify_execution_proof(&proof(vec![9]))
+                .expect("mock verification succeeds"),
             ProofVerificationOutcome::Invalid
         );
     }

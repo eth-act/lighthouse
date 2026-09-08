@@ -4222,6 +4222,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     // unreachable).
                     ExecutionProofError::ProofEngineMissing
                     | ExecutionProofError::ProofEngine(_)
+                    | ExecutionProofError::ProofEngineTask(_)
                     | ExecutionProofError::BeaconChainError(_) => (MessageAcceptance::Ignore, None),
                 };
                 if let Some(action) = peer_action {

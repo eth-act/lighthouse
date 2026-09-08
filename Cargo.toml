@@ -140,8 +140,6 @@ educe = "0.6"
 eip_3076 = { path = "common/eip_3076" }
 either = "1.9"
 environment = { path = "lighthouse/environment" }
-ere-catalog = { git = "https://github.com/eth-act/ere", rev = "ab4598a874d4456d90884072561a39d771e61375" }
-ere-verifier = { git = "https://github.com/eth-act/ere", rev = "ab4598a874d4456d90884072561a39d771e61375" }
 eth2 = { path = "common/eth2" }
 eth2_config = { path = "common/eth2_config" }
 eth2_key_derivation = { path = "crypto/eth2_key_derivation" }

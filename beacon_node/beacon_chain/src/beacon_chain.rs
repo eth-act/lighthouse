@@ -115,7 +115,7 @@ use operation_pool::{
     CompactAttestationRef, OperationPool, PersistedOperationPool, ReceivedPreCapella,
 };
 use parking_lot::{Mutex, RwLock};
-use proof_engine::ProofEngine;
+use proof_engine::ProofEngineT;
 use proto_array::{DoNotReOrg, ProposerHeadError, ReOrgThreshold};
 use rand::RngCore;
 use safe_arith::SafeArith;
@@ -335,6 +335,7 @@ pub trait BeaconChainTypes: Send + Sync + 'static {
     type ColdStore: store::ItemStore;
     type SlotClock: slot_clock::SlotClock;
     type EthSpec: types::EthSpec;
+    type ProofEngine: ProofEngineT;
 }
 
 struct PartialBeaconBlock<E: EthSpec> {
@@ -462,7 +463,7 @@ pub struct BeaconChain<T: BeaconChainTypes> {
     /// Interfaces with the execution client.
     pub execution_layer: Option<ExecutionLayer<T::EthSpec>>,
     /// Client for the EIP-8025 proof engine, if one is configured.
-    pub proof_engine: Option<Arc<ProofEngine>>,
+    pub proof_engine: Option<Arc<T::ProofEngine>>,
     /// Orchestrates direct builder bid requests and preference submissions over the Gloas Builder
     /// API. Present only when the Gloas fork is scheduled.
     pub builders: Option<Arc<Builders>>,
