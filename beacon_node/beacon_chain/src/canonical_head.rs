@@ -1794,6 +1794,13 @@ fn spawn_execution_layer_updates<T: BeaconChainTypes>(
         .clone()
         .spawn_handle(
             async move {
+                // A proof-only node has no execution engine to notify, and no payload to prepare
+                // for. Both routines below would error on every head update, so skip them.
+                if chain.execution_layer.is_none() {
+                    debug!("No execution layer, skipping execution layer updates");
+                    return;
+                }
+
                 // Avoids raising an error before Bellatrix.
                 //
                 // See `Self::prepare_beacon_proposer` for more detail.

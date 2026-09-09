@@ -840,8 +840,9 @@ pub fn cli_app() -> Command {
                 .alias("execution-endpoints")
                 .help("Server endpoint for an execution layer JWT-authenticated HTTP \
                        JSON-RPC connection. Uses the same endpoint to populate the \
-                       deposit cache.")
-                .required(true)
+                       deposit cache. Optional: at least one of --execution-endpoint \
+                       or --proof-engine must be provided.")
+                .required(false)
                 .action(ArgAction::Set)
                 .display_order(0)
         )
@@ -853,7 +854,9 @@ pub fn cli_app() -> Command {
                 .default_missing_value("")
                 .help("Enable the experimental in-process EIP-8025 proof engine. If PATH is \
                        omitted, use the built-in reth verifier configuration for OpenVM, SP1, \
-                       and Zisk. Otherwise, PATH must contain a JSON ProofEngineConfig.")
+                       and Zisk. Otherwise, PATH must contain a JSON ProofEngineConfig. \
+                       Supplying this flag without --execution-endpoint runs a proof-only node \
+                       that has no execution layer.")
                 .action(ArgAction::Set)
                 .display_order(0)
         )
@@ -1718,5 +1721,36 @@ mod tests {
             custom.get_one::<String>("proof-engine").map(String::as_str),
             Some("proof-engine.json")
         );
+    }
+
+    #[test]
+    fn proof_only_node_needs_no_execution_endpoint() {
+        let matches = cli_app()
+            .try_get_matches_from(["beacon_node", "--proof-engine"])
+            .expect("a proof-only node parses without an execution endpoint");
+
+        assert_eq!(
+            matches
+                .get_one::<String>("proof-engine")
+                .map(String::as_str),
+            Some("")
+        );
+        assert!(matches.get_one::<String>("execution-endpoint").is_none());
+    }
+
+    /// Neither endpoint is rejected by `get_config`, not by clap, so that the error names both
+    /// flags. Clap must accept the bare command for that check to be reached.
+    #[test]
+    fn execution_endpoint_is_not_required_by_clap() {
+        cli_app()
+            .try_get_matches_from(["beacon_node"])
+            .expect("clap does not require an execution endpoint");
+    }
+
+    #[test]
+    fn execution_jwt_still_requires_an_execution_endpoint() {
+        cli_app()
+            .try_get_matches_from(["beacon_node", "--execution-jwt", "jwt.hex"])
+            .expect_err("a JWT without an execution endpoint is rejected");
     }
 }

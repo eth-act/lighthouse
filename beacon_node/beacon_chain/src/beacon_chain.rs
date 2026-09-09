@@ -7102,6 +7102,18 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             .map(|status| status.is_optimistic_or_invalid())
     }
 
+    /// Returns `true` if this node cannot currently reach an execution engine.
+    ///
+    /// A proof-only node has no execution layer to be offline: it validates execution with the
+    /// in-process proof engine instead. A node with neither cannot validate execution at all, so
+    /// it is reported as offline.
+    pub async fn is_execution_layer_offline(&self) -> bool {
+        match self.execution_layer.as_ref() {
+            Some(execution_layer) => execution_layer.is_offline_or_erroring().await,
+            None => self.proof_engine.is_none(),
+        }
+    }
+
     pub fn is_optimistic_or_invalid_block_root(
         &self,
         block_slot: Slot,

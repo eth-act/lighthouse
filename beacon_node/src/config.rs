@@ -298,43 +298,6 @@ pub fn get_config<E: EthSpec>(
         client_config.http_metrics.allocator_metrics_enabled = false;
     }
 
-    // `--execution-endpoint` is required now.
-    let endpoints: String = clap_utils::parse_required(cli_args, "execution-endpoint")?;
-    let mut el_config = execution_layer::Config::default();
-
-    // Parse a single execution endpoint, logging warnings if multiple endpoints are supplied.
-    let execution_endpoint = parse_only_one_value(
-        endpoints.as_str(),
-        SensitiveUrl::parse,
-        "--execution-endpoint",
-    )?;
-
-    // JWTs are required if `--execution-endpoint` is supplied. They can be either passed via
-    // file_path or directly as string.
-    let secret_file: PathBuf;
-    // Parse a single JWT secret from a given file_path, logging warnings if multiple are supplied.
-    if let Some(secret_files) = cli_args.get_one::<String>("execution-jwt") {
-        secret_file = parse_only_one_value(secret_files, PathBuf::from_str, "--execution-jwt")?;
-    // Check if the JWT secret key is passed directly via cli flag and persist it to the default
-    // file location.
-    } else if let Some(jwt_secret_key) = cli_args.get_one::<String>("execution-jwt-secret-key") {
-        use std::fs::File;
-        use std::io::Write;
-        secret_file = client_config.data_dir().join(DEFAULT_JWT_FILE);
-        let mut jwt_secret_key_file = File::create(secret_file.clone())
-            .map_err(|e| format!("Error while creating jwt_secret_key file: {:?}", e))?;
-        jwt_secret_key_file
-            .write_all(jwt_secret_key.as_bytes())
-            .map_err(|e| {
-                format!(
-                    "Error occurred while writing to jwt_secret_key file: {:?}",
-                    e
-                )
-            })?;
-    } else {
-        return Err("Error! Please set either --execution-jwt file_path or --execution-jwt-secret-key directly via cli when using --execution-endpoint".to_string());
-    }
-
     // Configure the in-process EIP-8025 proof verifiers, if enabled.
     if let Some(path) = cli_args.get_one::<String>("proof-engine") {
         client_config.proof_engine = Some(if path.is_empty() {
@@ -348,36 +311,92 @@ pub fn get_config<E: EthSpec>(
         client_config.network.enable_execution_proof = true;
     }
 
-    // Parse and set the payload builder, if any.
-    if let Some(endpoint) = cli_args.get_one::<String>("builder") {
-        let payload_builder = parse_only_one_value(endpoint, SensitiveUrl::parse, "--builder")?;
-        el_config.builder_url = Some(payload_builder);
+    // Parse a single execution endpoint, logging warnings if multiple endpoints are supplied.
+    //
+    // The endpoint is optional: a proof-only node verifies execution with the in-process proof
+    // engine instead of an execution engine, and runs without an `ExecutionLayer` entirely.
+    let execution_endpoint = cli_args
+        .get_one::<String>("execution-endpoint")
+        .map(|endpoints| {
+            parse_only_one_value(
+                endpoints.as_str(),
+                SensitiveUrl::parse,
+                "--execution-endpoint",
+            )
+        })
+        .transpose()?;
 
-        el_config.builder_user_agent = clap_utils::parse_optional(cli_args, "builder-user-agent")?;
-
-        el_config.builder_header_timeout =
-            clap_utils::parse_optional(cli_args, "builder-header-timeout")?
-                .map(Duration::from_millis);
-
-        el_config.disable_builder_ssz_requests = cli_args.get_flag("builder-disable-ssz");
+    // A node must be able to validate execution somehow: either by driving an execution engine or
+    // by verifying execution proofs in-process.
+    if execution_endpoint.is_none() && client_config.proof_engine.is_none() {
+        return Err(
+            "At least one of --execution-endpoint or --proof-engine must be provided".to_string(),
+        );
     }
 
-    // Set config values from parse values.
-    el_config.secret_file = Some(secret_file.clone());
-    el_config.execution_endpoint = Some(execution_endpoint.clone());
-    el_config.suggested_fee_recipient =
-        clap_utils::parse_optional(cli_args, "suggested-fee-recipient")?;
-    el_config.jwt_id = clap_utils::parse_optional(cli_args, "execution-jwt-id")?;
-    el_config.jwt_version = clap_utils::parse_optional(cli_args, "execution-jwt-version")?;
-    el_config
-        .default_datadir
-        .clone_from(client_config.data_dir());
-    let execution_timeout_multiplier =
-        clap_utils::parse_required(cli_args, "execution-timeout-multiplier")?;
-    el_config.execution_timeout_multiplier = Some(execution_timeout_multiplier);
+    if let Some(execution_endpoint) = execution_endpoint {
+        let mut el_config = execution_layer::Config::default();
 
-    // Store the EL config in the client config.
-    client_config.execution_layer = Some(el_config);
+        // JWTs are required if `--execution-endpoint` is supplied. They can be either passed via
+        // file_path or directly as string.
+        let secret_file: PathBuf;
+        // Parse a single JWT secret from a given file_path, logging warnings if multiple are
+        // supplied.
+        if let Some(secret_files) = cli_args.get_one::<String>("execution-jwt") {
+            secret_file = parse_only_one_value(secret_files, PathBuf::from_str, "--execution-jwt")?;
+        // Check if the JWT secret key is passed directly via cli flag and persist it to the default
+        // file location.
+        } else if let Some(jwt_secret_key) = cli_args.get_one::<String>("execution-jwt-secret-key")
+        {
+            use std::fs::File;
+            use std::io::Write;
+            secret_file = client_config.data_dir().join(DEFAULT_JWT_FILE);
+            let mut jwt_secret_key_file = File::create(secret_file.clone())
+                .map_err(|e| format!("Error while creating jwt_secret_key file: {:?}", e))?;
+            jwt_secret_key_file
+                .write_all(jwt_secret_key.as_bytes())
+                .map_err(|e| {
+                    format!(
+                        "Error occurred while writing to jwt_secret_key file: {:?}",
+                        e
+                    )
+                })?;
+        } else {
+            return Err("Error! Please set either --execution-jwt file_path or --execution-jwt-secret-key directly via cli when using --execution-endpoint".to_string());
+        }
+
+        // Parse and set the payload builder, if any.
+        if let Some(endpoint) = cli_args.get_one::<String>("builder") {
+            let payload_builder = parse_only_one_value(endpoint, SensitiveUrl::parse, "--builder")?;
+            el_config.builder_url = Some(payload_builder);
+
+            el_config.builder_user_agent =
+                clap_utils::parse_optional(cli_args, "builder-user-agent")?;
+
+            el_config.builder_header_timeout =
+                clap_utils::parse_optional(cli_args, "builder-header-timeout")?
+                    .map(Duration::from_millis);
+
+            el_config.disable_builder_ssz_requests = cli_args.get_flag("builder-disable-ssz");
+        }
+
+        // Set config values from parse values.
+        el_config.secret_file = Some(secret_file.clone());
+        el_config.execution_endpoint = Some(execution_endpoint.clone());
+        el_config.suggested_fee_recipient =
+            clap_utils::parse_optional(cli_args, "suggested-fee-recipient")?;
+        el_config.jwt_id = clap_utils::parse_optional(cli_args, "execution-jwt-id")?;
+        el_config.jwt_version = clap_utils::parse_optional(cli_args, "execution-jwt-version")?;
+        el_config
+            .default_datadir
+            .clone_from(client_config.data_dir());
+        let execution_timeout_multiplier =
+            clap_utils::parse_required(cli_args, "execution-timeout-multiplier")?;
+        el_config.execution_timeout_multiplier = Some(execution_timeout_multiplier);
+
+        // Store the EL config in the client config.
+        client_config.execution_layer = Some(el_config);
+    }
 
     // Override default trusted setup file if required
     if let Some(trusted_setup_file_path) = cli_args.get_one::<String>("trusted-setup-file-override")
