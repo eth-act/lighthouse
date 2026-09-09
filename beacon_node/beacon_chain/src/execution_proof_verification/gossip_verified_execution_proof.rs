@@ -9,7 +9,7 @@ use crate::validator_pubkey_cache::ValidatorPubkeyCache;
 use crate::{BeaconChain, BeaconChainError, BeaconChainTypes};
 use execution_layer::NewPayloadRequestGloas;
 use parking_lot::RwLock;
-use proof_engine::{ProofEngineT, ProofVerificationOutcome};
+use proof_engine::{ProofEngine, ProofVerificationOutcome};
 use ssz_types::VariableList;
 use state_processing::builder_deposits_cache::OnboardBuildersCache;
 use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
@@ -24,7 +24,7 @@ pub struct GossipVerificationContext<'a, T: BeaconChainTypes> {
     pub validator_pubkey_cache: &'a RwLock<ValidatorPubkeyCache<T>>,
     pub shuffling_cache: &'a RwLock<ShufflingCache<T::EthSpec>>,
     pub store: &'a BeaconStore<T>,
-    pub proof_engine: &'a Option<Arc<T::ProofEngine>>,
+    pub proof_engine: &'a Option<ProofEngine>,
     pub builder_onboarding_cache: Option<&'a OnboardBuildersCache>,
     pub spec: &'a ChainSpec,
     pub genesis_validators_root: Hash256,
@@ -37,7 +37,7 @@ pub struct GossipVerifiedExecutionProof {
 }
 
 impl GossipVerifiedExecutionProof {
-    pub async fn new<T: BeaconChainTypes>(
+    pub fn new<T: BeaconChainTypes>(
         proof: Arc<SignedExecutionProofEnvelope>,
         ctx: &GossipVerificationContext<'_, T>,
     ) -> Result<Self, Error> {
@@ -208,14 +208,10 @@ impl GossipVerifiedExecutionProof {
 
         // [REJECT] The proof verifies via the proof engine.
         //
-        // Proof verification is CPU-bound and runs on Tokio's blocking thread pool.
-        let proof_engine = Arc::clone(ctx.proof_engine.as_ref().ok_or(Error::ProofEngineMissing)?);
-        match tokio::task::spawn_blocking(move || {
-            proof_engine.verify_execution_proof(&execution_proof)
-        })
-        .await
-        .map_err(|error| Error::ProofEngineTask(error.to_string()))?
-        .map_err(Error::ProofEngine)?
+        let proof_engine = ctx.proof_engine.as_ref().ok_or(Error::ProofEngineMissing)?;
+        match proof_engine
+            .verify_execution_proof(&execution_proof)
+            .map_err(Error::ProofEngine)?
         {
             ProofVerificationOutcome::Invalid => return Err(Error::InvalidProof),
             ProofVerificationOutcome::Valid => {}
@@ -244,14 +240,22 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     }
 
     pub async fn verify_execution_proof_for_gossip(
-        &self,
+        self: &Arc<Self>,
         proof: Arc<SignedExecutionProofEnvelope>,
     ) -> Result<GossipVerifiedExecutionProof, Error> {
-        GossipVerifiedExecutionProof::new(
-            proof,
-            &self.execution_proof_gossip_verification_context(),
-        )
-        .await
+        let chain = self.clone();
+        self.task_executor
+            .clone()
+            .spawn_blocking_handle(
+                move || {
+                    let ctx = chain.execution_proof_gossip_verification_context();
+                    GossipVerifiedExecutionProof::new(proof, &ctx)
+                },
+                "gossip_execution_proof_verification_handle",
+            )
+            .ok_or(BeaconChainError::RuntimeShutdown)?
+            .await
+            .map_err(BeaconChainError::TokioJoin)?
     }
 }
 
@@ -260,6 +264,7 @@ mod tests {
     use super::*;
     use crate::test_utils::BeaconChainHarness;
     use bls::Signature;
+    use proof_engine::{MockProofEngine, ProofEngine};
     use types::{
         ForkName, MinimalEthSpec,
         execution::{ExecutionProofEnvelope, ProofData},
@@ -292,7 +297,7 @@ mod tests {
             .deterministic_keypairs(8)
             .fresh_ephemeral_store()
             .mock_execution_layer()
-            .proof_engine(Some(Arc::new(proof_engine::MockProofEngine::new([
+            .proof_engine(Some(ProofEngine::new(MockProofEngine::new([
                 valid_proof_data.clone(),
             ]))))
             .build();

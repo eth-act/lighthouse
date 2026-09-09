@@ -1,10 +1,10 @@
 //! In-process EIP-8025 proof verification using ERE.
 
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
-#[cfg(ere_verifier_c)]
+#[cfg(feature = "ere-verifier")]
 use std::collections::HashMap;
-use std::{collections::HashSet, str::FromStr};
-#[cfg(ere_verifier_c)]
+use std::{collections::HashSet, str::FromStr, sync::Arc};
+#[cfg(feature = "ere-verifier")]
 use tree_hash::TreeHash;
 use types::execution::{ExecutionProof, ProofType, is_supported_proof_type};
 
@@ -32,7 +32,7 @@ pub trait ProofEngineT: Send + Sync + 'static {
     ) -> Result<ProofVerificationOutcome, ProofEngineError>;
 }
 
-/// zkVM verifier supported by the ERE v0.17.0 C API.
+/// zkVM verifier supported by the ERE v0.18.0 C API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ZkvmKind {
@@ -42,7 +42,7 @@ pub enum ZkvmKind {
 }
 
 impl ZkvmKind {
-    #[cfg(ere_verifier_c)]
+    #[cfg(feature = "ere-verifier")]
     const fn ere_discriminant(self) -> u32 {
         match self {
             Self::Openvm => 0,
@@ -139,15 +139,42 @@ impl FromStr for ProofEngineConfig {
     }
 }
 
-/// Production proof engine backed by ERE's statically linked C verifier library.
+/// Cloneable handle to an execution-proof verifier.
+#[derive(Clone)]
 pub struct ProofEngine {
-    #[cfg(ere_verifier_c)]
-    verifiers: HashMap<ProofType, ere::Verifier>,
+    inner: Arc<dyn ProofEngineT>,
 }
 
 impl ProofEngine {
-    pub fn new(config: ProofEngineConfig) -> Result<Self, ProofEngineError> {
-        #[cfg(ere_verifier_c)]
+    /// Wrap an execution-proof verifier in a shared handle.
+    pub fn new(engine: impl ProofEngineT) -> Self {
+        Self {
+            inner: Arc::new(engine),
+        }
+    }
+
+    /// Construct the production proof engine from its configuration.
+    pub fn from_config(config: ProofEngineConfig) -> Result<Self, ProofEngineError> {
+        EreProofEngine::from_config(config).map(Self::new)
+    }
+
+    pub fn verify_execution_proof(
+        &self,
+        proof: &ExecutionProof,
+    ) -> Result<ProofVerificationOutcome, ProofEngineError> {
+        self.inner.verify_execution_proof(proof)
+    }
+}
+
+/// Production proof-engine implementation backed by ERE's statically linked C verifier library.
+struct EreProofEngine {
+    #[cfg(feature = "ere-verifier")]
+    verifiers: HashMap<ProofType, ere::Verifier>,
+}
+
+impl EreProofEngine {
+    fn from_config(config: ProofEngineConfig) -> Result<Self, ProofEngineError> {
+        #[cfg(feature = "ere-verifier")]
         {
             let mut verifiers = HashMap::with_capacity(config.execution_proofs.len());
 
@@ -165,7 +192,7 @@ impl ProofEngine {
             Ok(Self { verifiers })
         }
 
-        #[cfg(not(ere_verifier_c))]
+        #[cfg(not(feature = "ere-verifier"))]
         {
             let _ = config;
             Err(ProofEngineError::EreVerifierUnavailable)
@@ -173,12 +200,12 @@ impl ProofEngine {
     }
 }
 
-impl ProofEngineT for ProofEngine {
+impl ProofEngineT for EreProofEngine {
     fn verify_execution_proof(
         &self,
         proof: &ExecutionProof,
     ) -> Result<ProofVerificationOutcome, ProofEngineError> {
-        #[cfg(ere_verifier_c)]
+        #[cfg(feature = "ere-verifier")]
         {
             let verifier = self
                 .verifiers
@@ -193,7 +220,7 @@ impl ProofEngineT for ProofEngine {
             )
         }
 
-        #[cfg(not(ere_verifier_c))]
+        #[cfg(not(feature = "ere-verifier"))]
         {
             let _ = proof;
             Err(ProofEngineError::EreVerifierUnavailable)
@@ -230,7 +257,7 @@ impl ProofEngineT for MockProofEngine {
     }
 }
 
-#[cfg(ere_verifier_c)]
+#[cfg(feature = "ere-verifier")]
 fn verify_with_ere(
     verifier: &ere::Verifier,
     proof_type: ProofType,
@@ -255,14 +282,14 @@ fn verify_with_ere(
 }
 
 // OpenVM and Zisk may zero-pad the guest's public-value buffer.
-#[cfg(any(test, ere_verifier_c))]
+#[cfg(any(test, feature = "ere-verifier"))]
 fn matches_public_values(actual: &[u8], expected: &[u8]) -> bool {
     actual
         .split_at_checked(expected.len())
         .is_some_and(|(value, padding)| value == expected && padding.iter().all(|byte| *byte == 0))
 }
 
-#[cfg(ere_verifier_c)]
+#[cfg(feature = "ere-verifier")]
 mod ere {
     use super::ZkvmKind;
     use std::{ptr::NonNull, slice};
@@ -468,20 +495,32 @@ mod tests {
         assert_eq!(hex::encode(config.program_vk), DEFAULT_RETH_SP1_PROGRAM_VK);
     }
 
-    #[cfg(ere_verifier_c)]
+    #[cfg(not(feature = "ere-verifier"))]
+    #[test]
+    fn production_verifier_requires_ere_feature() {
+        let config = ProofEngineConfig::new(vec![ExecutionProofConfig::default()])
+            .expect("default configurations are valid");
+        assert!(matches!(
+            ProofEngine::from_config(config),
+            Err(ProofEngineError::EreVerifierUnavailable)
+        ));
+    }
+
+    #[cfg(feature = "ere-verifier")]
     #[test]
     fn default_config_initializes_ere_verifier() {
         let config = ProofEngineConfig::new(vec![ExecutionProofConfig::default()])
             .expect("default configurations are valid");
-        ProofEngine::new(config).expect("ERE accepts the embedded program verification key");
+        ProofEngine::from_config(config)
+            .expect("ERE accepts the embedded program verification key");
     }
 
-    #[cfg(ere_verifier_c)]
+    #[cfg(feature = "ere-verifier")]
     #[test]
     fn malformed_ere_proof_is_invalid() {
         let config = ProofEngineConfig::new(vec![ExecutionProofConfig::default()])
             .expect("SP1 configuration is valid");
-        let proof_engine = ProofEngine::new(config).expect("SP1 verifier initializes");
+        let proof_engine = ProofEngine::from_config(config).expect("SP1 verifier initializes");
         let proof = ExecutionProof::new(
             ProofData::new(vec![0xff]).expect("proof data within bound"),
             2,
@@ -509,7 +548,7 @@ mod tests {
     #[test]
     fn mock_proof_engine_matches_configured_proof_data() {
         let valid_data = vec![1, 2, 3];
-        let proof_engine = MockProofEngine::new([valid_data.clone()]);
+        let proof_engine = ProofEngine::new(MockProofEngine::new([valid_data.clone()]));
         let proof = |proof_data| {
             ExecutionProof::new(
                 ProofData::new(proof_data).expect("proof data within bound"),

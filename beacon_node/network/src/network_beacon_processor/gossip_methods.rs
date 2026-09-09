@@ -4218,11 +4218,9 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                         MessageAcceptance::Reject,
                         Some(PeerAction::LowToleranceError),
                     ),
-                    // IGNORE without penalty: local faults (proof engine missing or
-                    // unreachable).
+                    // IGNORE without penalty: local proof-engine or beacon-chain faults.
                     ExecutionProofError::ProofEngineMissing
                     | ExecutionProofError::ProofEngine(_)
-                    | ExecutionProofError::ProofEngineTask(_)
                     | ExecutionProofError::BeaconChainError(_) => (MessageAcceptance::Ignore, None),
                 };
                 if let Some(action) = peer_action {

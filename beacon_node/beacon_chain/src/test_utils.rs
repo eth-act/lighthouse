@@ -43,7 +43,7 @@ use logging::create_test_tracing_subscriber;
 use merkle_proof::MerkleTree;
 use operation_pool::ReceivedPreCapella;
 use parking_lot::{Mutex, RwLockWriteGuard};
-use proof_engine::MockProofEngine;
+use proof_engine::ProofEngine;
 use proto_array::PayloadStatus;
 use rand::Rng;
 use rand::SeedableRng;
@@ -124,7 +124,7 @@ pub fn get_kzg(spec: &ChainSpec) -> Arc<Kzg> {
 }
 
 pub type BaseHarnessType<E, THotStore, TColdStore> =
-    Witness<TestingSlotClock, E, THotStore, TColdStore, MockProofEngine>;
+    Witness<TestingSlotClock, E, THotStore, TColdStore>;
 
 pub type DiskHarnessType<E> = BaseHarnessType<E, BeaconNodeBackend, BeaconNodeBackend>;
 pub type EphemeralHarnessType<E> = BaseHarnessType<E, MemoryStore, MemoryStore>;
@@ -266,7 +266,7 @@ pub struct Builder<T: BeaconChainTypes> {
     store_mutator: Option<BoxedMutator<T::EthSpec, T::HotStore, T::ColdStore>>,
     execution_layer: Option<ExecutionLayer<T::EthSpec>>,
     mock_execution_layer: Option<MockExecutionLayer<T::EthSpec>>,
-    proof_engine: Option<Arc<T::ProofEngine>>,
+    proof_engine: Option<ProofEngine>,
     testing_slot_clock: Option<TestingSlotClock>,
     validator_monitor_config: Option<ValidatorMonitorConfig>,
     genesis_state_builder: Option<InteropGenesisBuilder<T::EthSpec>>,
@@ -565,7 +565,7 @@ where
         self
     }
 
-    pub fn proof_engine(mut self, proof_engine: Option<Arc<MockProofEngine>>) -> Self {
+    pub fn proof_engine(mut self, proof_engine: Option<ProofEngine>) -> Self {
         self.proof_engine = proof_engine;
         self
     }

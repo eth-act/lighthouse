@@ -57,8 +57,6 @@ pub enum Error {
     ProofEngineMissing,
     /// The proof engine could not complete verification (IGNORE).
     ProofEngine(ProofEngineError),
-    /// The blocking proof verification task did not complete (IGNORE).
-    ProofEngineTask(String),
     BeaconChainError(Box<BeaconChainError>),
 }
 

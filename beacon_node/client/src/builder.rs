@@ -191,8 +191,7 @@ where
 
         let proof_engine = if let Some(config) = config.proof_engine.clone() {
             Some(
-                ProofEngine::new(config)
-                    .map(Arc::new)
+                ProofEngine::from_config(config)
                     .map_err(|e| format!("unable to start proof engine: {:?}", e))?,
             )
         } else {
