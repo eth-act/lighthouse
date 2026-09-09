@@ -5,9 +5,9 @@ use std::{ptr::NonNull, slice};
 
 const ERE_OK: i32 = 0;
 
-/// Status returned by the pinned ERE C ABI.
+/// Errors returned by the ERE verifier wrapper.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Status {
+pub(super) enum EreVerifierError {
     NullPointer,
     BadZkvmKind,
     DecodeProgramVk,
@@ -17,7 +17,7 @@ pub(super) enum Status {
     Unknown(i32),
 }
 
-impl Status {
+impl EreVerifierError {
     fn from_code(code: i32) -> Self {
         match code {
             1 => Self::NullPointer,
@@ -27,18 +27,6 @@ impl Status {
             5 => Self::Verify,
             6 => Self::Internal,
             code => Self::Unknown(code),
-        }
-    }
-
-    pub(super) fn code(self) -> i32 {
-        match self {
-            Self::NullPointer => 1,
-            Self::BadZkvmKind => 2,
-            Self::DecodeProgramVk => 3,
-            Self::DecodeProof => 4,
-            Self::Verify => 5,
-            Self::Internal => 6,
-            Self::Unknown(code) => code,
         }
     }
 }
@@ -74,7 +62,10 @@ unsafe impl Send for Verifier {}
 unsafe impl Sync for Verifier {}
 
 impl Verifier {
-    pub(super) fn new(zkvm_kind: ZkvmKind, encoded_program_vk: &[u8]) -> Result<Self, Status> {
+    pub(super) fn new(
+        zkvm_kind: ZkvmKind,
+        encoded_program_vk: &[u8],
+    ) -> Result<Self, EreVerifierError> {
         let mut output = std::ptr::null_mut();
         // SAFETY: the input slice is readable for its length and `output` is writable.
         let status = unsafe {
@@ -90,12 +81,14 @@ impl Verifier {
             )
         };
         if status != ERE_OK {
-            return Err(Status::from_code(status));
+            return Err(EreVerifierError::from_code(status));
         }
-        NonNull::new(output).map(Self).ok_or(Status::Internal)
+        NonNull::new(output)
+            .map(Self)
+            .ok_or(EreVerifierError::Internal)
     }
 
-    pub(super) fn verify(&self, encoded_proof: &[u8]) -> Result<Vec<u8>, Status> {
+    pub(super) fn verify(&self, encoded_proof: &[u8]) -> Result<Vec<u8>, EreVerifierError> {
         let mut output = std::ptr::null_mut();
         let mut output_len = 0;
         // SAFETY: the handle is live, the proof slice is readable for its length, and both
@@ -114,10 +107,12 @@ impl Verifier {
                 // SAFETY: ERE initialized this output allocation and reports its length.
                 unsafe { ere_bytes_free(output, output_len) };
             }
-            return Err(Status::from_code(status));
+            return Err(EreVerifierError::from_code(status));
         }
         if output.is_null() {
-            return (output_len == 0).then(Vec::new).ok_or(Status::Internal);
+            return (output_len == 0)
+                .then(Vec::new)
+                .ok_or(EreVerifierError::Internal);
         }
 
         // SAFETY: ERE returned a readable allocation of exactly `output_len` bytes.
@@ -137,24 +132,22 @@ impl Drop for Verifier {
 
 #[cfg(test)]
 mod tests {
-    use super::Status;
+    use super::EreVerifierError;
 
     #[test]
     fn decodes_ere_status_codes() {
         let statuses = [
-            (1, Status::NullPointer),
-            (2, Status::BadZkvmKind),
-            (3, Status::DecodeProgramVk),
-            (4, Status::DecodeProof),
-            (5, Status::Verify),
-            (6, Status::Internal),
-            (99, Status::Unknown(99)),
+            (1, EreVerifierError::NullPointer),
+            (2, EreVerifierError::BadZkvmKind),
+            (3, EreVerifierError::DecodeProgramVk),
+            (4, EreVerifierError::DecodeProof),
+            (5, EreVerifierError::Verify),
+            (6, EreVerifierError::Internal),
+            (99, EreVerifierError::Unknown(99)),
         ];
 
         for (code, expected) in statuses {
-            let status = Status::from_code(code);
-            assert_eq!(status, expected);
-            assert_eq!(status.code(), code);
+            assert_eq!(EreVerifierError::from_code(code), expected);
         }
     }
 }

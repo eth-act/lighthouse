@@ -3,7 +3,7 @@
 mod bindings;
 
 use crate::{ProofEngineConfig, ProofEngineError, ProofEngineT, ProofVerificationOutcome};
-use bindings::{Status, Verifier};
+use bindings::{EreVerifierError, Verifier};
 use std::collections::HashMap;
 use tree_hash::TreeHash;
 use types::execution::{ExecutionProof, ProofType};
@@ -19,20 +19,13 @@ impl EreProofEngine {
         let mut verifiers = HashMap::with_capacity(config.execution_proofs().len());
 
         for config in config.execution_proofs() {
-            let verifier = Verifier::new(config.zkvm_kind, &config.program_vk).map_err(
-                |status| match status {
-                    Status::DecodeProgramVk => ProofEngineError::InvalidProgramVk {
-                        proof_type: config.proof_type,
-                    },
-                    Status::Internal => ProofEngineError::VerifierInternal {
-                        proof_type: config.proof_type,
-                    },
-                    status => ProofEngineError::UnexpectedVerifierStatus {
-                        proof_type: config.proof_type,
-                        status: status.code(),
-                    },
-                },
-            )?;
+            let verifier =
+                Verifier::new(config.zkvm_kind, &config.program_vk).map_err(|error| {
+                    ProofEngineError::ProofVerifierError(format!(
+                        "failed to initialize ERE verifier for proof type {:?}: {error:?}",
+                        config.proof_type
+                    ))
+                })?;
             verifiers.insert(config.proof_type, verifier);
         }
 
@@ -52,19 +45,14 @@ impl ProofEngineT for EreProofEngine {
         let expected_public_values = proof.public_input.tree_hash_root();
         let public_values = match verifier.verify(proof.proof_data.as_ref()) {
             Ok(public_values) => public_values,
-            Err(Status::DecodeProof | Status::Verify) => {
+            Err(EreVerifierError::DecodeProof | EreVerifierError::Verify) => {
                 return Ok(ProofVerificationOutcome::Invalid);
             }
-            Err(Status::Internal) => {
-                return Err(ProofEngineError::VerifierInternal {
-                    proof_type: proof.proof_type,
-                });
-            }
-            Err(status) => {
-                return Err(ProofEngineError::UnexpectedVerifierStatus {
-                    proof_type: proof.proof_type,
-                    status: status.code(),
-                });
+            Err(error) => {
+                return Err(ProofEngineError::ProofVerifierError(format!(
+                    "ERE verifier failed for proof type {:?}: {error:?}",
+                    proof.proof_type
+                )));
             }
         };
 
