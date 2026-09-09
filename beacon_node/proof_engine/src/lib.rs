@@ -14,11 +14,13 @@ pub use config::{ExecutionProofConfig, ProofEngineConfig, ZkvmKind};
 #[derive(Debug)]
 pub enum ProofEngineError {
     /// ERE rejected the configured program verification key.
-    InvalidProgramVk { proof_type: ProofType, status: i32 },
+    InvalidProgramVk { proof_type: ProofType },
     /// No verifier is configured for the proof's EIP-8025 proof type.
     UnconfiguredProofType(ProofType),
-    /// ERE could not complete verification for a reason other than an invalid proof.
-    Verifier { proof_type: ProofType, status: i32 },
+    /// ERE reported an unexpected internal failure.
+    VerifierInternal { proof_type: ProofType },
+    /// ERE returned a status not expected from the invoked operation.
+    UnexpectedVerifierStatus { proof_type: ProofType, status: i32 },
 }
 
 /// Outcome of proof verification. `Invalid` means the artifact does not verify; it says nothing
