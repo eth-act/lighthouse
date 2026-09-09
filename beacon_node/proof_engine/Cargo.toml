@@ -8,6 +8,7 @@ authors = ["Sigma Prime <contact@sigmaprime.io>"]
 ere-verifier = ["dep:flate2", "dep:reqwest", "dep:sha2", "dep:tar"]
 
 [dependencies]
+ethereum_serde_utils = { workspace = true }
 hex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

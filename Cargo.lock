@@ -7194,6 +7194,7 @@ dependencies = [
 name = "proof_engine"
 version = "0.1.0"
 dependencies = [
+ "ethereum_serde_utils",
  "flate2",
  "hex",
  "reqwest",

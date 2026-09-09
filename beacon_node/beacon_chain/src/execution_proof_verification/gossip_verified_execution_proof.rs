@@ -264,7 +264,7 @@ mod tests {
     use super::*;
     use crate::test_utils::BeaconChainHarness;
     use bls::Signature;
-    use proof_engine::{MockProofEngine, ProofEngine};
+    use proof_engine::{ProofEngine, test_utils::MockProofEngine};
     use types::{
         ForkName, MinimalEthSpec,
         execution::{ExecutionProofEnvelope, ProofData},

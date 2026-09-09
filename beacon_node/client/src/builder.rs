@@ -33,6 +33,7 @@ use lighthouse_network::identity::Keypair;
 use lighthouse_network::{NetworkGlobals, prometheus_client::registry::Registry};
 use monitoring_api::{MonitoringHttpClient, ProcessType};
 use network::{NetworkConfig, NetworkSenders, NetworkService};
+#[cfg(feature = "ere-verifier")]
 use proof_engine::ProofEngine;
 use rand::SeedableRng;
 use rand::rngs::{OsRng, StdRng};
@@ -190,10 +191,21 @@ where
         };
 
         let proof_engine = if let Some(config) = config.proof_engine.clone() {
-            Some(
-                ProofEngine::from_config(config)
-                    .map_err(|e| format!("unable to start proof engine: {:?}", e))?,
-            )
+            #[cfg(feature = "ere-verifier")]
+            {
+                let engine = proof_engine::ere::EreProofEngine::new(config)
+                    .map_err(|e| format!("unable to start proof engine: {e:?}"))?;
+                Some(ProofEngine::new(engine))
+            }
+
+            #[cfg(not(feature = "ere-verifier"))]
+            {
+                let _ = config;
+                return Err(
+                    "unable to start proof engine: Lighthouse was built without `ere-verifier`"
+                        .to_string(),
+                );
+            }
         } else {
             None
         };
