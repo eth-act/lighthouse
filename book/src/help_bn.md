@@ -314,9 +314,9 @@ Options:
           values are useful for ensuring the EL is given ample notice. Default:
           1/3 of a slot.
       --proof-engine [<PATH>]
-          Enable the in-process EIP-8025 proof engine. With no PATH, uses the
-          built-in SP1/reth verifier configuration. Otherwise, PATH must contain
-          a JSON ProofEngineConfig. Experimental.
+          Enable the experimental in-process EIP-8025 proof engine. If PATH is
+          omitted, use the built-in reth verifier configuration for OpenVM, SP1,
+          and Zisk. Otherwise, PATH must contain a JSON ProofEngineConfig.
       --proposer-reorg-cutoff <MILLISECONDS>
           DEPRECATED. This flag has no effect.
       --proposer-reorg-disallowed-offsets <N1,N2,...>
