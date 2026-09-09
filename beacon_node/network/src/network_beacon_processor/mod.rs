@@ -39,8 +39,8 @@ use tokio::sync::mpsc::{self, error::TrySendError};
 use tracing::{debug, error, instrument, trace, warn};
 use types::*;
 use {
-    beacon_processor::BeaconProcessorChannels, store::MemoryStore,
-    tokio::sync::mpsc::UnboundedSender,
+    beacon_chain::builder::Witness, beacon_processor::BeaconProcessorChannels,
+    slot_clock::ManualSlotClock, store::MemoryStore, tokio::sync::mpsc::UnboundedSender,
 };
 
 pub use sync_methods::{BlockProcessingResult, ChainSegmentProcessId};
@@ -1264,8 +1264,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
     }
 }
 
-pub(crate) type TestBeaconChainType<E> =
-    beacon_chain::test_utils::BaseHarnessType<E, MemoryStore, MemoryStore>;
+pub(crate) type TestBeaconChainType<E> = Witness<ManualSlotClock, E, MemoryStore, MemoryStore>;
 
 impl<E: EthSpec> NetworkBeaconProcessor<TestBeaconChainType<E>> {
     // Instantiates a mostly non-functional version of `Self` and returns the
