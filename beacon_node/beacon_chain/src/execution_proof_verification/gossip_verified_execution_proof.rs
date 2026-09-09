@@ -207,7 +207,6 @@ impl GossipVerifiedExecutionProof {
         }
 
         // [REJECT] The proof verifies via the proof engine.
-        //
         let proof_engine = ctx.proof_engine.as_ref().ok_or(Error::ProofEngineMissing)?;
         match proof_engine
             .verify_execution_proof(&execution_proof)
