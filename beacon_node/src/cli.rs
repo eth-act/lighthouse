@@ -851,9 +851,9 @@ pub fn cli_app() -> Command {
                 .value_name("PATH")
                 .num_args(0..=1)
                 .default_missing_value("")
-                .help("Enable the in-process EIP-8025 proof engine. With no PATH, uses the \
-                       built-in SP1/reth verifier configuration. Otherwise, PATH must contain a \
-                       JSON ProofEngineConfig. Experimental.")
+                .help("Enable the experimental in-process EIP-8025 proof engine. If PATH is \
+                       omitted, use the built-in reth verifier configuration for OpenVM, SP1, \
+                       and Zisk. Otherwise, PATH must contain a JSON ProofEngineConfig.")
                 .action(ArgAction::Set)
                 .display_order(0)
         )

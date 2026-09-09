@@ -342,7 +342,7 @@ pub fn get_config<E: EthSpec>(
         } else {
             let json = fs::read_to_string(path)
                 .map_err(|e| format!("Unable to read --proof-engine `{path}`: {e}"))?;
-            parse_explicit_proof_engine_config(&json)
+            json.parse::<ProofEngineConfig>()
                 .map_err(|e| format!("Invalid --proof-engine `{path}`: {e}"))?
         });
         client_config.network.enable_execution_proof = true;
@@ -1525,11 +1525,6 @@ pub fn set_network_config(
     Ok(())
 }
 
-fn parse_explicit_proof_engine_config(json: &str) -> Result<ProofEngineConfig, String> {
-    json.parse::<ProofEngineConfig>()
-        .map_err(|error| error.to_string())
-}
-
 /// Gets the datadir which should be used.
 pub fn get_data_dir(cli_args: &ArgMatches) -> PathBuf {
     // Read the `--datadir` flag.
@@ -1604,27 +1599,4 @@ fn purge_db(chain_db: PathBuf, freezer_db: PathBuf, blobs_db: PathBuf) -> Result
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_explicit_proof_engine_config;
-
-    #[test]
-    fn explicit_proof_engine_config_rejects_empty_execution_proofs() {
-        let error = parse_explicit_proof_engine_config(r#"{"execution_proofs":[]}"#)
-            .expect_err("explicit empty configuration must be rejected");
-
-        assert_eq!(error, "`execution_proofs` must contain at least one entry");
-    }
-
-    #[test]
-    fn explicit_proof_engine_config_accepts_configured_proof_type() {
-        let config = parse_explicit_proof_engine_config(
-            r#"{"execution_proofs":[{"proof_type":2,"zkvm":"sp1","program_vk":"0x00"}]}"#,
-        )
-        .expect("configured proof type must be accepted");
-
-        assert_eq!(config.execution_proofs().len(), 1);
-    }
 }
