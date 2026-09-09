@@ -94,7 +94,7 @@ pub struct BeaconChainBuilder<T: BeaconChainTypes> {
     >,
     op_pool: Option<OperationPool<T::EthSpec>>,
     execution_layer: Option<ExecutionLayer<T::EthSpec>>,
-    proof_engine: Option<Arc<ProofEngine>>,
+    proof_engine: Option<ProofEngine>,
     builders: Option<Arc<Builders>>,
     event_handler: Option<ServerSentEventHandler<T::EthSpec>>,
     slot_clock: Option<T::SlotClock>,
@@ -639,7 +639,7 @@ where
     }
 
     /// Sets the `BeaconChain` proof engine.
-    pub fn proof_engine(mut self, proof_engine: Option<Arc<ProofEngine>>) -> Self {
+    pub fn proof_engine(mut self, proof_engine: Option<ProofEngine>) -> Self {
         self.proof_engine = proof_engine;
         self
     }
@@ -910,12 +910,12 @@ where
         // This *must* be stored before constructing the `BeaconChain`, so that its `Drop` instance
         // doesn't write a `PersistedBeaconChain` without the rest of the batch.
         self.pending_io_batch.push(BeaconChain::<
-            Witness<TSlotClock,  E, THotStore, TColdStore>,
+            Witness<TSlotClock, E, THotStore, TColdStore>,
         >::persist_head_in_batch_standalone(
             genesis_block_root
         ));
         self.pending_io_batch.push(BeaconChain::<
-            Witness<TSlotClock,  E, THotStore, TColdStore>,
+            Witness<TSlotClock, E, THotStore, TColdStore>,
         >::persist_fork_choice_in_batch_standalone(
             &fork_choice,
             store.get_config(),

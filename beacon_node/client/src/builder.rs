@@ -33,6 +33,7 @@ use lighthouse_network::identity::Keypair;
 use lighthouse_network::{NetworkGlobals, prometheus_client::registry::Registry};
 use monitoring_api::{MonitoringHttpClient, ProcessType};
 use network::{NetworkConfig, NetworkSenders, NetworkService};
+#[cfg(feature = "ere-verifier")]
 use proof_engine::ProofEngine;
 use rand::SeedableRng;
 use rand::rngs::{OsRng, StdRng};
@@ -189,15 +190,25 @@ where
             None
         };
 
-        let proof_engine = config
-            .proof_engine_endpoint
-            .clone()
-            .map(|url| {
-                ProofEngine::new(url)
-                    .map(Arc::new)
-                    .map_err(|e| format!("unable to start proof engine client: {:?}", e))
-            })
-            .transpose()?;
+        let proof_engine = if let Some(config) = config.proof_engine.clone() {
+            #[cfg(feature = "ere-verifier")]
+            {
+                let engine = proof_engine::ere::EreProofEngine::new(config)
+                    .map_err(|e| format!("unable to start proof engine: {e:?}"))?;
+                Some(ProofEngine::new(engine))
+            }
+
+            #[cfg(not(feature = "ere-verifier"))]
+            {
+                let _ = config;
+                return Err(
+                    "unable to start proof engine: Lighthouse was built without `ere-verifier`"
+                        .to_string(),
+                );
+            }
+        } else {
+            None
+        };
 
         // Construct the Gloas builder handle (Builder API client) when the Gloas fork is scheduled.
         // The client is stateless w.r.t. the target builder — each request carries its own URL — but
