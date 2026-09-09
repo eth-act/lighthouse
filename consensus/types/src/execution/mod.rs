@@ -33,8 +33,9 @@ pub use execution_payload_header::{
     ExecutionPayloadHeaderRef, ExecutionPayloadHeaderRefMut,
 };
 pub use execution_proof::{
-    ExecutionProof, ExecutionProofEnvelope, MaxProofSize, ProofData, ProofType, PublicInput,
-    SignedExecutionProofEnvelope, is_supported_proof_type,
+    ExecutionProof, ExecutionProofEnvelope, MaxExecutionProofsPerPayload, MaxProofSize, ProofData,
+    ProofType, PublicInput, SignedExecutionProofEnvelope, SignedExecutionProofEnvelopes,
+    is_supported_proof_type,
 };
 pub use execution_requests::{
     BuilderDepositRequests, BuilderExitRequests, ConsolidationRequests, DepositRequests,
