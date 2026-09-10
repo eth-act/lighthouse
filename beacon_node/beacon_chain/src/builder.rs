@@ -1004,8 +1004,8 @@ where
         debug!(?custody_context, "Loaded persisted custody context");
         let custody_context = Arc::new(custody_context);
 
-        // Only a node without an execution engine needs proofs before it can import a payload.
-        // With an engine the payload is validated by re-executing it, so proofs are verified and
+        // Only a node without an engine needs proofs before import. With one, re-execution
+        // validates the payload, so proofs are observed but do not hold it up.
         let required_execution_proofs =
             if self.execution_layer.is_none() && self.proof_engine.is_some() {
                 REQUIRED_EXECUTION_PROOFS

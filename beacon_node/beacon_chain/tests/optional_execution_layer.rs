@@ -19,7 +19,7 @@ const VALIDATOR_COUNT: usize = 32;
 static KEYPAIRS: LazyLock<Vec<Keypair>> =
     LazyLock::new(|| types::test_utils::generate_deterministic_keypairs(VALIDATOR_COUNT));
 
-/// `test_spec` starts at Bellatrix or later, so execution is always enabled in these harnesses.
+/// Bellatrix or later, so execution is always enabled in these harnesses.
 fn spec() -> Arc<ChainSpec> {
     Arc::new(test_spec::<E>())
 }
@@ -83,8 +83,7 @@ async fn execution_backed_chain_retains_execution_layer() {
     );
 }
 
-/// A proof-only node has no execution layer to be offline, so it must not report itself as such.
-/// Validator clients refuse to use a node whose execution layer is offline.
+/// Reporting itself offline would make validator clients refuse the node.
 #[tokio::test]
 async fn proof_only_chain_is_not_execution_layer_offline() {
     let harness = proof_only_harness();
@@ -107,8 +106,7 @@ async fn execution_backed_chain_reports_engine_status() {
     assert!(!harness.chain.is_execution_layer_offline().await);
 }
 
-/// Only a node validating by proofs alone waits on them before importing a payload. With an
-/// engine the payload is validated by re-execution, so proofs must not hold up import.
+/// Only a node validating by proofs alone waits on them before importing a payload.
 #[tokio::test]
 async fn only_a_proof_only_node_gates_import_on_proofs() {
     assert_eq!(
@@ -137,8 +135,8 @@ async fn only_a_proof_only_node_gates_import_on_proofs() {
     );
 }
 
-/// Proposer preparation needs an engine to send payload attributes to. Without one it reports the
-/// absence rather than panicking. The periodic callers skip it entirely.
+/// Without an engine there is nowhere to send payload attributes, so this reports the absence
+/// rather than panicking. The periodic callers skip it entirely.
 #[tokio::test]
 async fn prepare_beacon_proposer_reports_missing_execution_layer() {
     let harness = proof_only_harness();
@@ -154,12 +152,11 @@ async fn prepare_beacon_proposer_reports_missing_execution_layer() {
     ));
 }
 
-/// Block production needs an engine to build a payload. Without one it reports the absence rather
-/// than producing a block with a placeholder payload.
+/// Local payload building needs an engine, so without one this reports the absence rather than
+/// producing a placeholder.
 ///
-/// Gloas is skipped for want of test setup, not because it behaves differently. Gloas block
-/// production also builds locally before ranking that build against builder bids, so it reaches
-/// the same error, but this harness does not get that far and fails earlier on the state variant.
+/// Gloas is skipped for want of test setup, not because it behaves differently: this harness
+/// fails earlier on the state variant.
 #[tokio::test]
 async fn block_production_reports_missing_execution_layer() {
     let harness = proof_only_harness();
@@ -204,8 +201,7 @@ async fn block_production_reports_missing_execution_layer() {
     }
 }
 
-/// Fork choice must not attempt to notify an engine that does not exist. `recompute_head_at_slot`
-/// spawns the execution layer update task, which returns early on a proof-only node.
+/// Recomputing the head must not attempt to notify an engine that does not exist.
 #[tokio::test]
 async fn recompute_head_succeeds_without_execution_layer() {
     let harness = proof_only_harness();

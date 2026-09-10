@@ -46,19 +46,12 @@ impl<T: BeaconChainTypes> PayloadNotifier<T> {
                         Some(PayloadVerificationStatus::Optimistic)
                     }
                 }
-                // A proof-only node has no engine to execute the payload against. There is no
-                // engine verdict to wait on, and the envelope only reaches import once
-                // `REQUIRED_EXECUTION_PROOFS` proofs have verified it, so the question the engine
-                // would answer does not apply.
+                // No engine to execute against, and no verdict to wait on: the envelope only
+                // imports once its proofs verify. Not `Optimistic`, which Gloas import rejects
+                // outright.
                 //
-                // This must not be `Optimistic`: Gloas does not support optimistic import, and
-                // `into_executed_payload_envelope` rejects an optimistic envelope outright, which
-                // would stop a proof-only node importing any payload at all.
-                //
-                // The arm above is left alone deliberately. Its `None` means the cheap hash check
-                // failed and the engine must do the slow one, so falling through to the helper's
-                // `NoExecutionConnection` is better than reporting a payload nothing checked as
-                // settled.
+                // The arm above keeps its `None`: the cheap hash check failed there and only an
+                // engine can do the slow one, so erroring beats calling it settled.
                 _ if chain.execution_layer.is_none() => Some(PayloadVerificationStatus::Irrelevant),
                 _ => None,
             }
@@ -123,12 +116,9 @@ mod tests {
 
     type E = MinimalEthSpec;
 
-    /// A proof-only node has no engine to ask, so the notifier must decide the status itself.
-    /// Reaching `notify_new_payload` would fail: that helper requires an execution layer.
-    ///
-    /// The status must not be optimistic. `into_executed_payload_envelope` rejects an optimistic
-    /// envelope with `OptimisticSyncNotSupported`, so an optimistic status here would stop a
-    /// proof-only node importing any payload.
+    /// Without an engine the notifier must decide the status itself, and it must not be
+    /// optimistic: Gloas import rejects an optimistic envelope, which would stop such a node
+    /// importing any payload.
     #[tokio::test]
     async fn proof_only_node_precomputes_a_non_optimistic_status() {
         let spec = Arc::new(ForkName::Gloas.make_genesis_spec(E::default_spec()));
@@ -156,8 +146,7 @@ mod tests {
             chain,
             envelope,
             block,
-            // `Yes` is what the gossip path uses, and is the case that would otherwise consult
-            // the engine.
+            // What the gossip path uses, and the case that would otherwise consult the engine.
             NotifyExecutionLayer::Yes,
         )
         .expect("the notifier is constructed");

@@ -167,10 +167,10 @@ impl GossipVerifiedExecutionProof {
         )
         .map_err(BeaconStateError::from)
         .map_err(BeaconChainError::from)?;
-        // [IGNORE] The payload has been received and executed locally. Without an execution
-        // layer the store only gains the envelope after an import that itself waits for
-        // `REQUIRED_EXECUTION_PROOFS`, so reading the store alone would deadlock. Read the pending
-        // cache first, falling back to the store for blocks already imported and evicted from it.
+        // [IGNORE] The payload has been received and executed locally. Without an engine the
+        // store only gains the envelope after an import that waits on proofs, so reading the
+        // store alone would deadlock. Try the pending cache first, then the store for blocks
+        // already imported and evicted from it.
         let payload_envelope = ctx
             .pending_payload_cache
             .get_executed_payload_envelope(&block_root)
@@ -453,9 +453,8 @@ mod tests {
 
     /// A proof must verify against an envelope that has been executed but is not yet imported.
     ///
-    /// On a node without an execution layer the envelope reaches the store only after
-    /// `REQUIRED_EXECUTION_PROOFS` proofs are cached, and a proof is cached only after it verifies
-    /// here. A store-only lookup would close that cycle and no proof could ever verify.
+    /// Without an engine the envelope reaches the store only after its proofs are cached, and a
+    /// proof is cached only after it verifies here. A store-only lookup closes that cycle.
     #[tokio::test]
     async fn verifies_proof_against_envelope_awaiting_import() {
         let spec = ForkName::Gloas.make_genesis_spec(E::default_spec());
@@ -471,8 +470,7 @@ mod tests {
         let chain = &harness.chain;
         let genesis_root = chain.genesis_block_root;
 
-        // Execute an envelope into the pending cache without importing it, which is the state a
-        // proof-only node is in while it waits for proofs.
+        // The state a node is in while an executed envelope waits for its proofs.
         chain.pending_payload_cache.insert_bid(
             genesis_root,
             Arc::new(SignedExecutionPayloadBid::<E>::empty()),

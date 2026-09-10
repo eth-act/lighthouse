@@ -105,8 +105,7 @@ pub async fn fetch_and_process_engine_blobs<T: BeaconChainTypes>(
     custody_columns: &[ColumnIndex],
     publish_fn: impl Fn(Vec<KzgVerifiedCustodyDataColumn<T::EthSpec>>) + Send + 'static,
 ) -> Result<Option<AvailabilityProcessingStatus>, FetchEngineBlobError> {
-    // A proof-only node has no execution engine mempool to fetch blobs from. It relies on gossip
-    // and RPC for its custody columns, as any node does when the engine has no blobs to offer.
+    // No engine mempool to fetch from; custody columns arrive over gossip and RPC instead.
     if chain.execution_layer.is_none() {
         debug!("Fetch blobs not triggered - no execution layer");
         return Ok(None);

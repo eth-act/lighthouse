@@ -332,21 +332,18 @@ pub fn get_config<E: EthSpec>(
         clap_utils::parse_optional(cli_args, "builder-user-agent")?;
     client_config.builder_client.disable_ssz = cli_args.get_flag("builder-disable-ssz");
 
-    // A node must be able to validate execution somehow: either by driving an execution engine or
-    // by verifying execution proofs in-process. Those two flags select one of three modes, and
-    // paths across the beacon chain branch on which is in use:
+    // A node must validate execution somehow: by driving an engine, or by verifying proofs
+    // in-process. The two flags select one of three modes:
     //
     // - Engine only: payloads are validated by re-executing them, and no proof is required.
-    // - Proof engine only: there is no engine, so payloads are validated by execution proofs and
-    //   an envelope waits for `REQUIRED_EXECUTION_PROOFS` of them before import. Such a node
-    //   cannot reconstruct historical payloads or drive fork choice updates. Nor can it propose:
-    //   Gloas block production always attempts a local build before ranking it against builder
-    //   bids, and that build needs an engine.
-    // - Both: the engine validates by re-execution, so proofs are verified and observed but do
-    //   not hold up import. Only the proof-only mode gates import on proofs.
+    // - Proofs only: payloads are validated by proofs, and an envelope waits for them before
+    //   import. Such a node cannot reconstruct historical payloads, drive fork choice updates,
+    //   or build a payload locally, so it can only propose on an external bid.
+    // - Both: the engine validates by re-execution, so proofs are observed but do not hold up
+    //   import.
     //
-    // Rejecting the fourth combination here is what lets the rest of the code assume that at
-    // least one of the two is always present.
+    // Rejecting the fourth combination here is what lets the rest of the code assume at least
+    // one of the two is present.
     if execution_endpoint.is_none() && client_config.proof_engine.is_none() {
         return Err(
             "At least one of --execution-endpoint or --proof-engine must be provided".to_string(),

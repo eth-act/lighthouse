@@ -510,8 +510,7 @@ fn run_execution_jwt_secret_key_is_persisted() {
             assert_eq!(file_jwt_secret_key, jwt_secret_key);
         });
 }
-/// A proof-only node runs without an execution layer: it verifies execution with the in-process
-/// proof engine instead of driving an execution engine.
+/// A proof-only node verifies execution in-process instead of driving an engine.
 #[test]
 fn proof_only_node_builds_without_execution_layer() {
     CommandLineTest::new_with_no_execution_endpoint()
@@ -553,8 +552,8 @@ fn execution_endpoint_and_proof_engine_together() {
         });
 }
 
-/// The Gloas builder client exists whenever Gloas is scheduled, so a proof-only node must be able
-/// to configure it. These settings previously required `--builder`, which requires an endpoint.
+/// The Gloas builder client exists whenever Gloas is scheduled, so a node without an engine
+/// must still be able to configure it.
 #[test]
 fn proof_only_node_can_configure_the_builder_client() {
     CommandLineTest::new_with_no_execution_endpoint()
@@ -572,8 +571,7 @@ fn proof_only_node_can_configure_the_builder_client() {
         });
 }
 
-/// An execution-layer node still carries these onto its own builder config, so the pre-Gloas
-/// relay client is unaffected.
+/// An engine-backed node still carries these onto its own config, leaving the relay unaffected.
 #[test]
 fn execution_layer_node_still_carries_builder_settings() {
     CommandLineTest::new()

@@ -1162,8 +1162,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             );
         }
 
-        // A proof-only node has no execution engine to notify and no payload to prepare, so
-        // there is nothing to spawn.
+        // Nothing to notify or prepare without an engine.
         let el_update_handle = if self.execution_layer.is_some() {
             // The execution layer updates might attempt to take a write-lock on fork choice, so
             // it's important to ensure the fork-choice lock isn't being held.

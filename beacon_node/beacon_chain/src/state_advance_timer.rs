@@ -212,8 +212,8 @@ async fn state_advance_timer<T: BeaconChainTypes>(
                 beacon_chain.recompute_head_at_slot(next_slot).await;
 
                 // Prepare proposers so that the node can send payload attributes in the case where
-                // it decides to abandon a proposer boost re-org. A proof-only node has no
-                // execution engine to send payload attributes to.
+                // it decides to abandon a proposer boost re-org. Without an engine there is
+                // nowhere to send payload attributes.
                 if beacon_chain.execution_layer.is_some() {
                     beacon_chain
                         .prepare_beacon_proposer(current_slot)

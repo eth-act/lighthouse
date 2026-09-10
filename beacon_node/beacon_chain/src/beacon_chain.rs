@@ -7102,11 +7102,10 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             .map(|status| status.is_optimistic_or_invalid())
     }
 
-    /// Returns `true` if this node has no working means of validating execution.
+    /// Returns `true` if execution validation is unavailable.
     ///
-    /// A node with an execution layer validates by re-executing payloads, so it reports whether
-    /// that engine is reachable. A proof-only node validates with execution proofs instead of
-    /// re-executing, so having no engine is not a fault. `get_config` requires one or the other.
+    /// A node without an engine validates with execution proofs instead, so having no engine to
+    /// reach is not a fault.
     pub async fn is_execution_layer_offline(&self) -> bool {
         match self.execution_layer.as_ref() {
             Some(execution_layer) => execution_layer.is_offline_or_erroring().await,
