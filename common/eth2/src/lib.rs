@@ -48,7 +48,7 @@ use std::future::Future;
 use std::time::Duration;
 use types::{
     PayloadAttestationData, PayloadAttestationMessage, SignedExecutionPayloadBid,
-    SignedProposerPreferences,
+    SignedProposerPreferences, execution::SignedExecutionProofEnvelopes,
 };
 
 pub const V1: EndpointVersion = EndpointVersion(1);
@@ -3484,6 +3484,88 @@ impl BeaconNodeHttpClient {
                 .map_err(Error::InvalidSsz),
             None => Ok(None),
         }
+    }
+
+    /// Path for `v1/beacon/execution_proofs`
+    pub fn post_beacon_execution_proofs_path(&self) -> Result<Url, Error> {
+        let mut path = self.eth_path(V1)?;
+        path.path_segments_mut()
+            .map_err(|()| Error::InvalidUrl(self.server.clone()))?
+            .push("beacon")
+            .push("execution_proofs");
+        Ok(path)
+    }
+
+    /// `POST v1/beacon/execution_proofs`
+    ///
+    /// Submits EIP-8025 signed execution proof envelopes. The beacon node verifies each proof as
+    /// it would from gossip, publishes the ones that pass and caches them for retrieval.
+    pub async fn post_beacon_execution_proofs(
+        &self,
+        proofs: &SignedExecutionProofEnvelopes,
+    ) -> Result<(), Error> {
+        let path = self.post_beacon_execution_proofs_path()?;
+        self.post(path, proofs).await
+    }
+
+    /// `POST v1/beacon/execution_proofs` in SSZ format
+    ///
+    /// See [`Self::post_beacon_execution_proofs`] for the request semantics.
+    pub async fn post_beacon_execution_proofs_ssz(
+        &self,
+        proofs: &SignedExecutionProofEnvelopes,
+    ) -> Result<(), Error> {
+        let path = self.post_beacon_execution_proofs_path()?;
+        let response = self
+            .client
+            .post(path)
+            .timeout(self.timeouts.default)
+            .header(CONTENT_TYPE_HEADER, SSZ_CONTENT_TYPE_HEADER)
+            .body(proofs.as_ssz_bytes())
+            .send()
+            .await?;
+        success_or_error(response).await?;
+        Ok(())
+    }
+
+    /// Path for `v1/beacon/execution_proofs/{block_id}`
+    pub fn get_beacon_execution_proofs_path(&self, block_id: BlockId) -> Result<Url, Error> {
+        let mut path = self.eth_path(V1)?;
+        path.path_segments_mut()
+            .map_err(|()| Error::InvalidUrl(self.server.clone()))?
+            .push("beacon")
+            .push("execution_proofs")
+            .push(&block_id.to_string());
+        Ok(path)
+    }
+
+    /// `GET v1/beacon/execution_proofs/{block_id}`
+    ///
+    /// Returns the execution proof envelopes cached for the block's payload, and `Ok(None)` on
+    /// a 404 error.
+    pub async fn get_beacon_execution_proofs(
+        &self,
+        block_id: BlockId,
+    ) -> Result<Option<ExecutionOptimisticFinalizedResponse<SignedExecutionProofEnvelopes>>, Error>
+    {
+        let path = self.get_beacon_execution_proofs_path(block_id)?;
+        self.get_opt(path).await
+    }
+
+    /// `GET v1/beacon/execution_proofs/{block_id}` in SSZ format
+    ///
+    /// Returns `Ok(None)` on a 404 error.
+    pub async fn get_beacon_execution_proofs_ssz(
+        &self,
+        block_id: BlockId,
+    ) -> Result<Option<SignedExecutionProofEnvelopes>, Error> {
+        let path = self.get_beacon_execution_proofs_path(block_id)?;
+        self.get_bytes_opt_accept_header(path, Accept::Ssz, self.timeouts.default)
+            .await?
+            .map(|bytes| {
+                SignedExecutionProofEnvelopes::from_ssz_bytes(&bytes).map_err(Error::InvalidSsz)
+            })
+            .transpose()
     }
 
     /// `GET v2/validator/blocks/{slot}` in ssz format
