@@ -5,7 +5,7 @@ use directory::DEFAULT_ROOT_DIR;
 use environment::LoggerConfig;
 use kzg::trusted_setup::get_trusted_setup;
 use network::NetworkConfig;
-use proof_engine::ProofEngineConfig;
+use proof_engine::{ProofEngine, ProofEngineConfig};
 use sensitive_url::SensitiveUrl;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -74,6 +74,11 @@ pub struct Config {
     /// Settings for the Gloas builder client, which exists whenever the Gloas fork is scheduled
     /// and so must be configurable on a node that has no execution layer.
     pub builder_client: BuilderClientConfig,
+    /// Ready-built proof engine that takes precedence over `proof_engine`. Never serialized: it
+    /// lets in-process tests and simulations inject a mock verifier without an `ere-verifier`
+    /// build.
+    #[serde(skip)]
+    pub proof_engine_override: Option<ProofEngine>,
     pub trusted_setup: Vec<u8>,
     pub http_api: http_api::Config,
     pub http_metrics: http_metrics::Config,
@@ -110,6 +115,7 @@ impl Default for Config {
             execution_layer: None,
             proof_engine: None,
             builder_client: <_>::default(),
+            proof_engine_override: None,
             trusted_setup: get_trusted_setup(),
             beacon_graffiti: GraffitiOrigin::default(),
             http_api: <_>::default(),
