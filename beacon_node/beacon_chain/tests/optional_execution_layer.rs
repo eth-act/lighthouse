@@ -1,8 +1,10 @@
 //! Tests for beacon chains built without an execution layer (proof-only nodes).
 
 use beacon_chain::graffiti_calculator::GraffitiSettings;
+use beacon_chain::payload_envelope_verification::EnvelopeSource;
 use beacon_chain::pending_payload_cache::REQUIRED_EXECUTION_PROOFS;
 use beacon_chain::test_utils::{BeaconChainHarness, EphemeralHarnessType, test_spec};
+use beacon_chain::{AvailabilityProcessingStatus, NotifyExecutionLayer};
 use beacon_chain::{BeaconChainError, BlockProductionError, ProduceBlockVerification};
 use bls::Keypair;
 use eth2::types::BlockProductionVersion;
@@ -10,7 +12,7 @@ use proof_engine::{ProofEngine, test_utils::MockProofEngine};
 use state_processing::state_advance::complete_state_advance;
 use std::sync::Arc;
 use std::sync::LazyLock;
-use types::{ChainSpec, MinimalEthSpec};
+use types::{BlockImportSource, ChainSpec, MinimalEthSpec, Slot};
 
 type E = MinimalEthSpec;
 
@@ -208,4 +210,67 @@ async fn recompute_head_succeeds_without_execution_layer() {
     let slot = harness.chain.slot().expect("chain has a slot");
 
     harness.chain.recompute_head_at_slot(slot).await;
+}
+
+/// A node without an engine must be able to import a payload envelope, holding it until its
+/// proofs verify. It cannot produce one itself, so the envelope is built on an engine-backed
+/// harness sharing the same genesis and fed in, as `run_skip_slot_test` does with blocks.
+#[tokio::test]
+async fn proof_only_node_accepts_an_envelope_and_waits_for_proofs() {
+    if !spec().fork_name_at_slot::<E>(Slot::new(1)).gloas_enabled() {
+        return;
+    }
+
+    let builder_harness = execution_backed_harness();
+    let proof_harness = proof_only_harness();
+
+    // Build on genesis so the parent is a block both harnesses already have.
+    let state = builder_harness.get_current_state();
+    let target_slot = Slot::new(1);
+    builder_harness.advance_slot();
+    proof_harness.advance_slot();
+
+    let (block_contents, envelope, _) = builder_harness
+        .make_block_with_envelope(state, target_slot)
+        .await;
+    let envelope = envelope.expect("a Gloas block produces an envelope");
+    let block_root = block_contents.0.canonical_root();
+
+    // The block imports on a node with no engine: a Gloas block carries no payload.
+    proof_harness
+        .process_block(target_slot, block_root, block_contents)
+        .await
+        .expect("the block imports without an engine");
+
+    let verified = proof_harness
+        .chain
+        .verify_envelope_for_gossip(Arc::new(envelope), EnvelopeSource::Gossip)
+        .await
+        .expect("the envelope passes gossip verification");
+
+    let status = proof_harness
+        .chain
+        .process_execution_payload_envelope(
+            block_root,
+            verified,
+            NotifyExecutionLayer::Yes,
+            BlockImportSource::Gossip,
+            || Ok(()),
+        )
+        .await
+        .expect("the envelope is accepted rather than rejected as optimistic");
+
+    // Held, not imported: this node has no engine verdict and no proofs yet.
+    assert!(
+        matches!(status, AvailabilityProcessingStatus::MissingComponents(..)),
+        "expected the envelope to wait for proofs, got {status:?}"
+    );
+    assert!(
+        proof_harness
+            .chain
+            .pending_payload_cache
+            .get_executed_payload_envelope(&block_root)
+            .is_some(),
+        "the executed envelope should be cached while it waits"
+    );
 }

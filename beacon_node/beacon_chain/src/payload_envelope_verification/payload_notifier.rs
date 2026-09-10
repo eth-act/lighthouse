@@ -165,6 +165,30 @@ mod tests {
         );
     }
 
+    /// `Irrelevant` is only sound while proofs gate import, and the two are decided in different
+    /// files. This pins them together: a chain that reports a non-optimistic status without an
+    /// engine must also require proofs before it will import.
+    #[tokio::test]
+    async fn a_non_optimistic_status_is_paired_with_a_proof_requirement() {
+        let spec = Arc::new(ForkName::Gloas.make_genesis_spec(E::default_spec()));
+        let harness = BeaconChainHarness::builder(E::default())
+            .spec(spec)
+            .deterministic_keypairs(8)
+            .fresh_ephemeral_store()
+            .proof_engine(Some(ProofEngine::new(MockProofEngine::default())))
+            .build();
+
+        assert!(harness.chain.execution_layer.is_none());
+        assert!(
+            harness
+                .chain
+                .pending_payload_cache
+                .required_execution_proofs()
+                > 0,
+            "nothing else would verify the payload this node imports as settled"
+        );
+    }
+
     /// An execution-layer node still defers to its engine.
     #[tokio::test]
     async fn execution_layer_node_defers_to_the_engine() {
