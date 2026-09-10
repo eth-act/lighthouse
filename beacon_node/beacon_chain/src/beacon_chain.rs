@@ -460,21 +460,8 @@ pub struct BeaconChain<T: BeaconChainTypes> {
     pub observed_bls_to_execution_changes:
         Mutex<ObservedOperations<SignedBlsToExecutionChange, T::EthSpec>>,
     /// Interfaces with the execution client.
-    ///
-    /// Together with `proof_engine` this selects one of three modes of execution validation, and
-    /// several paths branch on which is in use:
-    ///
-    /// - Engine only: payloads are validated by re-executing them, and no proof is required.
-    /// - Proof engine only: there is no engine, so payloads are validated by execution proofs and
-    ///   an envelope waits for `REQUIRED_EXECUTION_PROOFS` of them before import. Such a node
-    ///   cannot produce blocks, reconstruct historical payloads, or drive fork choice updates.
-    /// - Both: the engine validates by re-execution, so proofs are verified and observed but do
-    ///   not hold up import. Only the proof-only mode gates import on proofs.
-    ///
-    /// `get_config` rejects a node configured with neither, so at least one is always present.
     pub execution_layer: Option<ExecutionLayer<T::EthSpec>>,
-    /// Verifies EIP-8025 execution proofs in-process, if one is configured. See `execution_layer`
-    /// for how the two combine.
+    /// Verifies EIP-8025 execution proofs in-process, if one is configured.
     pub proof_engine: Option<ProofEngine>,
     /// Orchestrates direct builder bid requests and preference submissions over the Gloas Builder
     /// API. Present only when the Gloas fork is scheduled.

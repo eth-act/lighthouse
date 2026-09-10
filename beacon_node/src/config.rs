@@ -327,7 +327,18 @@ pub fn get_config<E: EthSpec>(
         .transpose()?;
 
     // A node must be able to validate execution somehow: either by driving an execution engine or
-    // by verifying execution proofs in-process.
+    // by verifying execution proofs in-process. Those two flags select one of three modes, and
+    // paths across the beacon chain branch on which is in use:
+    //
+    // - Engine only: payloads are validated by re-executing them, and no proof is required.
+    // - Proof engine only: there is no engine, so payloads are validated by execution proofs and
+    //   an envelope waits for `REQUIRED_EXECUTION_PROOFS` of them before import. Such a node
+    //   cannot produce blocks, reconstruct historical payloads, or drive fork choice updates.
+    // - Both: the engine validates by re-execution, so proofs are verified and observed but do
+    //   not hold up import. Only the proof-only mode gates import on proofs.
+    //
+    // Rejecting the fourth combination here is what lets the rest of the code assume that at
+    // least one of the two is always present.
     if execution_endpoint.is_none() && client_config.proof_engine.is_none() {
         return Err(
             "At least one of --execution-endpoint or --proof-engine must be provided".to_string(),

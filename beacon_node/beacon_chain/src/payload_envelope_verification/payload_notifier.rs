@@ -50,14 +50,19 @@ impl<T: BeaconChainTypes> PayloadNotifier<T> {
             }
         };
 
-        // A proof-only node has no engine to execute the payload against. Execution validity is
-        // established by the execution proofs the payload waits on, so the node has not verified
-        // it here and must not treat it as verified.
+        // A proof-only node has no engine to execute the payload against. There is no engine
+        // verdict to wait on, and the envelope only reaches import once
+        // `REQUIRED_EXECUTION_PROOFS` proofs have verified it, so the question the engine would
+        // answer does not apply.
+        //
+        // This must not be `Optimistic`: Gloas does not support optimistic import, and
+        // `into_executed_payload_envelope` rejects an optimistic envelope outright, which would
+        // stop a proof-only node importing any payload at all.
         let payload_verification_status = payload_verification_status.or_else(|| {
             chain
                 .execution_layer
                 .is_none()
-                .then_some(PayloadVerificationStatus::Optimistic)
+                .then_some(PayloadVerificationStatus::Irrelevant)
         });
 
         Ok(Self {
@@ -121,8 +126,12 @@ mod tests {
 
     /// A proof-only node has no engine to ask, so the notifier must decide the status itself.
     /// Reaching `notify_new_payload` would fail: that helper requires an execution layer.
+    ///
+    /// The status must not be optimistic. `into_executed_payload_envelope` rejects an optimistic
+    /// envelope with `OptimisticSyncNotSupported`, so an optimistic status here would stop a
+    /// proof-only node importing any payload.
     #[tokio::test]
-    async fn proof_only_node_precomputes_an_optimistic_status() {
+    async fn proof_only_node_precomputes_a_non_optimistic_status() {
         let spec = Arc::new(ForkName::Gloas.make_genesis_spec(E::default_spec()));
         let harness = BeaconChainHarness::builder(E::default())
             .spec(spec.clone())
@@ -156,8 +165,15 @@ mod tests {
 
         assert_eq!(
             notifier.payload_verification_status,
-            Some(PayloadVerificationStatus::Optimistic),
+            Some(PayloadVerificationStatus::Irrelevant),
             "a proof-only node must not defer to an engine it does not have"
+        );
+        assert!(
+            !notifier
+                .payload_verification_status
+                .expect("status is precomputed")
+                .is_optimistic(),
+            "an optimistic status would be rejected at import"
         );
     }
 

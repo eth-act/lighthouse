@@ -1006,7 +1006,6 @@ where
 
         // Only a node without an execution engine needs proofs before it can import a payload.
         // With an engine the payload is validated by re-executing it, so proofs are verified and
-        // observed but do not hold up import. See `BeaconChain::execution_layer` for the modes.
         let required_execution_proofs =
             if self.execution_layer.is_none() && self.proof_engine.is_some() {
                 REQUIRED_EXECUTION_PROOFS
