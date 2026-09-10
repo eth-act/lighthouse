@@ -1506,7 +1506,6 @@ pub fn cli_app() -> Command {
                 .value_name("STRING")
                 .help("The HTTP user agent to send alongside requests to the builder URL. The \
                        default is Lighthouse's version string.")
-                .requires("builder")
                 .action(ArgAction::Set)
                 .display_order(0)
         )
@@ -1515,7 +1514,6 @@ pub fn cli_app() -> Command {
                 .long("builder-disable-ssz")
                 .value_name("BOOLEAN")
                 .help("Disables sending requests using SSZ over the builder API.")
-                .requires("builder")
                 .action(ArgAction::SetTrue)
                 .display_order(0)
         )

@@ -553,6 +553,43 @@ fn execution_endpoint_and_proof_engine_together() {
         });
 }
 
+/// The Gloas builder client exists whenever Gloas is scheduled, so a proof-only node must be able
+/// to configure it. These settings previously required `--builder`, which requires an endpoint.
+#[test]
+fn proof_only_node_can_configure_the_builder_client() {
+    CommandLineTest::new_with_no_execution_endpoint()
+        .flag("proof-engine", None)
+        .flag("builder-user-agent", Some("proof-only-agent"))
+        .flag("builder-disable-ssz", None)
+        .run_with_zero_port()
+        .with_config(|config| {
+            assert!(config.execution_layer.is_none());
+            assert_eq!(
+                config.builder_client.user_agent.as_deref(),
+                Some("proof-only-agent")
+            );
+            assert!(config.builder_client.disable_ssz);
+        });
+}
+
+/// An execution-layer node still carries these onto its own builder config, so the pre-Gloas
+/// relay client is unaffected.
+#[test]
+fn execution_layer_node_still_carries_builder_settings() {
+    CommandLineTest::new()
+        .flag("builder", Some("http://meow.cats"))
+        .flag("builder-user-agent", Some("agent"))
+        .flag("builder-disable-ssz", None)
+        .run_with_zero_port()
+        .with_config(|config| {
+            let el_config = config.execution_layer.as_ref().expect("has an el config");
+            assert_eq!(el_config.builder_user_agent.as_deref(), Some("agent"));
+            assert!(el_config.disable_builder_ssz_requests);
+            assert_eq!(config.builder_client.user_agent.as_deref(), Some("agent"));
+            assert!(config.builder_client.disable_ssz);
+        });
+}
+
 /// A node with neither cannot validate execution at all, and is rejected at startup.
 #[test]
 fn no_execution_endpoint_and_no_proof_engine_is_rejected() {

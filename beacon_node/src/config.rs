@@ -326,6 +326,12 @@ pub fn get_config<E: EthSpec>(
         })
         .transpose()?;
 
+    // The Gloas builder client is constructed whenever the Gloas fork is scheduled, with or
+    // without an execution layer, so these settings are parsed independently of the endpoint.
+    client_config.builder_client.user_agent =
+        clap_utils::parse_optional(cli_args, "builder-user-agent")?;
+    client_config.builder_client.disable_ssz = cli_args.get_flag("builder-disable-ssz");
+
     // A node must be able to validate execution somehow: either by driving an execution engine or
     // by verifying execution proofs in-process. Those two flags select one of three modes, and
     // paths across the beacon chain branch on which is in use:
@@ -383,14 +389,13 @@ pub fn get_config<E: EthSpec>(
             let payload_builder = parse_only_one_value(endpoint, SensitiveUrl::parse, "--builder")?;
             el_config.builder_url = Some(payload_builder);
 
-            el_config.builder_user_agent =
-                clap_utils::parse_optional(cli_args, "builder-user-agent")?;
+            el_config.builder_user_agent = client_config.builder_client.user_agent.clone();
 
             el_config.builder_header_timeout =
                 clap_utils::parse_optional(cli_args, "builder-header-timeout")?
                     .map(Duration::from_millis);
 
-            el_config.disable_builder_ssz_requests = cli_args.get_flag("builder-disable-ssz");
+            el_config.disable_builder_ssz_requests = client_config.builder_client.disable_ssz;
         }
 
         // Set config values from parse values.
