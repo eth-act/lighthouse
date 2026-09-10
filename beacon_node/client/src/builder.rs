@@ -190,7 +190,7 @@ where
             None
         };
 
-        let proof_engine = if let Some(proof_engine) = config.proof_engine_override.clone() {
+        let proof_engine = if let Some(proof_engine) = config.proof_engine_override() {
             Some(proof_engine)
         } else if let Some(config) = config.proof_engine.clone() {
             #[cfg(feature = "ere-verifier")]
