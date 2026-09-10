@@ -111,8 +111,7 @@ impl<T: BeaconChainTypes> GraffitiCalculator<T> {
             GraffitiOrigin::Calculated(default_graffiti) => {
                 let Some(execution_layer) = self.execution_layer.as_ref() else {
                     // A proof-only node has no engine whose client version could be appended, so
-                    // it uses the default graffiti. Such a node cannot produce blocks anyway:
-                    // block production reports `ExecutionLayerMissing` shortly after this point.
+                    // it uses the default graffiti.
                     debug!("No execution layer available for graffiti calculation");
                     return default_graffiti;
                 };

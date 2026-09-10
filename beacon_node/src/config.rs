@@ -333,7 +333,9 @@ pub fn get_config<E: EthSpec>(
     // - Engine only: payloads are validated by re-executing them, and no proof is required.
     // - Proof engine only: there is no engine, so payloads are validated by execution proofs and
     //   an envelope waits for `REQUIRED_EXECUTION_PROOFS` of them before import. Such a node
-    //   cannot produce blocks, reconstruct historical payloads, or drive fork choice updates.
+    //   cannot reconstruct historical payloads or drive fork choice updates. Nor can it propose:
+    //   Gloas block production always attempts a local build before ranking it against builder
+    //   bids, and that build needs an engine.
     // - Both: the engine validates by re-execution, so proofs are verified and observed but do
     //   not hold up import. Only the proof-only mode gates import on proofs.
     //

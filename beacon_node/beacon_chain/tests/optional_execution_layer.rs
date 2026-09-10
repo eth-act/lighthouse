@@ -157,8 +157,9 @@ async fn prepare_beacon_proposer_reports_missing_execution_layer() {
 /// Block production needs an engine to build a payload. Without one it reports the absence rather
 /// than producing a block with a placeholder payload.
 ///
-/// This applies before Gloas only. From Gloas the proposer publishes a bid and a builder produces
-/// the payload, so block production never asks the local engine for one.
+/// Gloas is skipped for want of test setup, not because it behaves differently. Gloas block
+/// production also builds locally before ranking that build against builder bids, so it reaches
+/// the same error, but this harness does not get that far and fails earlier on the state variant.
 #[tokio::test]
 async fn block_production_reports_missing_execution_layer() {
     let harness = proof_only_harness();
