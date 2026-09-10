@@ -179,14 +179,20 @@ build-release-tarballs:
 test-release:
 	cargo nextest run --workspace --release --features "$(TEST_FEATURES)" \
 		--exclude ef_tests --exclude beacon_chain --exclude slasher --exclude network \
-		--exclude http_api
+		--exclude http_api --exclude execution_proof_network_tests
+
+# Runs the execution proof network tests sequentially. Each test starts several beacon nodes on
+# fixed ports and is sensitive to slot timing, so it must not share CPU with the parallel jobs.
+test-execution-proof-network:
+	cargo nextest run -p execution_proof_network_tests --release --test-threads 1
 
 
 # Runs the full workspace tests in **debug**, without downloading any additional test
 # vectors.
 test-debug:
 	cargo nextest run --workspace --features "$(TEST_FEATURES)" \
-		--exclude ef_tests --exclude beacon_chain --exclude network --exclude http_api
+		--exclude ef_tests --exclude beacon_chain --exclude network --exclude http_api \
+		--exclude execution_proof_network_tests
 
 # Runs cargo-fmt (linter).
 cargo-fmt:
