@@ -1,0 +1,17 @@
+[package]
+name = "execution_proof_network_tests"
+version = "0.1.0"
+authors = ["Sigma Prime <contact@sigmaprime.io>"]
+edition = { workspace = true }
+
+[dependencies]
+beacon_chain = { workspace = true }
+lighthouse_network = { workspace = true }
+network = { workspace = true }
+node_test_rig = { workspace = true }
+proof_engine = { workspace = true }
+simulator = { path = "../simulator" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+types = { workspace = true }
