@@ -126,6 +126,40 @@ curl -X GET "http://localhost:5052/eth/v1/beacon/states/head/validators/1" -H  "
 
 You can replace `1` in the above command with the validator index that you would like to query. Other API query can be done similarly by changing the link according to the Beacon API.
 
+### Submit and retrieve execution proofs (EIP-8025)
+
+A beacon node started with `--proof-engine` accepts validator-signed execution proof envelopes and serves the proofs it has cached for recent blocks. Submitted proofs go through the same checks as the `execution_proof` gossip topic; proofs that pass are published to the network and cached. Without a proof engine both endpoints return `501 Not Implemented`.
+
+```bash
+curl -X POST "http://localhost:5052/eth/v1/beacon/execution_proofs" -H "Content-Type: application/json" -d '[{"message":{"proof_data":"0xabcdef01","proof_type":"1","beacon_block_root":"0x9059bbed6b8891e0ba2f656dbff93fc40f8c7b2b7af8fea9df83cfce5ee5e3d8"},"validator_index":"0","signature":"0x..."}]'
+```
+
+The request body is a list of at most `MAX_EXECUTION_PROOFS_PER_PAYLOAD` signed envelopes, as JSON or SSZ (`Content-Type: application/octet-stream`). A `200` means every proof is on the network, either published by this request or already known. Proofs that gossip would drop, such as an invalid signature, an unsupported proof type, a proof the proof engine rejects, or a proof for an unknown block, are reported per index in a `400` response with a `failures` list; the remaining proofs in the batch are still published. A proof engine fault returns `500`.
+
+```bash
+curl -X GET "http://localhost:5052/eth/v1/beacon/execution_proofs/head" -H "accept: application/json" | jq
+```
+
+```json
+{
+  "execution_optimistic": false,
+  "finalized": false,
+  "data": [
+    {
+      "message": {
+        "proof_data": "0xabcdef01",
+        "proof_type": "1",
+        "beacon_block_root": "0x9059bbed6b8891e0ba2f656dbff93fc40f8c7b2b7af8fea9df83cfce5ee5e3d8"
+      },
+      "validator_index": "0",
+      "signature": "0x..."
+    }
+  ]
+}
+```
+
+Proofs are returned in proof type order. A known block without cached proofs returns an empty list; an unknown block returns `404`. Only proofs for recent payloads are retained, so older blocks return an empty list even if proofs were once seen.
+
 ### Events API
 
 The [events API](https://ethereum.github.io/beacon-APIs/#/Events/eventstream) provides information such as the payload attributes that are of interest to block builders and relays. To query the payload attributes, it is necessary to run Lighthouse beacon node with the flag `--always-prepare-payload`. With the flag `--always-prepare-payload`, it is mandatory to also have the flag `--suggested-fee-recipient` set on the beacon node. You could pass a dummy fee recipient and have it override with the intended fee recipient of the proposer during the actual block proposal. It is also recommended to add the flag `--prepare-payload-lookahead 8000` which configures the payload attributes to be sent at 4s into each slot (or 8s from the start of the next slot). An example of the command is:

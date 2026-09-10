@@ -9,6 +9,9 @@ use tree_hash_derive::TreeHash;
 /// SSZ bound for `proof_data`: 4 MiB (4,194,304 bytes).
 pub type MaxProofSize = typenum::U4194304;
 
+/// EIP-8025 `MAX_EXECUTION_PROOFS_PER_PAYLOAD`: distinct proof types per payload.
+pub type MaxExecutionProofsPerPayload = typenum::U4;
+
 /// Schema identifier for the Amsterdam stateless execution input, revision 1.
 const STATELESS_INPUT_SCHEMA_ID: u16 = 0x1501;
 
@@ -75,6 +78,7 @@ impl ExecutionProof {
 #[context_deserialize(ForkName)]
 pub struct ExecutionProofEnvelope {
     pub proof_data: ProofData,
+    #[serde(with = "serde_utils::quoted_u8")]
     pub proof_type: ProofType,
     pub beacon_block_root: Hash256,
 }
@@ -101,6 +105,10 @@ impl SignedExecutionProofEnvelope {
     }
 }
 
+/// Signed execution proof envelopes for one payload, as exchanged over the Beacon API.
+pub type SignedExecutionProofEnvelopes =
+    VariableList<SignedExecutionProofEnvelope, MaxExecutionProofsPerPayload>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,6 +117,38 @@ mod tests {
     use typenum::Unsigned;
 
     ssz_and_tree_hash_tests!(SignedExecutionProofEnvelope);
+
+    fn signed_envelope(proof_type: ProofType) -> SignedExecutionProofEnvelope {
+        SignedExecutionProofEnvelope {
+            message: ExecutionProofEnvelope {
+                proof_data: ProofData::new(vec![1]).expect("valid proof data"),
+                proof_type,
+                beacon_block_root: Hash256::zero(),
+            },
+            validator_index: 7,
+            signature: Signature::empty(),
+        }
+    }
+
+    #[test]
+    fn signed_envelope_json_quotes_integers() {
+        let envelope = signed_envelope(2);
+
+        let json = serde_json::to_value(&envelope).expect("serializes");
+        assert_eq!(json["message"]["proof_type"], "2");
+        assert_eq!(json["validator_index"], "7");
+
+        let decoded: SignedExecutionProofEnvelope =
+            serde_json::from_value(json).expect("deserializes");
+        assert_eq!(decoded, envelope);
+    }
+
+    #[test]
+    fn signed_envelopes_enforce_per_payload_bound() {
+        let max = MaxExecutionProofsPerPayload::USIZE;
+        assert!(SignedExecutionProofEnvelopes::new(vec![signed_envelope(1); max]).is_ok());
+        assert!(SignedExecutionProofEnvelopes::new(vec![signed_envelope(1); max + 1]).is_err());
+    }
 
     #[test]
     fn supported_proof_types_match_spec() {

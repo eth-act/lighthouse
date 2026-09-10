@@ -198,6 +198,22 @@ impl<T: BeaconChainTypes> PendingPayloadCache<T> {
         })
     }
 
+    /// Return the execution proofs cached for `block_root`, ordered by proof type. Empty when
+    /// the payload is unknown to the cache or has no proofs.
+    pub fn get_execution_proofs(
+        &self,
+        block_root: &Hash256,
+    ) -> Vec<Arc<SignedExecutionProofEnvelope>> {
+        let mut proofs: Vec<Arc<SignedExecutionProofEnvelope>> =
+            self.peek_pending_components(block_root, |components| {
+                components
+                    .map(|components| components.execution_proofs.values().cloned().collect())
+                    .unwrap_or_default()
+            });
+        proofs.sort_by_key(|proof| proof.proof_type());
+        proofs
+    }
+
     /// Filter out cells that are already cached for the given column sidecar.
     /// Returns the cells that still need KZG verification, or `None` if all cells are cached.
     #[instrument(skip_all, level = "trace")]
@@ -1021,6 +1037,27 @@ mod data_availability_checker_tests {
         assert_eq!(envelope.block_root, s.block_root);
 
         assert_missing(s.put_proof(REQUIRED_EXECUTION_PROOFS as ProofType));
+    }
+
+    /// Cached proofs are returned by proof type; unknown payloads and repeats add nothing.
+    #[test]
+    fn get_execution_proofs_returns_cached_proofs_by_type() {
+        let s = setup_gated(NodeCustodyType::Fullnode);
+        assert!(s.cache.get_execution_proofs(&s.block_root).is_empty());
+        assert!(s.cache.get_execution_proofs(&Hash256::default()).is_empty());
+
+        assert_missing(s.put_proof(2));
+        assert_missing(s.put_proof(1));
+        assert_missing(s.put_proof(2));
+
+        let proof_types = s
+            .cache
+            .get_execution_proofs(&s.block_root)
+            .iter()
+            .map(|proof| proof.proof_type())
+            .collect::<Vec<_>>();
+        assert_eq!(proof_types, vec![1, 2]);
+        assert!(s.cache.get_execution_proofs(&Hash256::default()).is_empty());
     }
 
     // ────────── Gloas partial column merge ─────────────────────────────────
