@@ -6,6 +6,7 @@ use beacon_chain::{BeaconChainError, BlockProductionError, ProduceBlockVerificat
 use bls::Keypair;
 use eth2::types::BlockProductionVersion;
 use proof_engine::{ProofEngine, test_utils::MockProofEngine};
+use state_processing::state_advance::complete_state_advance;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use types::{ChainSpec, MinimalEthSpec};
@@ -130,14 +131,25 @@ async fn prepare_beacon_proposer_reports_missing_execution_layer() {
 
 /// Block production needs an engine to build a payload. Without one it reports the absence rather
 /// than producing a block with a placeholder payload.
+///
+/// This applies before Gloas only. From Gloas the proposer publishes a bid and a builder produces
+/// the payload, so block production never asks the local engine for one.
 #[tokio::test]
 async fn block_production_reports_missing_execution_layer() {
     let harness = proof_only_harness();
     harness.advance_slot();
     let mut state = harness.get_current_state();
+    let slot = harness.chain.slot().expect("chain has a slot");
+
+    if harness.spec.fork_name_at_slot::<E>(slot).gloas_enabled() {
+        return;
+    }
+
+    // Advance the state to the production slot, as the harness does before producing a block.
+    complete_state_advance(&mut state, None, slot, None, &harness.spec)
+        .expect("advances the state to the production slot");
     state.build_caches(&harness.spec).expect("builds caches");
 
-    let slot = harness.chain.slot().expect("chain has a slot");
     let proposer_index = state
         .get_beacon_proposer_index(slot, &harness.spec)
         .expect("has a proposer");

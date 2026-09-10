@@ -4,6 +4,7 @@ use crate::canonical_head::CanonicalHead;
 use crate::execution_proof_verification::observed_execution_proofs::{
     ObservedExecutionProofs, ProofObservation,
 };
+use crate::pending_payload_cache::PendingPayloadCache;
 use crate::shuffling_cache::{ShufflingCache, with_cached_shuffling};
 use crate::validator_pubkey_cache::ValidatorPubkeyCache;
 use crate::{BeaconChain, BeaconChainError, BeaconChainTypes};
@@ -24,6 +25,7 @@ pub struct GossipVerificationContext<'a, T: BeaconChainTypes> {
     pub validator_pubkey_cache: &'a RwLock<ValidatorPubkeyCache<T>>,
     pub shuffling_cache: &'a RwLock<ShufflingCache<T::EthSpec>>,
     pub store: &'a BeaconStore<T>,
+    pub pending_payload_cache: &'a PendingPayloadCache<T>,
     pub proof_engine: &'a Option<ProofEngine>,
     pub builder_onboarding_cache: Option<&'a OnboardBuildersCache>,
     pub spec: &'a ChainSpec,
@@ -165,15 +167,33 @@ impl GossipVerifiedExecutionProof {
         )
         .map_err(BeaconStateError::from)
         .map_err(BeaconChainError::from)?;
-        // [IGNORE] The execution payload is available. Read it only when all other inputs needed
-        // to reconstruct the execution proof are available.
-        let payload_envelope = ctx
-            .store
-            .get_payload_envelope(&block_root)
-            .map_err(BeaconChainError::from)?
-            .ok_or(Error::PayloadUnavailable {
-                beacon_block_root: block_root,
-            })?;
+        // [IGNORE] The execution payload has been received and executed locally. Read it only
+        // when all other inputs needed to reconstruct the execution proof are available.
+        //
+        // The payload reaches the store only once its envelope is imported, and on a node with a
+        // proof engine that import waits for `REQUIRED_EXECUTION_PROOFS` proofs. Reading only the
+        // store would therefore deadlock: no proof could verify until the envelope was imported,
+        // and the envelope could not be imported until proofs arrived. Consult the pending payload
+        // cache first, which holds the executed envelope from the moment it is executed, and fall
+        // back to the store for blocks already imported and evicted from that cache.
+        //
+        // Full data availability is not required here. The proof commits to the
+        // `NewPayloadRequest` root, which needs the payload, the bid's blob commitments, the parent
+        // root, and the execution requests, none of which depend on data columns.
+        let payload_envelope = match ctx
+            .pending_payload_cache
+            .get_executed_payload_envelope(&block_root)
+        {
+            Some(payload_envelope) => payload_envelope,
+            None => ctx
+                .store
+                .get_payload_envelope(&block_root)
+                .map_err(BeaconChainError::from)?
+                .map(Arc::new)
+                .ok_or(Error::PayloadUnavailable {
+                    beacon_block_root: block_root,
+                })?,
+        };
         let new_payload_request = NewPayloadRequestGloas {
             execution_payload: &payload_envelope.message.payload,
             versioned_hashes,
@@ -231,6 +251,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             validator_pubkey_cache: &self.validator_pubkey_cache,
             shuffling_cache: &self.shuffling_cache,
             store: &self.store,
+            pending_payload_cache: &self.pending_payload_cache,
             proof_engine: &self.proof_engine,
             builder_onboarding_cache: self.builder_onboarding_cache.as_deref(),
             spec: &self.spec,
@@ -261,12 +282,15 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::block_verification::PayloadVerificationOutcome;
+    use crate::payload_envelope_verification::AvailabilityPendingExecutedEnvelope;
     use crate::test_utils::BeaconChainHarness;
     use bls::Signature;
+    use fork_choice::PayloadVerificationStatus;
     use proof_engine::{ProofEngine, test_utils::MockProofEngine};
     use types::{
-        ForkName, MinimalEthSpec,
-        execution::{ExecutionProofEnvelope, ProofData},
+        ForkName, MinimalEthSpec, SignedExecutionPayloadBid, SignedExecutionPayloadEnvelope,
+        execution::{ExecutionPayloadEnvelope, ExecutionProofEnvelope, ProofData},
     };
 
     type E = MinimalEthSpec;
@@ -435,5 +459,76 @@ mod tests {
             Err(error) => panic!("expected payload-unavailable error, got {error:?}"),
             Ok(_) => panic!("expected payload-unavailable error, got success"),
         }
+    }
+    /// A proof must verify against an envelope that has been executed but is not yet imported.
+    ///
+    /// On a node with a proof engine the envelope reaches the store only after
+    /// `REQUIRED_EXECUTION_PROOFS` proofs are cached, and a proof is cached only after it verifies
+    /// here. A store-only lookup would close that cycle and no proof could ever verify.
+    #[tokio::test]
+    async fn verifies_proof_against_envelope_awaiting_import() {
+        let spec = ForkName::Gloas.make_genesis_spec(E::default_spec());
+        let valid_proof_data = vec![7];
+        let harness = BeaconChainHarness::builder(E::default())
+            .spec(Arc::new(spec))
+            .deterministic_keypairs(8)
+            .fresh_ephemeral_store()
+            .mock_execution_layer()
+            .proof_engine(Some(ProofEngine::new(MockProofEngine::new([
+                valid_proof_data.clone(),
+            ]))))
+            .build();
+        let chain = &harness.chain;
+        let genesis_root = chain.genesis_block_root;
+
+        // Execute an envelope into the pending cache without importing it, which is the state a
+        // proof-engine node is in while it waits for proofs.
+        chain.pending_payload_cache.insert_bid(
+            genesis_root,
+            Arc::new(SignedExecutionPayloadBid::<E>::empty()),
+        );
+        let envelope = Arc::new(SignedExecutionPayloadEnvelope::<E> {
+            message: ExecutionPayloadEnvelope {
+                beacon_block_root: genesis_root,
+                ..ExecutionPayloadEnvelope::empty()
+            },
+            signature: Signature::empty(),
+        });
+        chain
+            .pending_payload_cache
+            .put_executed_payload_envelope(AvailabilityPendingExecutedEnvelope::new(
+                envelope,
+                genesis_root,
+                PayloadVerificationOutcome {
+                    payload_verification_status: PayloadVerificationStatus::Optimistic,
+                },
+            ))
+            .expect("the executed envelope is cached");
+
+        assert!(
+            chain
+                .store
+                .get_payload_envelope(&genesis_root)
+                .expect("payload lookup succeeds")
+                .is_none(),
+            "the envelope must still be absent from the store"
+        );
+
+        let mut proof = execution_proof(genesis_root, 1, valid_proof_data, 1);
+        let fork_name = chain.spec.fork_name_at_slot::<E>(Slot::new(0));
+        let domain = chain.spec.compute_domain(
+            Domain::ExecutionProof,
+            chain.spec.fork_version_for_name(fork_name),
+            chain.genesis_validators_root,
+        );
+        proof.signature = harness.validator_keypairs[1]
+            .sk
+            .sign(proof.message.signing_root(domain));
+
+        let verified = chain
+            .verify_execution_proof_for_gossip(Arc::new(proof))
+            .await
+            .expect("the proof verifies against the envelope awaiting import");
+        assert_eq!(verified.block_slot, Slot::new(0));
     }
 }
