@@ -91,21 +91,20 @@ impl<T: BeaconChainTypes> PayloadNotifier<T> {
                         Some(PayloadVerificationStatus::Optimistic)
                     }
                 }
+                // A proof-only node has no engine to execute the payload against, and the
+                // execution proof gate covers Gloas envelopes only. Nothing has verified this
+                // payload and nothing ever will, so it is imported optimistically and stays that
+                // way: the node follows the chain but must not attest to it.
+                //
+                // The arm above is left alone deliberately. Its `None` means the cheap hash check
+                // failed and the engine must do the slow one, so falling through to the helper's
+                // `NoExecutionConnection` is better than importing a payload nothing checked.
+                _ if chain.execution_layer.is_none() => Some(PayloadVerificationStatus::Optimistic),
                 _ => None,
             }
         } else {
             Some(PayloadVerificationStatus::Irrelevant)
         };
-
-        // A proof-only node has no engine to execute the payload against, and the execution proof
-        // gate covers Gloas envelopes only. Nothing has verified this payload, so it is optimistic:
-        // the node follows the chain but must not attest to it.
-        let payload_verification_status = payload_verification_status.or_else(|| {
-            chain
-                .execution_layer
-                .is_none()
-                .then_some(PayloadVerificationStatus::Optimistic)
-        });
 
         Ok(Self {
             chain,
