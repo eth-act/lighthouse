@@ -167,8 +167,8 @@ impl GossipVerifiedExecutionProof {
         )
         .map_err(BeaconStateError::from)
         .map_err(BeaconChainError::from)?;
-        // [IGNORE] The payload has been received and executed locally. With a proof engine the
-        // store only gains the envelope after an import that itself waits for
+        // [IGNORE] The payload has been received and executed locally. Without an execution
+        // layer the store only gains the envelope after an import that itself waits for
         // `REQUIRED_EXECUTION_PROOFS`, so reading the store alone would deadlock. Read the pending
         // cache first, falling back to the store for blocks already imported and evicted from it.
         let payload_envelope = ctx
@@ -450,9 +450,10 @@ mod tests {
             Ok(_) => panic!("expected payload-unavailable error, got success"),
         }
     }
+
     /// A proof must verify against an envelope that has been executed but is not yet imported.
     ///
-    /// On a node with a proof engine the envelope reaches the store only after
+    /// On a node without an execution layer the envelope reaches the store only after
     /// `REQUIRED_EXECUTION_PROOFS` proofs are cached, and a proof is cached only after it verifies
     /// here. A store-only lookup would close that cycle and no proof could ever verify.
     #[tokio::test]
@@ -463,7 +464,6 @@ mod tests {
             .spec(Arc::new(spec))
             .deterministic_keypairs(8)
             .fresh_ephemeral_store()
-            .mock_execution_layer()
             .proof_engine(Some(ProofEngine::new(MockProofEngine::new([
                 valid_proof_data.clone(),
             ]))))
@@ -472,7 +472,7 @@ mod tests {
         let genesis_root = chain.genesis_block_root;
 
         // Execute an envelope into the pending cache without importing it, which is the state a
-        // proof-engine node is in while it waits for proofs.
+        // proof-only node is in while it waits for proofs.
         chain.pending_payload_cache.insert_bid(
             genesis_root,
             Arc::new(SignedExecutionPayloadBid::<E>::empty()),

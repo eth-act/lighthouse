@@ -1,6 +1,7 @@
 //! Tests for beacon chains built without an execution layer (proof-only nodes).
 
 use beacon_chain::graffiti_calculator::GraffitiSettings;
+use beacon_chain::pending_payload_cache::REQUIRED_EXECUTION_PROOFS;
 use beacon_chain::test_utils::{BeaconChainHarness, EphemeralHarnessType, test_spec};
 use beacon_chain::{BeaconChainError, BlockProductionError, ProduceBlockVerification};
 use bls::Keypair;
@@ -21,6 +22,17 @@ static KEYPAIRS: LazyLock<Vec<Keypair>> =
 /// `test_spec` starts at Bellatrix or later, so execution is always enabled in these harnesses.
 fn spec() -> Arc<ChainSpec> {
     Arc::new(test_spec::<E>())
+}
+
+/// A harness running both an execution engine and a proof engine.
+fn engine_and_proof_engine_harness() -> BeaconChainHarness<EphemeralHarnessType<E>> {
+    BeaconChainHarness::builder(MinimalEthSpec)
+        .spec(spec())
+        .keypairs(KEYPAIRS.clone())
+        .fresh_ephemeral_store()
+        .mock_execution_layer()
+        .proof_engine(Some(ProofEngine::new(MockProofEngine::default())))
+        .build()
 }
 
 /// A proof-only harness: no execution layer, but a proof engine to verify execution proofs.
@@ -93,6 +105,36 @@ async fn execution_backed_chain_reports_engine_status() {
         .await;
 
     assert!(!harness.chain.is_execution_layer_offline().await);
+}
+
+/// Only a node validating by proofs alone waits on them before importing a payload. With an
+/// engine the payload is validated by re-execution, so proofs must not hold up import.
+#[tokio::test]
+async fn only_a_proof_only_node_gates_import_on_proofs() {
+    assert_eq!(
+        proof_only_harness()
+            .chain
+            .pending_payload_cache
+            .required_execution_proofs(),
+        REQUIRED_EXECUTION_PROOFS,
+        "a proof-only node has nothing else to validate execution with"
+    );
+    assert_eq!(
+        execution_backed_harness()
+            .chain
+            .pending_payload_cache
+            .required_execution_proofs(),
+        0,
+        "an engine-backed node validates by re-execution"
+    );
+    assert_eq!(
+        engine_and_proof_engine_harness()
+            .chain
+            .pending_payload_cache
+            .required_execution_proofs(),
+        0,
+        "an engine still validates by re-execution when proofs are also verified"
+    );
 }
 
 /// Proposer preparation needs an engine to send payload attributes to. Without one it reports the
