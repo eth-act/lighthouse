@@ -190,7 +190,9 @@ where
             None
         };
 
-        let proof_engine = if let Some(config) = config.proof_engine.clone() {
+        let proof_engine = if let Some(proof_engine) = config.proof_engine_override.clone() {
+            Some(proof_engine)
+        } else if let Some(config) = config.proof_engine.clone() {
             #[cfg(feature = "ere-verifier")]
             {
                 let engine = proof_engine::ere::EreProofEngine::new(config)
@@ -851,6 +853,7 @@ where
         Ok(Client {
             beacon_chain: self.beacon_chain,
             network_globals: self.network_globals,
+            network_senders: self.network_senders,
             http_api_listen_addr,
             http_metrics_listen_addr,
         })
