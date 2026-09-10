@@ -3560,6 +3560,7 @@ name = "execution_proof_network_tests"
 version = "0.1.0"
 dependencies = [
  "beacon_chain",
+ "client",
  "lighthouse_network",
  "network",
  "node_test_rig",

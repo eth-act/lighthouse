@@ -71,9 +71,10 @@ pub struct Config {
     pub chain: beacon_chain::ChainConfig,
     pub execution_layer: Option<execution_layer::Config>,
     pub proof_engine: Option<ProofEngineConfig>,
-    /// Ready-built proof engine that takes precedence over `proof_engine`. Never serialized: it
-    /// lets in-process tests and simulations inject a mock verifier without an `ere-verifier`
-    /// build.
+    /// Ready-built proof engine that takes precedence over `proof_engine`. Never serialized and
+    /// only present with the `test-utils` feature: it lets in-process tests and simulations
+    /// inject a mock verifier without an `ere-verifier` build.
+    #[cfg(feature = "test-utils")]
     #[serde(skip)]
     pub proof_engine_override: Option<ProofEngine>,
     pub trusted_setup: Vec<u8>,
@@ -102,6 +103,7 @@ impl Default for Config {
             chain: <_>::default(),
             execution_layer: None,
             proof_engine: None,
+            #[cfg(feature = "test-utils")]
             proof_engine_override: None,
             trusted_setup: get_trusted_setup(),
             beacon_graffiti: GraffitiOrigin::default(),
@@ -121,6 +123,18 @@ impl Default for Config {
 }
 
 impl Config {
+    /// The injected proof engine, if any. Always `None` without the `test-utils` feature.
+    pub fn proof_engine_override(&self) -> Option<ProofEngine> {
+        #[cfg(feature = "test-utils")]
+        {
+            self.proof_engine_override.clone()
+        }
+        #[cfg(not(feature = "test-utils"))]
+        {
+            None
+        }
+    }
+
     /// Updates the data directory for the Client.
     pub fn set_data_dir(&mut self, data_dir: PathBuf) {
         self.data_dir.clone_from(&data_dir);
