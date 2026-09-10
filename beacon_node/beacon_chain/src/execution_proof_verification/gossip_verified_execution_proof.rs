@@ -167,33 +167,23 @@ impl GossipVerifiedExecutionProof {
         )
         .map_err(BeaconStateError::from)
         .map_err(BeaconChainError::from)?;
-        // [IGNORE] The execution payload has been received and executed locally. Read it only
-        // when all other inputs needed to reconstruct the execution proof are available.
-        //
-        // The payload reaches the store only once its envelope is imported, and on a node with a
-        // proof engine that import waits for `REQUIRED_EXECUTION_PROOFS` proofs. Reading only the
-        // store would therefore deadlock: no proof could verify until the envelope was imported,
-        // and the envelope could not be imported until proofs arrived. Consult the pending payload
-        // cache first, which holds the executed envelope from the moment it is executed, and fall
-        // back to the store for blocks already imported and evicted from that cache.
-        //
-        // Full data availability is not required here. The proof commits to the
-        // `NewPayloadRequest` root, which needs the payload, the bid's blob commitments, the parent
-        // root, and the execution requests, none of which depend on data columns.
-        let payload_envelope = match ctx
+        // [IGNORE] The payload has been received and executed locally. The store only gains the
+        // envelope at import, which itself waits for `REQUIRED_EXECUTION_PROOFS`, so reading the
+        // store alone would deadlock. Read the pending cache first, falling back to the store for
+        // blocks already imported and evicted from it.
+        let payload_envelope = ctx
             .pending_payload_cache
             .get_executed_payload_envelope(&block_root)
-        {
-            Some(payload_envelope) => payload_envelope,
-            None => ctx
-                .store
-                .get_payload_envelope(&block_root)
-                .map_err(BeaconChainError::from)?
-                .map(Arc::new)
-                .ok_or(Error::PayloadUnavailable {
-                    beacon_block_root: block_root,
-                })?,
-        };
+            .map(Ok)
+            .unwrap_or_else(|| -> Result<_, Error> {
+                ctx.store
+                    .get_payload_envelope(&block_root)
+                    .map_err(BeaconChainError::from)?
+                    .map(Arc::new)
+                    .ok_or(Error::PayloadUnavailable {
+                        beacon_block_root: block_root,
+                    })
+            })?;
         let new_payload_request = NewPayloadRequestGloas {
             execution_payload: &payload_envelope.message.payload,
             versioned_hashes,
