@@ -7106,11 +7106,11 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
     ///
     /// A node with an execution layer validates by re-executing payloads, so it reports whether
     /// that engine is reachable. A proof-only node validates with execution proofs instead of
-    /// re-executing, so a missing engine is not a fault. A node with neither has no means at all.
+    /// re-executing, so having no engine is not a fault. `get_config` requires one or the other.
     pub async fn is_execution_layer_offline(&self) -> bool {
         match self.execution_layer.as_ref() {
             Some(execution_layer) => execution_layer.is_offline_or_erroring().await,
-            None => self.proof_engine.is_none(),
+            None => false,
         }
     }
 

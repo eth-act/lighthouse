@@ -23,14 +23,6 @@ fn spec() -> Arc<ChainSpec> {
     Arc::new(test_spec::<E>())
 }
 
-fn harness_builder() -> BeaconChainHarness<EphemeralHarnessType<E>> {
-    BeaconChainHarness::builder(MinimalEthSpec)
-        .spec(spec())
-        .keypairs(KEYPAIRS.clone())
-        .fresh_ephemeral_store()
-        .build()
-}
-
 /// A proof-only harness: no execution layer, but a proof engine to verify execution proofs.
 fn proof_only_harness() -> BeaconChainHarness<EphemeralHarnessType<E>> {
     BeaconChainHarness::builder(MinimalEthSpec)
@@ -86,15 +78,6 @@ async fn proof_only_chain_is_not_execution_layer_offline() {
     let harness = proof_only_harness();
 
     assert!(!harness.chain.is_execution_layer_offline().await);
-}
-
-/// A chain with neither an execution layer nor a proof engine cannot validate execution at all,
-/// so it reports itself as offline. `get_config` rejects that combination on a real node.
-#[tokio::test]
-async fn chain_without_any_execution_validation_is_offline() {
-    let harness = harness_builder();
-
-    assert!(harness.chain.is_execution_layer_offline().await);
 }
 
 /// An execution-layer-backed node reports the status of its engine, which is online here.

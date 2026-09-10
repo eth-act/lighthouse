@@ -1162,19 +1162,25 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             );
         }
 
-        // The execution layer updates might attempt to take a write-lock on fork choice, so it's
-        // important to ensure the fork-choice lock isn't being held.
-        let el_update_handle = spawn_execution_layer_updates(
-            self.clone(),
-            new_forkchoice_update_parameters,
-            new_payload_status,
-        )?;
+        // A proof-only node has no execution engine to notify and no payload to prepare, so
+        // there is nothing to spawn.
+        let el_update_handle = if self.execution_layer.is_some() {
+            // The execution layer updates might attempt to take a write-lock on fork choice, so
+            // it's important to ensure the fork-choice lock isn't being held.
+            Some(spawn_execution_layer_updates(
+                self.clone(),
+                new_forkchoice_update_parameters,
+                new_payload_status,
+            )?)
+        } else {
+            None
+        };
 
         // We have completed recomputing the head and it's now valid for another process to do the
         // same.
         drop(recompute_head_lock);
 
-        Ok(Some(el_update_handle))
+        Ok(el_update_handle)
     }
 
     /// Rebuild the slot assignments cache from the head state. Returns `None` on deep sync and
@@ -1794,13 +1800,6 @@ fn spawn_execution_layer_updates<T: BeaconChainTypes>(
         .clone()
         .spawn_handle(
             async move {
-                // A proof-only node has no execution engine to notify, and no payload to prepare
-                // for. Both routines below would error on every head update, so skip them.
-                if chain.execution_layer.is_none() {
-                    debug!("No execution layer, skipping execution layer updates");
-                    return;
-                }
-
                 // Avoids raising an error before Bellatrix.
                 //
                 // See `Self::prepare_beacon_proposer` for more detail.
