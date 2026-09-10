@@ -167,10 +167,10 @@ impl GossipVerifiedExecutionProof {
         )
         .map_err(BeaconStateError::from)
         .map_err(BeaconChainError::from)?;
-        // [IGNORE] The payload has been received and executed locally. The store only gains the
-        // envelope at import, which itself waits for `REQUIRED_EXECUTION_PROOFS`, so reading the
-        // store alone would deadlock. Read the pending cache first, falling back to the store for
-        // blocks already imported and evicted from it.
+        // [IGNORE] The payload has been received and executed locally. With a proof engine the
+        // store only gains the envelope after an import that itself waits for
+        // `REQUIRED_EXECUTION_PROOFS`, so reading the store alone would deadlock. Read the pending
+        // cache first, falling back to the store for blocks already imported and evicted from it.
         let payload_envelope = ctx
             .pending_payload_cache
             .get_executed_payload_envelope(&block_root)

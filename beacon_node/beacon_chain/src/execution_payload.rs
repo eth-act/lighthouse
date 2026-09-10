@@ -24,7 +24,7 @@ use state_processing::per_block_processing::{
 };
 use std::sync::Arc;
 use tokio::task::JoinHandle;
-use tracing::{Instrument, debug, debug_span, warn};
+use tracing::{Instrument, debug_span, warn};
 use types::execution::BlockProductionVersion;
 use types::*;
 
@@ -97,6 +97,16 @@ impl<T: BeaconChainTypes> PayloadNotifier<T> {
             Some(PayloadVerificationStatus::Irrelevant)
         };
 
+        // A proof-only node has no engine to execute the payload against, and the execution proof
+        // gate covers Gloas envelopes only. Nothing has verified this payload, so it is optimistic:
+        // the node follows the chain but must not attest to it.
+        let payload_verification_status = payload_verification_status.or_else(|| {
+            chain
+                .execution_layer
+                .is_none()
+                .then_some(PayloadVerificationStatus::Optimistic)
+        });
+
         Ok(Self {
             chain,
             block,
@@ -136,25 +146,10 @@ pub async fn notify_new_payload<T: BeaconChainTypes>(
     parent_beacon_block_root: Hash256,
     new_payload_request: NewPayloadRequest<'_, T::EthSpec>,
 ) -> Result<PayloadVerificationStatus, PayloadVerificationError> {
-    let Some(execution_layer) = chain.execution_layer.as_ref() else {
-        // A proof-only node has no execution engine to execute this payload against. Execution
-        // validity is established instead by the execution-proof pipeline, which gates payload
-        // availability on `REQUIRED_EXECUTION_PROOFS` distinct proofs. This node has not executed
-        // the payload itself, so the payload is optimistic rather than verified.
-        //
-        // A node with neither an execution layer nor a proof engine cannot validate execution at
-        // all. `get_config` rejects that combination, so reaching it is a construction error and
-        // is reported as such rather than silently importing the payload.
-        if chain.proof_engine.is_none() {
-            return Err(ExecutionPayloadError::NoExecutionConnection.into());
-        }
-
-        debug!(
-            %slot,
-            "No execution layer, deferring execution validity to execution proofs"
-        );
-        return Ok(PayloadVerificationStatus::Optimistic);
-    };
+    let execution_layer = chain
+        .execution_layer
+        .as_ref()
+        .ok_or(ExecutionPayloadError::NoExecutionConnection)?;
 
     let execution_block_hash = new_payload_request.execution_payload_ref().block_hash();
     let new_payload_response = execution_layer

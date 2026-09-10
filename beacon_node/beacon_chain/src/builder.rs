@@ -1004,7 +1004,8 @@ where
         debug!(?custody_context, "Loaded persisted custody context");
         let custody_context = Arc::new(custody_context);
 
-        // Without a proof engine we can't verify proofs, so we don't require them.
+        // Without a proof engine we can't verify proofs, so we don't require them. See
+        // `BeaconChain::execution_layer` for the modes this selects between.
         let required_execution_proofs = if self.proof_engine.is_some() {
             REQUIRED_EXECUTION_PROOFS
         } else {

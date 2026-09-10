@@ -50,6 +50,16 @@ impl<T: BeaconChainTypes> PayloadNotifier<T> {
             }
         };
 
+        // A proof-only node has no engine to execute the payload against. Execution validity is
+        // established by the execution proofs the payload waits on, so the node has not verified
+        // it here and must not treat it as verified.
+        let payload_verification_status = payload_verification_status.or_else(|| {
+            chain
+                .execution_layer
+                .is_none()
+                .then_some(PayloadVerificationStatus::Optimistic)
+        });
+
         Ok(Self {
             chain,
             envelope,
@@ -95,5 +105,92 @@ impl<T: BeaconChainTypes> PayloadNotifier<T> {
             parent_beacon_block_root: envelope.message.parent_beacon_block_root,
             execution_requests: &envelope.message.execution_requests,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::BeaconChainHarness;
+    use bls::Signature;
+    use proof_engine::{ProofEngine, test_utils::MockProofEngine};
+    use types::execution::ExecutionPayloadEnvelope;
+    use types::{BeaconBlock, EthSpec, ForkName, MinimalEthSpec};
+
+    type E = MinimalEthSpec;
+
+    /// A proof-only node has no engine to ask, so the notifier must decide the status itself.
+    /// Reaching `notify_new_payload` would fail: that helper requires an execution layer.
+    #[tokio::test]
+    async fn proof_only_node_precomputes_an_optimistic_status() {
+        let spec = Arc::new(ForkName::Gloas.make_genesis_spec(E::default_spec()));
+        let harness = BeaconChainHarness::builder(E::default())
+            .spec(spec.clone())
+            .deterministic_keypairs(8)
+            .fresh_ephemeral_store()
+            .proof_engine(Some(ProofEngine::new(MockProofEngine::default())))
+            .build();
+        let chain = harness.chain.clone();
+
+        let envelope = Arc::new(SignedExecutionPayloadEnvelope::<E> {
+            message: ExecutionPayloadEnvelope {
+                beacon_block_root: chain.genesis_block_root,
+                ..ExecutionPayloadEnvelope::empty()
+            },
+            signature: Signature::empty(),
+        });
+        let block = Arc::new(SignedBeaconBlock::from_block(
+            BeaconBlock::empty(&spec),
+            Signature::empty(),
+        ));
+
+        let notifier = PayloadNotifier::new(
+            chain,
+            envelope,
+            block,
+            // `Yes` is what the gossip path uses, and is the case that would otherwise consult
+            // the engine.
+            NotifyExecutionLayer::Yes,
+        )
+        .expect("the notifier is constructed");
+
+        assert_eq!(
+            notifier.payload_verification_status,
+            Some(PayloadVerificationStatus::Optimistic),
+            "a proof-only node must not defer to an engine it does not have"
+        );
+    }
+
+    /// An execution-layer node still defers to its engine.
+    #[tokio::test]
+    async fn execution_layer_node_defers_to_the_engine() {
+        let spec = Arc::new(ForkName::Gloas.make_genesis_spec(E::default_spec()));
+        let harness = BeaconChainHarness::builder(E::default())
+            .spec(spec.clone())
+            .deterministic_keypairs(8)
+            .fresh_ephemeral_store()
+            .mock_execution_layer()
+            .build();
+        let chain = harness.chain.clone();
+
+        let envelope = Arc::new(SignedExecutionPayloadEnvelope::<E> {
+            message: ExecutionPayloadEnvelope {
+                beacon_block_root: chain.genesis_block_root,
+                ..ExecutionPayloadEnvelope::empty()
+            },
+            signature: Signature::empty(),
+        });
+        let block = Arc::new(SignedBeaconBlock::from_block(
+            BeaconBlock::empty(&spec),
+            Signature::empty(),
+        ));
+
+        let notifier = PayloadNotifier::new(chain, envelope, block, NotifyExecutionLayer::Yes)
+            .expect("the notifier is constructed");
+
+        assert_eq!(
+            notifier.payload_verification_status, None,
+            "an engine-backed node leaves the status for the engine to decide"
+        );
     }
 }
