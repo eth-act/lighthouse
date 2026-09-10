@@ -46,24 +46,23 @@ impl<T: BeaconChainTypes> PayloadNotifier<T> {
                         Some(PayloadVerificationStatus::Optimistic)
                     }
                 }
+                // A proof-only node has no engine to execute the payload against. There is no
+                // engine verdict to wait on, and the envelope only reaches import once
+                // `REQUIRED_EXECUTION_PROOFS` proofs have verified it, so the question the engine
+                // would answer does not apply.
+                //
+                // This must not be `Optimistic`: Gloas does not support optimistic import, and
+                // `into_executed_payload_envelope` rejects an optimistic envelope outright, which
+                // would stop a proof-only node importing any payload at all.
+                //
+                // The arm above is left alone deliberately. Its `None` means the cheap hash check
+                // failed and the engine must do the slow one, so falling through to the helper's
+                // `NoExecutionConnection` is better than reporting a payload nothing checked as
+                // settled.
+                _ if chain.execution_layer.is_none() => Some(PayloadVerificationStatus::Irrelevant),
                 _ => None,
             }
         };
-
-        // A proof-only node has no engine to execute the payload against. There is no engine
-        // verdict to wait on, and the envelope only reaches import once
-        // `REQUIRED_EXECUTION_PROOFS` proofs have verified it, so the question the engine would
-        // answer does not apply.
-        //
-        // This must not be `Optimistic`: Gloas does not support optimistic import, and
-        // `into_executed_payload_envelope` rejects an optimistic envelope outright, which would
-        // stop a proof-only node importing any payload at all.
-        let payload_verification_status = payload_verification_status.or_else(|| {
-            chain
-                .execution_layer
-                .is_none()
-                .then_some(PayloadVerificationStatus::Irrelevant)
-        });
 
         Ok(Self {
             chain,
