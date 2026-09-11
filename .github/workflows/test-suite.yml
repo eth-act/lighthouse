@@ -342,6 +342,25 @@ jobs:
       with:
         name: fallback_simulator_logs
         path: ${{ runner.temp }}/fallback_simulator_logs
+  execution-proof-network-tests-ubuntu:
+    name: execution-proof-network-tests-ubuntu
+    needs: [check-labels]
+    if: needs.check-labels.outputs.skip_ci != 'true'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+    - name: Get latest version of stable Rust
+      uses: moonrepo/setup-rust@v1
+      with:
+          channel: stable
+          cache-target: release
+          bins: cargo-nextest
+      env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    # Each test starts several beacon nodes on fixed ports and is timing sensitive, so the
+    # target runs them one at a time and the workspace test jobs exclude the crate.
+    - name: Run the execution proof network tests sequentially
+      run: make test-execution-proof-network
   execution-engine-integration-ubuntu:
     name: execution-engine-integration-ubuntu
     needs: [check-labels]
@@ -510,6 +529,7 @@ jobs:
       'ef-tests-ubuntu',
       'basic-simulator-ubuntu',
       'fallback-simulator-ubuntu',
+      'execution-proof-network-tests-ubuntu',
       'execution-engine-integration-ubuntu',
       'check-code',
       'check-msrv',

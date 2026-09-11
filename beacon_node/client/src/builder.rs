@@ -190,25 +190,15 @@ where
             None
         };
 
-        let proof_engine = if let Some(config) = config.proof_engine.clone() {
-            #[cfg(feature = "ere-verifier")]
-            {
-                let engine = proof_engine::ere::EreProofEngine::new(config)
-                    .map_err(|e| format!("unable to start proof engine: {e:?}"))?;
-                Some(ProofEngine::new(engine))
-            }
-
-            #[cfg(not(feature = "ere-verifier"))]
-            {
-                let _ = config;
-                return Err(
-                    "unable to start proof engine: Lighthouse was built without `ere-verifier`"
-                        .to_string(),
-                );
-            }
-        } else {
-            None
-        };
+        let proof_engine = config
+            .proof_engine
+            .as_ref()
+            .map(|config| {
+                config
+                    .build_engine()
+                    .map_err(|e| format!("unable to start proof engine: {e:?}"))
+            })
+            .transpose()?;
 
         // Construct the Gloas builder handle (Builder API client) when the Gloas fork is scheduled.
         // The client is stateless w.r.t. the target builder — each request carries its own URL — but
@@ -844,6 +834,7 @@ where
         Ok(Client {
             beacon_chain: self.beacon_chain,
             network_globals: self.network_globals,
+            network_senders: self.network_senders,
             http_api_listen_addr,
             http_metrics_listen_addr,
         })

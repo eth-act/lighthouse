@@ -214,8 +214,8 @@ impl<E: EthSpec> LocalNetwork<E> {
     async fn construct_boot_node(
         &self,
         mut beacon_config: ClientConfig,
-        mock_execution_config: MockExecutionConfig,
-    ) -> Result<(LocalBeaconNode<E>, LocalExecutionNode<E>), String> {
+        mock_execution_config: Option<MockExecutionConfig>,
+    ) -> Result<(LocalBeaconNode<E>, Option<LocalExecutionNode<E>>), String> {
         beacon_config.network.set_ipv4_listening_address(
             std::net::Ipv4Addr::UNSPECIFIED,
             BOOTNODE_PORT,
@@ -227,14 +227,7 @@ impl<E: EthSpec> LocalNetwork<E> {
         beacon_config.network.enr_tcp4_port = Some(BOOTNODE_PORT.try_into().expect("non zero"));
         beacon_config.network.discv5_config.table_filter = |_| true;
 
-        let execution_node = LocalExecutionNode::new(self.context.clone(), mock_execution_config);
-
-        beacon_config.execution_layer = Some(execution_layer::Config {
-            execution_endpoint: Some(SensitiveUrl::parse(&execution_node.server.url()).unwrap()),
-            default_datadir: execution_node.datadir.path().to_path_buf(),
-            secret_file: Some(execution_node.datadir.path().join("jwt.hex")),
-            ..Default::default()
-        });
+        let execution_node = self.pair_execution_node(&mut beacon_config, mock_execution_config);
 
         let beacon_node = LocalBeaconNode::production(self.context.clone(), beacon_config).await?;
 
@@ -244,9 +237,9 @@ impl<E: EthSpec> LocalNetwork<E> {
     async fn construct_beacon_node(
         &self,
         mut beacon_config: ClientConfig,
-        mut mock_execution_config: MockExecutionConfig,
+        mut mock_execution_config: Option<MockExecutionConfig>,
         is_proposer: bool,
-    ) -> Result<(LocalBeaconNode<E>, LocalExecutionNode<E>), String> {
+    ) -> Result<(LocalBeaconNode<E>, Option<LocalExecutionNode<E>>), String> {
         let count = (self.beacon_node_count() + self.proposer_node_count()) as u16;
 
         // Set config.
@@ -263,18 +256,11 @@ impl<E: EthSpec> LocalNetwork<E> {
         beacon_config.network.discv5_config.table_filter = |_| true;
         beacon_config.network.proposer_only = is_proposer;
 
-        mock_execution_config.server_config.listen_port = EXECUTION_PORT + count;
+        if let Some(mock_execution_config) = &mut mock_execution_config {
+            mock_execution_config.server_config.listen_port = EXECUTION_PORT + count;
+        }
 
-        // Construct execution node.
-        let execution_node = LocalExecutionNode::new(self.context.clone(), mock_execution_config);
-
-        // Pair the beacon node and execution node.
-        beacon_config.execution_layer = Some(execution_layer::Config {
-            execution_endpoint: Some(SensitiveUrl::parse(&execution_node.server.url()).unwrap()),
-            default_datadir: execution_node.datadir.path().to_path_buf(),
-            secret_file: Some(execution_node.datadir.path().join("jwt.hex")),
-            ..Default::default()
-        });
+        let execution_node = self.pair_execution_node(&mut beacon_config, mock_execution_config);
 
         // Construct beacon node using the config,
         let beacon_node = LocalBeaconNode::production(self.context.clone(), beacon_config).await?;
@@ -282,11 +268,62 @@ impl<E: EthSpec> LocalNetwork<E> {
         Ok((beacon_node, execution_node))
     }
 
+    /// Start a mock execution node and point `beacon_config` at it. Without a mock config the
+    /// beacon node keeps whatever `execution_layer` configuration it was given, which may be
+    /// `None` for a node that validates payloads with execution proofs alone.
+    fn pair_execution_node(
+        &self,
+        beacon_config: &mut ClientConfig,
+        mock_execution_config: Option<MockExecutionConfig>,
+    ) -> Option<LocalExecutionNode<E>> {
+        let Some(mock_execution_config) = mock_execution_config else {
+            return None;
+        };
+
+        let execution_node = LocalExecutionNode::new(self.context.clone(), mock_execution_config);
+
+        beacon_config.execution_layer = Some(execution_layer::Config {
+            execution_endpoint: Some(SensitiveUrl::parse(&execution_node.server.url()).unwrap()),
+            default_datadir: execution_node.datadir.path().to_path_buf(),
+            secret_file: Some(execution_node.datadir.path().join("jwt.hex")),
+            ..Default::default()
+        });
+
+        Some(execution_node)
+    }
+
     /// Adds a beacon node to the network, connecting to the 0'th beacon node via ENR.
     pub async fn add_beacon_node(
         &self,
-        mut beacon_config: ClientConfig,
+        beacon_config: ClientConfig,
         mock_execution_config: MockExecutionConfig,
+        is_proposer: bool,
+    ) -> Result<(), String> {
+        self.add_beacon_node_with_optional_execution_layer(
+            beacon_config,
+            Some(mock_execution_config),
+            is_proposer,
+        )
+        .await
+    }
+
+    /// Adds a beacon node without starting a mock execution node for it. The node uses
+    /// `beacon_config.execution_layer` as given: `None` for a node that validates payloads with
+    /// execution proofs alone, or an endpoint the caller runs itself. It connects to the 0'th
+    /// beacon node via ENR like any other node.
+    pub async fn add_beacon_node_without_mock_execution_layer(
+        &self,
+        beacon_config: ClientConfig,
+        is_proposer: bool,
+    ) -> Result<(), String> {
+        self.add_beacon_node_with_optional_execution_layer(beacon_config, None, is_proposer)
+            .await
+    }
+
+    async fn add_beacon_node_with_optional_execution_layer(
+        &self,
+        mut beacon_config: ClientConfig,
+        mock_execution_config: Option<MockExecutionConfig>,
         is_proposer: bool,
     ) -> Result<(), String> {
         let first_bn_exists: bool;
@@ -315,7 +352,9 @@ impl<E: EthSpec> LocalNetwork<E> {
                 .await?
         };
         // Add nodes to the network.
-        self.execution_nodes.write().push(execution_node);
+        if let Some(execution_node) = execution_node {
+            self.execution_nodes.write().push(execution_node);
+        }
         if is_proposer {
             self.proposer_nodes.write().push(beacon_node);
         } else {

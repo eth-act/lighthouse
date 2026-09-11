@@ -3556,6 +3556,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "execution_proof_network_tests"
+version = "0.1.0"
+dependencies = [
+ "beacon_chain",
+ "execution_layer",
+ "lighthouse_network",
+ "network",
+ "node_test_rig",
+ "proof_engine",
+ "reqwest",
+ "sensitive_url",
+ "serde_json",
+ "simulator",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "types",
+ "warp",
+]
+
+[[package]]
 name = "fallible-iterator"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

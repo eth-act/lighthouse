@@ -7,6 +7,7 @@ pub mod builder;
 
 use beacon_chain::BeaconChain;
 use lighthouse_network::{Enr, Multiaddr, NetworkGlobals};
+use network::NetworkSenders;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -22,6 +23,7 @@ pub use proof_engine::{ExecutionProofConfig, ProofEngineConfig};
 pub struct Client<T: BeaconChainTypes> {
     beacon_chain: Option<Arc<BeaconChain<T>>>,
     network_globals: Option<Arc<NetworkGlobals<T::EthSpec>>>,
+    network_senders: Option<NetworkSenders<T::EthSpec>>,
     /// Listen address for the standard eth2.0 API, if the service was started.
     http_api_listen_addr: Option<SocketAddr>,
     /// Listen address for the HTTP server which serves Prometheus metrics.
@@ -32,6 +34,16 @@ impl<T: BeaconChainTypes> Client<T> {
     /// Returns an `Arc` reference to the client's `BeaconChain`, if it was started.
     pub fn beacon_chain(&self) -> Option<Arc<BeaconChain<T>>> {
         self.beacon_chain.clone()
+    }
+
+    /// Returns the client's shared network state, if the network service was started.
+    pub fn network_globals(&self) -> Option<Arc<NetworkGlobals<T::EthSpec>>> {
+        self.network_globals.clone()
+    }
+
+    /// Returns the channels used to send messages to the network service, if it was started.
+    pub fn network_senders(&self) -> Option<NetworkSenders<T::EthSpec>> {
+        self.network_senders.clone()
     }
 
     /// Returns the address of the client's standard eth2.0 API server, if it was started.

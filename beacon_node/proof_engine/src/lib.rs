@@ -44,6 +44,12 @@ pub struct ProofEngine {
     inner: Arc<dyn ProofEngineT>,
 }
 
+impl std::fmt::Debug for ProofEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProofEngine").finish_non_exhaustive()
+    }
+}
+
 impl ProofEngine {
     /// Wrap an execution-proof verifier in a shared handle.
     pub fn new(engine: impl ProofEngineT) -> Self {
