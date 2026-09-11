@@ -122,6 +122,10 @@ impl ProofNetwork {
             .head_block_root())
     }
 
+    pub fn head_slot(&self, node: usize) -> Result<Slot, String> {
+        Ok(self.chain(node)?.canonical_head.cached_head().head_slot())
+    }
+
     /// Node `node`'s score for node `peer`, or `None` if they are not connected.
     pub fn peer_score(&self, node: usize, peer: usize) -> Result<Option<f64>, String> {
         let beacon_nodes = self.network.beacon_nodes.read();

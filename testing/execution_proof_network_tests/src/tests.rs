@@ -306,6 +306,86 @@ fn proofs_from_two_provers_combine_to_unlock_import() {
     .unwrap()
 }
 
+/// A proof-only node that joins a few slots behind uses lookup sync, whose envelopes go through
+/// the proof gate. The proofs for those payloads were gossiped before it existed and nothing
+/// re-serves them, so it stops at the first full block. Blocks after it are never admitted, so
+/// the proofs it does receive for later payloads are dropped as unknown blocks, even though the
+/// prover still serves the missed proofs over its Beacon API. Recursion-aware gating or proof
+/// retrieval from peers would let it recover; this base has neither.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "too slow in debug mode")]
+fn late_joining_proof_only_node_stalls_on_proofs_it_missed() {
+    let config = ProofNetworkConfig::new(vec![
+        NodeSpec::verifier(accepts_both())
+            .with_validators()
+            .proving(ProverSpec {
+                proofs: both_types(),
+                validator_index: PROVER,
+            }),
+        NodeSpec::plain().with_validators(),
+    ]);
+    ProofNetwork::run(config, |mut net| async move {
+        net.wait_for_genesis().await?;
+        net.wait_for_peers(&[0, 1], 1, STARTUP_TIMEOUT).await?;
+        net.wait_for(
+            "the prover to prove three payloads",
+            STARTUP_TIMEOUT,
+            |net| Ok(net.proven_payloads(0)?.len() >= 3),
+        )
+        .await?;
+        let first_proven = net.proven_payloads(0)?[0].block_root;
+        let join_slot = net.head_slot(0)?;
+
+        let joiner = net.add_node(NodeSpec::proof_only(accepts_both())).await?;
+        net.wait_for_peers(&[joiner], 2, STARTUP_TIMEOUT).await?;
+
+        // The joiner admits blocks up to the first full payload, which it cannot prove.
+        let stalled_root = net
+            .wait_for_pending_payload(joiner, STARTUP_TIMEOUT)
+            .await?;
+        assert_eq!(stalled_root, first_proven, "{}", net.describe());
+        let stalled = net.proof_status(joiner, stalled_root, 1)?;
+        assert!(stalled.head_slot < join_slot, "{stalled:?}");
+        assert!(stalled.cached_proof_types.is_empty(), "{stalled:?}");
+
+        // The prover keeps proving; the joiner does not move.
+        net.wait_for_head_slot(0, join_slot + 4, STARTUP_TIMEOUT)
+            .await?;
+        let later = net.proof_status(joiner, stalled_root, 1)?;
+        assert_eq!(later.head_slot, stalled.head_slot, "{later:?}");
+        assert!(!later.payload_received, "{later:?}");
+        assert!(later.cached_proof_types.is_empty(), "{later:?}");
+
+        // Proofs for payloads proven after the join reach the joiner over gossip but are dropped:
+        // their blocks were never admitted.
+        let recent = net
+            .proven_payloads(0)?
+            .into_iter()
+            .filter(|payload| payload.slot > join_slot)
+            .next_back()
+            .ok_or("no payload proven after the join")?;
+        let dropped = net.proof_status(joiner, recent.block_root, 1)?;
+        assert!(!dropped.block_known, "{dropped:?}");
+        assert!(!dropped.valid_proof_verified, "{dropped:?}");
+
+        // The missed proofs still exist on the prover's node; the joiner has no way to ask.
+        assert_eq!(
+            net.retrieved_proof_types(0, stalled_root).await?,
+            vec![1, 2]
+        );
+        assert_eq!(
+            net.retrieved_proof_types(joiner, stalled_root).await?,
+            Vec::<u8>::new()
+        );
+        info!(
+            ?stalled_root,
+            "Late joiner stalled on proofs gossiped before it joined"
+        );
+        Ok(())
+    })
+    .unwrap()
+}
+
 /// With six nodes, proofs posted to one verifier reach both verifiers and both proof-only nodes
 /// over gossip, and unlock the payload on both proof-only nodes.
 #[test]
