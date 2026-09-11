@@ -3,35 +3,41 @@
 //! [`ProofNetwork`] starts a local network of production beacon nodes through the simulator's
 //! [`LocalNetwork`](simulator::LocalNetwork) and lets a test:
 //!
-//! - choose the topology: which nodes run a proof engine, which proof bytes each engine accepts,
-//!   and which nodes carry validators ([`NodeSpec`]);
+//! - choose the topology: per node, whether it runs an execution layer, a proof engine or both,
+//!   which proof bytes its engine accepts, and whether it carries validators ([`NodeSpec`]);
 //! - inject a deterministic [`MockProofEngine`](proof_engine::test_utils::MockProofEngine) per
-//!   node through `ClientConfig::proof_engine_override`, so valid and invalid proof data are
-//!   chosen per scenario instead of by a zkVM verifier;
-//! - build and sign proof envelopes with the deterministic interop validator keys, submit them
-//!   through a node (gossip verification, caching, then publication) or inject them onto gossip
-//!   unverified ([`ProofNetwork::submit_execution_proof`],
-//!   [`ProofNetwork::publish_execution_proof`]);
-//! - observe verification, storage, propagation and payload import on every node through the
-//!   beacon chain's caches ([`ProofStatus`]), with bounded waits that report a per-node snapshot
-//!   on timeout ([`ProofNetwork::wait_for`]).
+//!   node through `ClientConfig::proof_engine_override` (behind the `client/test-utils`
+//!   feature), so valid and invalid proof data are chosen per scenario instead of by a zkVM
+//!   verifier;
+//! - build and sign proof envelopes with the deterministic interop validator keys, and submit
+//!   them through a node's Beacon API or inject them onto gossip unverified
+//!   ([`ProofNetwork::submit_execution_proof`], [`ProofNetwork::publish_execution_proof`]);
+//! - generate proofs on the network with a proving execution layer
+//!   ([`ProvingExecutionLayer`], attached with [`NodeSpec::proving`]): a proxy in front of a
+//!   node's mock execution layer that proves every payload `engine_newPayload` validates and
+//!   posts the proofs to that node's Beacon API;
+//! - observe verification, caching, storage, payload import and Beacon API retrieval on every
+//!   node ([`ProofStatus`], [`ProofNetwork::retrieved_proof_types`]), with bounded waits that
+//!   report a per-node snapshot on timeout ([`ProofNetwork::wait_for`]).
 //!
-//! Every node runs the mock execution layer and marks all payloads valid, so the tests exercise
-//! the consensus-layer proof pipeline: gossip validation, the proof engine, the pending payload
-//! cache and fork choice.
+//! Nodes with an execution layer run the mock execution layer and mark all payloads valid, so
+//! the tests exercise the consensus-layer proof pipeline: gossip validation, the proof engine,
+//! the pending payload cache, fork choice and the `execution_proofs` Beacon API endpoints.
+//!
+//! ## Node modes
+//!
+//! - Execution-layer nodes ([`NodeSpec::plain`]) import payloads once executed and ignore
+//!   proofs. They carry the validators.
+//! - Verifiers ([`NodeSpec::verifier`]) also import at once, but verify, cache and serve proofs.
+//! - Proof-only nodes ([`NodeSpec::proof_only`]) have no execution layer and hold every payload
+//!   until two proof types verify. Without a prover they stop at the first full block; with
+//!   proving execution layers on the network they follow the chain.
 //!
 //! ## Pending integration points
 //!
-//! These belong to parallel tasks and are documented here instead of being reimplemented:
-//!
-//! - **Beacon API submission and retrieval.** [`ProofNetwork::submit_execution_proof`] performs
-//!   the verify, cache and publish sequence in-process because no HTTP endpoint exists yet. Once
-//!   the Beacon API endpoints land, the adapter should call them and [`ProofStatus`] should gain
-//!   an HTTP retrieval check.
-//! - **RPC retrieval.** Proofs are not requested from peers by range or by root yet, so
-//!   late-joining node scenarios wait for that integration.
-//! - **Execution-layer-optional nodes.** Proof-only nodes without an execution layer need the
-//!   pending EL-optional interfaces before they can be expressed as a [`NodeSpec`].
+//! - **RPC retrieval.** Proofs are not requested from peers by range or by root yet. A
+//!   proof-only node that joins late therefore cannot catch up on proofs it missed; that
+//!   scenario waits for the integration.
 //!
 //! ## Running
 //!
@@ -48,11 +54,13 @@
 mod network;
 mod observe;
 mod prover;
+mod proving_execution_layer;
 #[cfg(test)]
 mod tests;
 
 pub use network::{NodeSpec, ProofNetwork, ProofNetworkConfig};
 pub use observe::ProofStatus;
+pub use proving_execution_layer::{ProvenPayload, ProverSpec, ProvingExecutionLayer};
 
 use beacon_chain::{
     BeaconChain, builder::Witness, slot_clock::SystemTimeSlotClock,

@@ -1,13 +1,15 @@
 //! Building, signing and submitting execution proof envelopes.
 
 use crate::{E, ProofNetwork};
-use beacon_chain::AvailabilityProcessingStatus;
 use lighthouse_network::PubsubMessage;
 use network::NetworkMessage;
 use std::sync::Arc;
 use types::{
     Domain, Hash256, SignedRoot,
-    execution::{ExecutionProofEnvelope, ProofData, ProofType, SignedExecutionProofEnvelope},
+    execution::{
+        ExecutionProofEnvelope, ProofData, ProofType, SignedExecutionProofEnvelope,
+        SignedExecutionProofEnvelopes,
+    },
     test_utils::generate_deterministic_keypair,
 };
 
@@ -51,28 +53,22 @@ impl ProofNetwork {
         }))
     }
 
-    /// Submit a proof through node `from`: verify it for gossip, cache it (importing the payload
-    /// envelope if the proof completed the requirement), then publish it to peers.
+    /// Submit a proof through node `from`'s Beacon API (`POST /eth/v1/beacon/execution_proofs`).
     ///
-    /// This is the sequence the pending Beacon API submission endpoint will expose. A local
-    /// rejection is returned as an error carrying the gossip verification error and nothing is
-    /// published.
+    /// The node verifies the proof as gossip would, publishes it to peers, caches it and imports
+    /// the payload envelope if the proof completed the requirement. A rejection comes back as an
+    /// error carrying the node's indexed failure message, and nothing is published.
     pub async fn submit_execution_proof(
         &self,
         from: usize,
         proof: Arc<SignedExecutionProofEnvelope>,
-    ) -> Result<AvailabilityProcessingStatus, String> {
-        let chain = self.chain(from)?;
-        let verified = chain
-            .verify_execution_proof_for_gossip(proof.clone())
+    ) -> Result<(), String> {
+        let proofs = SignedExecutionProofEnvelopes::new(vec![proof.as_ref().clone()])
+            .map_err(|e| format!("cannot build a proof list: {e:?}"))?;
+        self.remote_node(from)?
+            .post_beacon_execution_proofs(&proofs)
             .await
-            .map_err(|e| format!("node {from} rejected the proof locally: {e:?}"))?;
-        let status = chain
-            .check_execution_proof_availability_and_import(verified)
-            .await
-            .map_err(|e| format!("node {from} could not cache the proof: {e:?}"))?;
-        self.publish_execution_proof(from, proof)?;
-        Ok(status)
+            .map_err(|e| format!("node {from} rejected the proof: {e:?}"))
     }
 
     /// Publish a proof on gossip from node `from` without verifying it locally, as a faulty or
