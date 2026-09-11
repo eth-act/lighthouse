@@ -1,6 +1,6 @@
 //! Per-node observation of proofs, payloads and peers, with bounded waits.
 
-use crate::ProofNetwork;
+use crate::{E, ProofNetwork};
 use node_test_rig::eth2::types::BlockId;
 use std::time::{Duration, Instant};
 use types::{Hash256, Slot, execution::ProofType};
@@ -11,7 +11,8 @@ const POLL_INTERVAL: Duration = Duration::from_millis(250);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProofStatus {
     pub node: usize,
-    /// The block is in fork choice.
+    /// The block is in fork choice. This and `payload_received` are fork choice views: both
+    /// read false once the block is finalized and pruned, even though it stays in the store.
     pub block_known: bool,
     /// A valid proof of the requested type was verified for the block.
     pub valid_proof_verified: bool,
@@ -120,6 +121,44 @@ impl ProofNetwork {
             .canonical_head
             .cached_head()
             .head_block_root())
+    }
+
+    /// The `execution_optimistic` flag node `node` reports for `block_root` on
+    /// `GET /eth/v2/beacon/blocks/{block_id}`, or `None` if it does not know the block.
+    pub async fn block_is_optimistic(
+        &self,
+        node: usize,
+        block_root: Hash256,
+    ) -> Result<Option<bool>, String> {
+        Ok(self
+            .remote_node(node)?
+            .get_beacon_blocks::<E>(BlockId::Root(block_root))
+            .await
+            .map_err(|e| format!("node {node} could not serve the block: {e:?}"))?
+            .and_then(|response| response.metadata().execution_optimistic))
+    }
+
+    /// Root of the canonical block at `slot` in node `node`'s view, if any.
+    pub async fn block_root_at_slot(
+        &self,
+        node: usize,
+        slot: Slot,
+    ) -> Result<Option<Hash256>, String> {
+        Ok(self
+            .remote_node(node)?
+            .get_beacon_headers(Some(slot), None)
+            .await
+            .map_err(|e| format!("node {node} could not serve headers: {e:?}"))?
+            .and_then(|response| response.data.first().map(|header| header.root)))
+    }
+
+    /// Parent root of node `node`'s head block.
+    pub fn head_parent_block_root(&self, node: usize) -> Result<Hash256, String> {
+        Ok(self
+            .chain(node)?
+            .canonical_head
+            .cached_head()
+            .parent_block_root())
     }
 
     pub fn head_slot(&self, node: usize) -> Result<Slot, String> {

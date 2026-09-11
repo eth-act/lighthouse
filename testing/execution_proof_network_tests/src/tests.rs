@@ -4,7 +4,7 @@
 use crate::{NodeSpec, ProofNetwork, ProofNetworkConfig, ProverSpec};
 use std::time::Duration;
 use tracing::info;
-use types::Hash256;
+use types::{Hash256, Slot};
 
 const VALID_TYPE_1: &[u8] = b"execution_proof_network_tests: valid proof, type 1";
 const VALID_TYPE_2: &[u8] = b"execution_proof_network_tests: valid proof, type 2";
@@ -15,6 +15,12 @@ const PROVER: u64 = 0;
 const SECOND_PROVER: u64 = 1;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(60);
 const PROPAGATION_TIMEOUT: Duration = Duration::from_secs(20);
+/// Long enough for a stalled node to be caught up by lookup or range sync.
+const RECOVERY_TIMEOUT: Duration = Duration::from_secs(120);
+/// Slots a joiner must be behind to range sync rather than look blocks up
+/// (`SLOT_IMPORT_TOLERANCE` is 32).
+const RANGE_SYNC_DISTANCE: u64 = 40;
+const RANGE_SYNC_TIMEOUT: Duration = Duration::from_secs(150);
 /// Peer score below which a node has applied at least one gossip penalty.
 const PENALISED_SCORE: f64 = -5.0;
 
@@ -380,6 +386,126 @@ fn late_joining_proof_only_node_stalls_on_proofs_it_missed() {
         info!(
             ?stalled_root,
             "Late joiner stalled on proofs gossiped before it joined"
+        );
+        Ok(())
+    })
+    .unwrap()
+}
+
+/// A node whose execution layer starts answering `SYNCING` stalls at the head: the next
+/// envelope gets an optimistic status, which Gloas envelope import rejects, so the payload is
+/// never received and the following block is refused. Once the execution layer answers `VALID`
+/// again the node catches up.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "too slow in debug mode")]
+fn syncing_execution_layer_stalls_a_node_at_the_head_until_it_recovers() {
+    let config = ProofNetworkConfig::new(vec![
+        NodeSpec::plain().with_validators(),
+        NodeSpec::plain().with_validators(),
+        NodeSpec::plain(),
+    ]);
+    ProofNetwork::run(config, |net| async move {
+        net.wait_for_genesis().await?;
+        net.wait_for_peers(&[0, 1, 2], 2, STARTUP_TIMEOUT).await?;
+        let healthy_root = net
+            .wait_for_head_slot(2, Slot::new(3), STARTUP_TIMEOUT)
+            .await?;
+        net.wait_for_payload_received(&[2], healthy_root, PROPAGATION_TIMEOUT)
+            .await?;
+
+        net.set_execution_layer_syncing(2, true)?;
+        // The next full block imports, but its envelope is rejected as optimistic.
+        let mut stalled_root = None;
+        net.wait_for(
+            "node 2 to hold a block whose payload it rejected",
+            STARTUP_TIMEOUT,
+            |net| {
+                let head = net.head_block_root(2)?;
+                let status = net.proof_status(2, head, 0)?;
+                stalled_root = (!status.payload_received).then_some(head);
+                Ok(stalled_root.is_some())
+            },
+        )
+        .await?;
+        let stalled_root = stalled_root.ok_or("no stalled block")?;
+        let stalled = net.proof_status(2, stalled_root, 0)?;
+        assert!(!stalled.envelope_pending, "{stalled:?}");
+        assert!(!stalled.envelope_stored, "{stalled:?}");
+
+        // The chain moves on without node 2.
+        net.wait_for_head_slot(0, stalled.head_slot + 4, STARTUP_TIMEOUT)
+            .await?;
+        let later = net.proof_status(2, stalled_root, 0)?;
+        assert_eq!(later.head_slot, stalled.head_slot, "{later:?}");
+        assert!(!later.payload_received, "{later:?}");
+
+        // With the execution layer back, node 2 catches up.
+        net.set_execution_layer_syncing(2, false)?;
+        net.wait_for("node 2 to catch up with node 0", RECOVERY_TIMEOUT, |net| {
+            Ok(net.head_slot(2)? + 1 >= net.head_slot(0)?)
+        })
+        .await?;
+        let recovered = net.proof_status(2, stalled_root, 0)?;
+        assert!(recovered.payload_received, "{recovered:?}");
+        info!(
+            ?stalled_root,
+            "Node stalled while its execution layer was syncing and recovered"
+        );
+        Ok(())
+    })
+    .unwrap()
+}
+
+/// A node that joins far enough behind to range sync imports every historical payload even
+/// though its execution layer answers `SYNCING` to all of them, and then reports those blocks as
+/// not optimistic.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "too slow in debug mode")]
+fn range_sync_imports_payloads_a_syncing_execution_layer_never_verified() {
+    let config = ProofNetworkConfig::new(vec![
+        NodeSpec::plain().with_validators(),
+        NodeSpec::plain().with_validators(),
+    ]);
+    ProofNetwork::run(config, |mut net| async move {
+        net.wait_for_genesis().await?;
+        net.wait_for_peers(&[0, 1], 1, STARTUP_TIMEOUT).await?;
+        // Get beyond the sync tolerance so the joiner range syncs rather than looks blocks up.
+        let range_sync_head = Slot::new(RANGE_SYNC_DISTANCE);
+        net.wait_for_head_slot(0, range_sync_head, RANGE_SYNC_TIMEOUT)
+            .await?;
+        let historical_slot = Slot::new(RANGE_SYNC_DISTANCE / 2);
+        let historical = net
+            .block_root_at_slot(0, historical_slot)
+            .await?
+            .ok_or(format!("node 0 has no block at slot {historical_slot}"))?;
+
+        let joiner = net
+            .add_node(NodeSpec::plain().with_syncing_execution_layer())
+            .await?;
+        net.wait_for_peers(&[joiner], 2, STARTUP_TIMEOUT).await?;
+        net.wait_for_head_slot(joiner, range_sync_head, RANGE_SYNC_TIMEOUT)
+            .await?;
+
+        // Every envelope the joiner imported came through range sync: the gossip and lookup
+        // paths reject the optimistic status its execution layer produces. The historical
+        // block may be finalized and pruned from fork choice by now, so check the store for
+        // it and fork choice for the head's parent, which is still unfinalized.
+        let historical_status = net.proof_status(joiner, historical, 0)?;
+        assert!(historical_status.envelope_stored, "{historical_status:?}");
+        let recent = net.head_parent_block_root(joiner)?;
+        let recent_status = net.proof_status(joiner, recent, 0)?;
+        assert!(recent_status.payload_received, "{recent_status:?}");
+        assert!(recent_status.envelope_stored, "{recent_status:?}");
+        // Both are reported as settled even though the execution layer never validated them.
+        for block_root in [historical, recent] {
+            assert_eq!(
+                net.block_is_optimistic(joiner, block_root).await?,
+                Some(false)
+            );
+        }
+        info!(
+            ?recent,
+            "Range sync imported unverified payloads on a syncing node"
         );
         Ok(())
     })

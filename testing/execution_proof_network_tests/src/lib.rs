@@ -42,7 +42,11 @@
 //! - Nothing re-serves proofs: a proof-only node that joins within the sync tolerance (32
 //!   slots) lookup-syncs its envelopes through the gate, misses the proofs gossiped before it
 //!   joined, and stalls at the first full block. By inspection, range sync (further behind)
-//!   imports envelopes without proofs instead; that path is not exercised here.
+//!   imports envelopes without proofs instead.
+//! - The same split applies to a syncing execution layer: at the head, an envelope with an
+//!   optimistic status is rejected (`OptimisticSyncNotSupported`) and the node stalls until the
+//!   execution layer answers `VALID` again, while range sync imports such envelopes and the
+//!   node reports their blocks as not optimistic.
 //!
 //! - **RPC retrieval.** Proofs are not requested from peers by range or by root yet. A
 //!   proof-only node that joins late therefore cannot catch up on proofs it missed; that
