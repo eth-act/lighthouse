@@ -91,6 +91,13 @@ impl<T: BeaconChainTypes> PayloadNotifier<T> {
                         Some(PayloadVerificationStatus::Optimistic)
                     }
                 }
+                // No engine to execute against, and no proof gate on this path, so nothing
+                // verifies this payload and nothing later will. It stays optimistic, which keeps
+                // the node following the chain without attesting to it.
+                //
+                // The arm above keeps its `None`: the cheap hash check failed there and only an
+                // engine can do the slow one, so erroring beats importing an unchecked payload.
+                _ if chain.execution_layer.is_none() => Some(PayloadVerificationStatus::Optimistic),
                 _ => None,
             }
         } else {

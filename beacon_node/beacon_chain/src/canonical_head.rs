@@ -1162,19 +1162,24 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             );
         }
 
-        // The execution layer updates might attempt to take a write-lock on fork choice, so it's
-        // important to ensure the fork-choice lock isn't being held.
-        let el_update_handle = spawn_execution_layer_updates(
-            self.clone(),
-            new_forkchoice_update_parameters,
-            new_payload_status,
-        )?;
+        // Nothing to notify or prepare without an engine.
+        let el_update_handle = if self.execution_layer.is_some() {
+            // The execution layer updates might attempt to take a write-lock on fork choice, so
+            // it's important to ensure the fork-choice lock isn't being held.
+            Some(spawn_execution_layer_updates(
+                self.clone(),
+                new_forkchoice_update_parameters,
+                new_payload_status,
+            )?)
+        } else {
+            None
+        };
 
         // We have completed recomputing the head and it's now valid for another process to do the
         // same.
         drop(recompute_head_lock);
 
-        Ok(Some(el_update_handle))
+        Ok(el_update_handle)
     }
 
     /// Rebuild the slot assignments cache from the head state. Returns `None` on deep sync and

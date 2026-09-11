@@ -71,6 +71,9 @@ pub struct Config {
     pub chain: beacon_chain::ChainConfig,
     pub execution_layer: Option<execution_layer::Config>,
     pub proof_engine: Option<ProofEngineConfig>,
+    /// Settings for the Gloas builder client, which exists whenever the Gloas fork is scheduled
+    /// and so must be configurable on a node that has no execution layer.
+    pub builder_client: BuilderClientConfig,
     pub trusted_setup: Vec<u8>,
     pub http_api: http_api::Config,
     pub http_metrics: http_metrics::Config,
@@ -81,6 +84,15 @@ pub struct Config {
     pub genesis_state_url: Option<String>,
     pub genesis_state_url_timeout: Duration,
     pub allow_insecure_genesis_sync: bool,
+}
+
+/// Settings shared by the builder clients, applicable with or without an execution layer.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BuilderClientConfig {
+    /// HTTP user agent sent alongside builder requests. `None` uses Lighthouse's version string.
+    pub user_agent: Option<String>,
+    /// Send builder requests as JSON rather than SSZ.
+    pub disable_ssz: bool,
 }
 
 impl Default for Config {
@@ -97,6 +109,7 @@ impl Default for Config {
             chain: <_>::default(),
             execution_layer: None,
             proof_engine: None,
+            builder_client: <_>::default(),
             trusted_setup: get_trusted_setup(),
             beacon_graffiti: GraffitiOrigin::default(),
             http_api: <_>::default(),

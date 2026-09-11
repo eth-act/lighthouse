@@ -46,6 +46,13 @@ impl<T: BeaconChainTypes> PayloadNotifier<T> {
                         Some(PayloadVerificationStatus::Optimistic)
                     }
                 }
+                // No engine to execute against, and no verdict to wait on: the envelope only
+                // imports once its proofs verify. Not `Optimistic`, which Gloas import rejects
+                // outright.
+                //
+                // The arm above keeps its `None`: the cheap hash check failed there and only an
+                // engine can do the slow one, so erroring beats calling it settled.
+                _ if chain.execution_layer.is_none() => Some(PayloadVerificationStatus::Irrelevant),
                 _ => None,
             }
         };
@@ -95,5 +102,123 @@ impl<T: BeaconChainTypes> PayloadNotifier<T> {
             parent_beacon_block_root: envelope.message.parent_beacon_block_root,
             execution_requests: &envelope.message.execution_requests,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::BeaconChainHarness;
+    use bls::Signature;
+    use proof_engine::{ProofEngine, test_utils::MockProofEngine};
+    use types::execution::ExecutionPayloadEnvelope;
+    use types::{BeaconBlock, EthSpec, ForkName, MinimalEthSpec};
+
+    type E = MinimalEthSpec;
+
+    /// Without an engine the notifier must decide the status itself, and it must not be
+    /// optimistic: Gloas import rejects an optimistic envelope, which would stop such a node
+    /// importing any payload.
+    #[tokio::test]
+    async fn proof_only_node_precomputes_a_non_optimistic_status() {
+        let spec = Arc::new(ForkName::Gloas.make_genesis_spec(E::default_spec()));
+        let harness = BeaconChainHarness::builder(E::default())
+            .spec(spec.clone())
+            .deterministic_keypairs(8)
+            .fresh_ephemeral_store()
+            .proof_engine(Some(ProofEngine::new(MockProofEngine::default())))
+            .build();
+        let chain = harness.chain.clone();
+
+        let envelope = Arc::new(SignedExecutionPayloadEnvelope::<E> {
+            message: ExecutionPayloadEnvelope {
+                beacon_block_root: chain.genesis_block_root,
+                ..ExecutionPayloadEnvelope::empty()
+            },
+            signature: Signature::empty(),
+        });
+        let block = Arc::new(SignedBeaconBlock::from_block(
+            BeaconBlock::empty(&spec),
+            Signature::empty(),
+        ));
+
+        let notifier = PayloadNotifier::new(
+            chain,
+            envelope,
+            block,
+            // What the gossip path uses, and the case that would otherwise consult the engine.
+            NotifyExecutionLayer::Yes,
+        )
+        .expect("the notifier is constructed");
+
+        assert_eq!(
+            notifier.payload_verification_status,
+            Some(PayloadVerificationStatus::Irrelevant),
+            "a proof-only node must not defer to an engine it does not have"
+        );
+        assert!(
+            !notifier
+                .payload_verification_status
+                .expect("status is precomputed")
+                .is_optimistic(),
+            "an optimistic status would be rejected at import"
+        );
+    }
+
+    /// `Irrelevant` is only sound while proofs gate import, and the two are decided in different
+    /// files. This pins them together: a chain that reports a non-optimistic status without an
+    /// engine must also require proofs before it will import.
+    #[tokio::test]
+    async fn a_non_optimistic_status_is_paired_with_a_proof_requirement() {
+        let spec = Arc::new(ForkName::Gloas.make_genesis_spec(E::default_spec()));
+        let harness = BeaconChainHarness::builder(E::default())
+            .spec(spec)
+            .deterministic_keypairs(8)
+            .fresh_ephemeral_store()
+            .proof_engine(Some(ProofEngine::new(MockProofEngine::default())))
+            .build();
+
+        assert!(harness.chain.execution_layer.is_none());
+        assert!(
+            harness
+                .chain
+                .pending_payload_cache
+                .required_execution_proofs()
+                > 0,
+            "nothing else would verify the payload this node imports as settled"
+        );
+    }
+
+    /// An execution-layer node still defers to its engine.
+    #[tokio::test]
+    async fn execution_layer_node_defers_to_the_engine() {
+        let spec = Arc::new(ForkName::Gloas.make_genesis_spec(E::default_spec()));
+        let harness = BeaconChainHarness::builder(E::default())
+            .spec(spec.clone())
+            .deterministic_keypairs(8)
+            .fresh_ephemeral_store()
+            .mock_execution_layer()
+            .build();
+        let chain = harness.chain.clone();
+
+        let envelope = Arc::new(SignedExecutionPayloadEnvelope::<E> {
+            message: ExecutionPayloadEnvelope {
+                beacon_block_root: chain.genesis_block_root,
+                ..ExecutionPayloadEnvelope::empty()
+            },
+            signature: Signature::empty(),
+        });
+        let block = Arc::new(SignedBeaconBlock::from_block(
+            BeaconBlock::empty(&spec),
+            Signature::empty(),
+        ));
+
+        let notifier = PayloadNotifier::new(chain, envelope, block, NotifyExecutionLayer::Yes)
+            .expect("the notifier is constructed");
+
+        assert_eq!(
+            notifier.payload_verification_status, None,
+            "an engine-backed node leaves the status for the engine to decide"
+        );
     }
 }

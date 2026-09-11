@@ -510,6 +510,108 @@ fn run_execution_jwt_secret_key_is_persisted() {
             assert_eq!(file_jwt_secret_key, jwt_secret_key);
         });
 }
+/// A proof-only node verifies execution in-process instead of driving an engine.
+#[test]
+fn proof_only_node_builds_without_execution_layer() {
+    CommandLineTest::new_with_no_execution_endpoint()
+        .flag("proof-engine", None)
+        .run_with_zero_port()
+        .with_config(|config| {
+            assert!(config.execution_layer.is_none());
+            assert!(config.proof_engine.is_some());
+            assert!(config.network.enable_execution_proof);
+        });
+}
+
+/// An execution-layer-backed node keeps its existing configuration, and gains no proof engine.
+#[test]
+fn execution_layer_node_config_is_unchanged() {
+    CommandLineTest::new()
+        .run_with_zero_port()
+        .with_config(|config| {
+            let el_config = config
+                .execution_layer
+                .as_ref()
+                .expect("an execution endpoint builds an execution layer config");
+            assert!(el_config.execution_endpoint.is_some());
+            assert!(el_config.secret_file.is_some());
+            assert!(config.proof_engine.is_none());
+            assert!(!config.network.enable_execution_proof);
+        });
+}
+
+/// Both may be configured together: the node drives an engine and verifies proofs.
+#[test]
+fn execution_endpoint_and_proof_engine_together() {
+    CommandLineTest::new()
+        .flag("proof-engine", None)
+        .run_with_zero_port()
+        .with_config(|config| {
+            assert!(config.execution_layer.is_some());
+            assert!(config.proof_engine.is_some());
+        });
+}
+
+/// The Gloas builder client exists whenever Gloas is scheduled, so a node without an engine
+/// must still be able to configure it.
+#[test]
+fn proof_only_node_can_configure_the_builder_client() {
+    CommandLineTest::new_with_no_execution_endpoint()
+        .flag("proof-engine", None)
+        .flag("builder-user-agent", Some("proof-only-agent"))
+        .flag("builder-disable-ssz", None)
+        .run_with_zero_port()
+        .with_config(|config| {
+            assert!(config.execution_layer.is_none());
+            assert_eq!(
+                config.builder_client.user_agent.as_deref(),
+                Some("proof-only-agent")
+            );
+            assert!(config.builder_client.disable_ssz);
+        });
+}
+
+/// An engine-backed node still carries these onto its own config, leaving the relay unaffected.
+#[test]
+fn execution_layer_node_still_carries_builder_settings() {
+    CommandLineTest::new()
+        .flag("builder", Some("http://meow.cats"))
+        .flag("builder-user-agent", Some("agent"))
+        .flag("builder-disable-ssz", None)
+        .run_with_zero_port()
+        .with_config(|config| {
+            let el_config = config.execution_layer.as_ref().expect("has an el config");
+            assert_eq!(el_config.builder_user_agent.as_deref(), Some("agent"));
+            assert!(el_config.disable_builder_ssz_requests);
+            assert_eq!(config.builder_client.user_agent.as_deref(), Some("agent"));
+            assert!(config.builder_client.disable_ssz);
+        });
+}
+
+/// A node with neither cannot validate execution at all, and is rejected at startup.
+#[test]
+fn no_execution_endpoint_and_no_proof_engine_is_rejected() {
+    let tmp_dir = TempDir::new().expect("Unable to create temporary directory");
+    let output = base_cmd()
+        .arg("--datadir")
+        .arg(tmp_dir.path().as_os_str())
+        .arg("--allow-insecure-genesis-sync")
+        .arg("-z")
+        .arg("--immediate-shutdown")
+        .output()
+        .expect("should run command");
+
+    assert!(
+        !output.status.success(),
+        "a node without execution validation must not start"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("At least one of --execution-endpoint or --proof-engine must be provided"),
+        "unexpected error output: {stderr}"
+    );
+}
+
 #[test]
 fn execution_timeout_multiplier_flag() {
     let dir = TempDir::new().expect("Unable to create temporary directory");

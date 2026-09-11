@@ -138,6 +138,12 @@ impl<T: BeaconChainTypes> PendingPayloadCache<T> {
         &self.custody_context
     }
 
+    /// Distinct proofs an envelope waits on before import. Zero unless this node validates
+    /// execution by proofs alone.
+    pub fn required_execution_proofs(&self) -> usize {
+        self.required_execution_proofs
+    }
+
     /// Returns all cached data columns for the given block root, if any.
     #[instrument(skip_all, level = "trace")]
     pub fn get_data_columns(

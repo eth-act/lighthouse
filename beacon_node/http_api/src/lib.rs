@@ -2319,11 +2319,7 @@ pub async fn serve<T: BeaconChainTypes>(
              network_globals: Arc<NetworkGlobals<T::EthSpec>>,
              chain: Arc<BeaconChain<T>>| {
                 async move {
-                    let el_offline = if let Some(el) = &chain.execution_layer {
-                        el.is_offline_or_erroring().await
-                    } else {
-                        true
-                    };
+                    let el_offline = chain.is_execution_layer_offline().await;
 
                     task_spawner
                         .blocking_json_task(Priority::P0, move || {
@@ -2381,11 +2377,7 @@ pub async fn serve<T: BeaconChainTypes>(
              network_globals: Arc<NetworkGlobals<T::EthSpec>>,
              chain: Arc<BeaconChain<T>>| {
                 async move {
-                    let el_offline = if let Some(el) = &chain.execution_layer {
-                        el.is_offline_or_erroring().await
-                    } else {
-                        true
-                    };
+                    let el_offline = chain.is_execution_layer_offline().await;
 
                     task_spawner
                         .blocking_response_task(Priority::P0, move || {

@@ -6,6 +6,7 @@ mod column_verification;
 mod envelope_verification;
 mod events;
 mod op_verification;
+mod optional_execution_layer;
 mod payload_invalidation;
 mod prepare_payload;
 mod rewards;

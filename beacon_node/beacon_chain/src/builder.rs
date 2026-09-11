@@ -1004,12 +1004,14 @@ where
         debug!(?custody_context, "Loaded persisted custody context");
         let custody_context = Arc::new(custody_context);
 
-        // Without a proof engine we can't verify proofs, so we don't require them.
-        let required_execution_proofs = if self.proof_engine.is_some() {
-            REQUIRED_EXECUTION_PROOFS
-        } else {
-            0
-        };
+        // Only a node without an engine needs proofs before import. With one, re-execution
+        // validates the payload, so proofs are observed but do not hold it up.
+        let required_execution_proofs =
+            if self.execution_layer.is_none() && self.proof_engine.is_some() {
+                REQUIRED_EXECUTION_PROOFS
+            } else {
+                0
+            };
 
         let beacon_chain = BeaconChain {
             spec: self.spec.clone(),
