@@ -2,7 +2,7 @@
 
 use crate::{E, NodeChain, ProvenPayload, ProverSpec, ProvingExecutionLayer};
 use node_test_rig::{
-    ClientConfig, LocalExecutionNode, ValidatorFiles,
+    ClientConfig, LocalExecutionNode, MockExecutionConfig, ValidatorFiles,
     environment::{EnvironmentBuilder, RuntimeContext},
     eth2::BeaconNodeHttpClient,
     testing_validator_config,
@@ -166,6 +166,9 @@ pub struct ProofNetwork {
     pub(crate) network: LocalNetwork<E>,
     nodes: Vec<NodeSpec>,
     spec: Arc<ChainSpec>,
+    context: RuntimeContext<E>,
+    base_config: ClientConfig,
+    execution_config: MockExecutionConfig,
     /// Proving execution layers by node index.
     provers: Vec<(usize, ProvingExecutionLayer)>,
     /// Mock execution layers owned by proving nodes (the simulator owns the others).
@@ -219,23 +222,6 @@ impl ProofNetwork {
         if nodes.is_empty() {
             return Err("a proof network needs at least one node".to_string());
         }
-        for (index, node) in nodes.iter().enumerate() {
-            if !node.execution_layer && !node.has_proof_engine() {
-                return Err(format!(
-                    "node {index} needs an execution layer or a proof engine"
-                ));
-            }
-            if node.validators && !node.execution_layer {
-                return Err(format!(
-                    "node {index} cannot carry validators without an execution layer"
-                ));
-            }
-            if node.prover.is_some() && !(node.execution_layer && node.has_proof_engine()) {
-                return Err(format!(
-                    "node {index} needs an execution layer and a proof engine to prove payloads"
-                ));
-            }
-        }
 
         let params = LocalNetworkParams {
             validator_count,
@@ -250,82 +236,21 @@ impl ProofNetwork {
         )
         .await?;
 
-        let mut provers = Vec::new();
-        let mut proving_execution_nodes = Vec::new();
-        for (index, node) in nodes.iter().enumerate() {
-            let mut client_config = base_config.clone();
-            configure_proof_engine(&mut client_config, node);
-            info!(
-                node = index,
-                mode = node.mode(),
-                validators = node.validators,
-                "Starting beacon node"
-            );
-            match (&node.prover, node.execution_layer) {
-                (Some(prover), _) => {
-                    // The node talks to the proving proxy, which forwards to its own mock.
-                    let mut mock_config = execution_config.clone();
-                    mock_config.server_config.listen_port =
-                        EXECUTION_PORT + PROVING_MOCK_PORT_OFFSET + index as u16;
-                    let execution_node = LocalExecutionNode::new(context.clone(), mock_config);
-                    let handle = context
-                        .executor
-                        .handle()
-                        .ok_or("runtime is shutting down")?;
-                    let proving = ProvingExecutionLayer::start(
-                        &handle,
-                        EXECUTION_PORT + PROVING_PROXY_PORT_OFFSET + index as u16,
-                        execution_node.server.url(),
-                        spec.clone(),
-                        prover.clone(),
-                    )?;
-                    client_config.execution_layer = Some(execution_layer::Config {
-                        execution_endpoint: Some(
-                            SensitiveUrl::parse(&proving.url())
-                                .map_err(|e| format!("invalid proving proxy url: {e:?}"))?,
-                        ),
-                        default_datadir: execution_node.datadir.path().to_path_buf(),
-                        secret_file: Some(execution_node.datadir.path().join("jwt.hex")),
-                        ..Default::default()
-                    });
-                    Box::pin(
-                        network.add_beacon_node_without_mock_execution_layer(client_config, false),
-                    )
-                    .await?;
-                    let remote = network
-                        .beacon_nodes
-                        .read()
-                        .get(index)
-                        .ok_or(format!("node {index} did not start"))?
-                        .remote_node()?;
-                    proving.set_target(remote);
-                    provers.push((index, proving));
-                    proving_execution_nodes.push(execution_node);
-                }
-                (None, true) => {
-                    Box::pin(network.add_beacon_node(
-                        client_config,
-                        execution_config.clone(),
-                        false,
-                    ))
-                    .await?;
-                }
-                (None, false) => {
-                    client_config.execution_layer = None;
-                    Box::pin(
-                        network.add_beacon_node_without_mock_execution_layer(client_config, false),
-                    )
-                    .await?;
-                }
-            }
+        let mut net = Self {
+            network,
+            nodes: Vec::with_capacity(nodes.len()),
+            spec,
+            context,
+            base_config,
+            execution_config,
+            provers: Vec::new(),
+            _proving_execution_nodes: Vec::new(),
+        };
+        for node in nodes {
+            net.start_node(node).await?;
         }
 
-        let validator_nodes: Vec<usize> = nodes
-            .iter()
-            .enumerate()
-            .filter(|(_, node)| node.validators)
-            .map(|(index, _)| index)
-            .collect();
+        let validator_nodes = net.nodes_where(|node| node.validators);
         for (position, node_index) in validator_nodes.iter().enumerate() {
             let per_node = validator_count / validator_nodes.len();
             let start = position * per_node;
@@ -336,7 +261,8 @@ impl ProofNetwork {
             };
             let indices: Vec<usize> = (start..end).collect();
             info!(node = node_index, validators = ?indices, "Starting validator client");
-            let files = context
+            let files = net
+                .context
                 .executor
                 .spawn_blocking_handle(
                     move || ValidatorFiles::with_keystores(&indices),
@@ -347,24 +273,115 @@ impl ProofNetwork {
                 .map_err(|e| format!("keystore generation panicked: {e:?}"))??;
             let mut validator_config = testing_validator_config();
             validator_config.validator_store.fee_recipient = Some(Address::from(FEE_RECIPIENT));
-            Box::pin(network.add_validator_client(validator_config, *node_index, files)).await?;
+            Box::pin(
+                net.network
+                    .add_validator_client(validator_config, *node_index, files),
+            )
+            .await?;
         }
 
-        // The mock execution layers are infallible.
-        network
-            .execution_nodes
-            .read()
-            .iter()
-            .chain(proving_execution_nodes.iter())
-            .for_each(|node| node.server.all_payloads_valid());
+        Ok(net)
+    }
 
-        Ok(Self {
-            network,
-            nodes,
-            spec,
-            provers,
-            _proving_execution_nodes: proving_execution_nodes,
-        })
+    /// Start another beacon node once the network is running, for late-joining scenarios. It
+    /// connects through the boot node and syncs like any other late node. Validators cannot be
+    /// attached this way: the genesis validator set is fixed when the network is built.
+    pub async fn add_node(&mut self, node: NodeSpec) -> Result<usize, String> {
+        if node.validators {
+            return Err("validators can only be attached to nodes started with the network".into());
+        }
+        self.start_node(node).await
+    }
+
+    async fn start_node(&mut self, node: NodeSpec) -> Result<usize, String> {
+        let index = self.nodes.len();
+        if !node.execution_layer && !node.has_proof_engine() {
+            return Err(format!(
+                "node {index} needs an execution layer or a proof engine"
+            ));
+        }
+        if node.validators && !node.execution_layer {
+            return Err(format!(
+                "node {index} cannot carry validators without an execution layer"
+            ));
+        }
+        if node.prover.is_some() && !(node.execution_layer && node.has_proof_engine()) {
+            return Err(format!(
+                "node {index} needs an execution layer and a proof engine to prove payloads"
+            ));
+        }
+
+        let mut client_config = self.base_config.clone();
+        configure_proof_engine(&mut client_config, &node);
+        info!(
+            node = index,
+            mode = node.mode(),
+            validators = node.validators,
+            "Starting beacon node"
+        );
+        match (&node.prover, node.execution_layer) {
+            (Some(prover), _) => {
+                // The node talks to the proving proxy, which forwards to its own mock.
+                let mut mock_config = self.execution_config.clone();
+                mock_config.server_config.listen_port =
+                    EXECUTION_PORT + PROVING_MOCK_PORT_OFFSET + index as u16;
+                let execution_node = LocalExecutionNode::new(self.context.clone(), mock_config);
+                let handle = self
+                    .context
+                    .executor
+                    .handle()
+                    .ok_or("runtime is shutting down")?;
+                let proving = ProvingExecutionLayer::start(
+                    &handle,
+                    EXECUTION_PORT + PROVING_PROXY_PORT_OFFSET + index as u16,
+                    execution_node.server.url(),
+                    self.spec.clone(),
+                    prover.clone(),
+                )?;
+                client_config.execution_layer = Some(execution_layer::Config {
+                    execution_endpoint: Some(
+                        SensitiveUrl::parse(&proving.url())
+                            .map_err(|e| format!("invalid proving proxy url: {e:?}"))?,
+                    ),
+                    default_datadir: execution_node.datadir.path().to_path_buf(),
+                    secret_file: Some(execution_node.datadir.path().join("jwt.hex")),
+                    ..Default::default()
+                });
+                Box::pin(
+                    self.network
+                        .add_beacon_node_without_mock_execution_layer(client_config, false),
+                )
+                .await?;
+                proving.set_target(self.remote_node(index)?);
+                execution_node.server.all_payloads_valid();
+                self.provers.push((index, proving));
+                self._proving_execution_nodes.push(execution_node);
+            }
+            (None, true) => {
+                Box::pin(self.network.add_beacon_node(
+                    client_config,
+                    self.execution_config.clone(),
+                    false,
+                ))
+                .await?;
+                // The simulator owns this mock execution layer; it is infallible too.
+                self.network
+                    .execution_nodes
+                    .read()
+                    .iter()
+                    .for_each(|node| node.server.all_payloads_valid());
+            }
+            (None, false) => {
+                client_config.execution_layer = None;
+                Box::pin(
+                    self.network
+                        .add_beacon_node_without_mock_execution_layer(client_config, false),
+                )
+                .await?;
+            }
+        }
+        self.nodes.push(node);
+        Ok(index)
     }
 
     /// Payloads proved so far by node `node`'s proving execution layer, in submission order.

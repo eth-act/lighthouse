@@ -33,7 +33,16 @@
 //!   until two proof types verify. Without a prover they stop at the first full block; with
 //!   proving execution layers on the network they follow the chain.
 //!
-//! ## Pending integration points
+//! ## Behaviours of the base the scenarios pin down
+//!
+//! - Payload import on a proof-only node is gated per payload: a verified proof for a later
+//!   payload does not cover its ancestors, and fork choice refuses a block whose bid builds on a
+//!   payload the node has not received. Without a prover such a node stops at the first full
+//!   block.
+//! - Nothing re-serves proofs: a proof-only node that joins within the sync tolerance (32
+//!   slots) lookup-syncs its envelopes through the gate, misses the proofs gossiped before it
+//!   joined, and stalls at the first full block. By inspection, range sync (further behind)
+//!   imports envelopes without proofs instead; that path is not exercised here.
 //!
 //! - **RPC retrieval.** Proofs are not requested from peers by range or by root yet. A
 //!   proof-only node that joins late therefore cannot catch up on proofs it missed; that
