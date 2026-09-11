@@ -5,7 +5,7 @@ The primary component which connects to the Ethereum 2.0 P2P network and
 downloads, verifies and stores blocks. Provides a HTTP API for querying the
 beacon chain and publishing messages to the network.
 
-Usage: lighthouse beacon_node [OPTIONS] --execution-endpoint <EXECUTION-ENDPOINT>
+Usage: lighthouse beacon_node [OPTIONS]
 
 Options:
       --auto-compact-db <auto-compact-db>
@@ -133,6 +133,8 @@ Options:
       --execution-endpoint <EXECUTION-ENDPOINT>
           Server endpoint for an execution layer JWT-authenticated HTTP JSON-RPC
           connection. Uses the same endpoint to populate the deposit cache.
+          Optional: at least one of --execution-endpoint or --proof-engine must
+          be provided.
       --execution-jwt <EXECUTION-JWT>
           File path which contains the hex-encoded JWT secret for the execution
           endpoint provided in the --execution-endpoint flag.
@@ -317,6 +319,8 @@ Options:
           Enable the experimental in-process EIP-8025 proof engine. If PATH is
           omitted, use the built-in reth verifier configuration for OpenVM, SP1,
           and Zisk. Otherwise, PATH must contain a JSON ProofEngineConfig.
+          Supplying this flag without --execution-endpoint runs a proof-only
+          node that has no execution layer.
       --proposer-reorg-cutoff <MILLISECONDS>
           DEPRECATED. This flag has no effect.
       --proposer-reorg-disallowed-offsets <N1,N2,...>

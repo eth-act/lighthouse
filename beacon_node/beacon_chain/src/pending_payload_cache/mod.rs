@@ -41,7 +41,7 @@ use crate::metrics::{
 use crate::observed_data_sidecars::ObservationStrategy;
 use crate::partial_data_column_assembler::PartialMergeResult;
 use pending_components::{PendingComponents, ReconstructColumnsDecision};
-use types::execution::{ProofType, SignedExecutionProofEnvelope};
+use types::execution::SignedExecutionProofEnvelope;
 use types::{SignedExecutionPayloadBid, SignedExecutionPayloadEnvelope};
 
 /// The LRU Cache stores `PendingComponents`, which store the block root, the execution payload bid, and its associated column data.
@@ -138,6 +138,12 @@ impl<T: BeaconChainTypes> PendingPayloadCache<T> {
         &self.custody_context
     }
 
+    /// Distinct proofs an envelope waits on before import. Zero unless this node validates
+    /// execution by proofs alone.
+    pub fn required_execution_proofs(&self) -> usize {
+        self.required_execution_proofs
+    }
+
     /// Returns all cached data columns for the given block root, if any.
     #[instrument(skip_all, level = "trace")]
     pub fn get_data_columns(
@@ -198,16 +204,20 @@ impl<T: BeaconChainTypes> PendingPayloadCache<T> {
         })
     }
 
-    /// Return the sorted proof types of the execution proofs cached for `block_root`, or `None`
-    /// if the block has no pending components. Exposed so tests can observe proof storage.
-    pub fn cached_execution_proof_types(&self, block_root: &Hash256) -> Option<Vec<ProofType>> {
-        self.peek_pending_components(block_root, |components| {
-            components.map(|components| {
-                let mut proof_types: Vec<_> = components.execution_proofs.keys().copied().collect();
-                proof_types.sort_unstable();
-                proof_types
-            })
-        })
+    /// Return the execution proofs cached for `block_root`, ordered by proof type. Empty when
+    /// the payload is unknown to the cache or has no proofs.
+    pub fn get_execution_proofs(
+        &self,
+        block_root: &Hash256,
+    ) -> Vec<Arc<SignedExecutionProofEnvelope>> {
+        let mut proofs: Vec<Arc<SignedExecutionProofEnvelope>> =
+            self.peek_pending_components(block_root, |components| {
+                components
+                    .map(|components| components.execution_proofs.values().cloned().collect())
+                    .unwrap_or_default()
+            });
+        proofs.sort_by_key(|proof| proof.proof_type());
+        proofs
     }
 
     /// Filter out cells that are already cached for the given column sidecar.
@@ -1033,6 +1043,27 @@ mod data_availability_checker_tests {
         assert_eq!(envelope.block_root, s.block_root);
 
         assert_missing(s.put_proof(REQUIRED_EXECUTION_PROOFS as ProofType));
+    }
+
+    /// Cached proofs are returned by proof type; unknown payloads and repeats add nothing.
+    #[test]
+    fn get_execution_proofs_returns_cached_proofs_by_type() {
+        let s = setup_gated(NodeCustodyType::Fullnode);
+        assert!(s.cache.get_execution_proofs(&s.block_root).is_empty());
+        assert!(s.cache.get_execution_proofs(&Hash256::default()).is_empty());
+
+        assert_missing(s.put_proof(2));
+        assert_missing(s.put_proof(1));
+        assert_missing(s.put_proof(2));
+
+        let proof_types = s
+            .cache
+            .get_execution_proofs(&s.block_root)
+            .iter()
+            .map(|proof| proof.proof_type())
+            .collect::<Vec<_>>();
+        assert_eq!(proof_types, vec![1, 2]);
+        assert!(s.cache.get_execution_proofs(&Hash256::default()).is_empty());
     }
 
     // ────────── Gloas partial column merge ─────────────────────────────────

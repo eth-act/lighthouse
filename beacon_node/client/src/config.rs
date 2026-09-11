@@ -77,6 +77,9 @@ pub struct Config {
     #[cfg(feature = "test-utils")]
     #[serde(skip)]
     pub proof_engine_override: Option<ProofEngine>,
+    /// Settings for the Gloas builder client, which exists whenever the Gloas fork is scheduled
+    /// and so must be configurable on a node that has no execution layer.
+    pub builder_client: BuilderClientConfig,
     pub trusted_setup: Vec<u8>,
     pub http_api: http_api::Config,
     pub http_metrics: http_metrics::Config,
@@ -87,6 +90,15 @@ pub struct Config {
     pub genesis_state_url: Option<String>,
     pub genesis_state_url_timeout: Duration,
     pub allow_insecure_genesis_sync: bool,
+}
+
+/// Settings shared by the builder clients, applicable with or without an execution layer.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BuilderClientConfig {
+    /// HTTP user agent sent alongside builder requests. `None` uses Lighthouse's version string.
+    pub user_agent: Option<String>,
+    /// Send builder requests as JSON rather than SSZ.
+    pub disable_ssz: bool,
 }
 
 impl Default for Config {
@@ -105,6 +117,7 @@ impl Default for Config {
             proof_engine: None,
             #[cfg(feature = "test-utils")]
             proof_engine_override: None,
+            builder_client: <_>::default(),
             trusted_setup: get_trusted_setup(),
             beacon_graffiti: GraffitiOrigin::default(),
             http_api: <_>::default(),

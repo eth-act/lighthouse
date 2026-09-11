@@ -44,6 +44,9 @@ use crate::beacon::execution_payload_envelopes::{
     get_beacon_execution_payload_envelopes, post_beacon_execution_payload_envelopes,
     post_beacon_execution_payload_envelopes_ssz,
 };
+use crate::beacon::execution_proofs::{
+    get_beacon_execution_proofs, post_beacon_execution_proofs, post_beacon_execution_proofs_ssz,
+};
 use crate::beacon::pool::*;
 use crate::caches::DEFAULT_HISTORICAL_COMMITTEE_CACHE_SIZE;
 pub use crate::caches::HistoricalCommitteeCache;
@@ -1578,6 +1581,30 @@ pub async fn serve<T: BeaconChainTypes>(
         chain_filter.clone(),
     );
 
+    // POST beacon/execution_proofs
+    let post_beacon_execution_proofs = post_beacon_execution_proofs(
+        eth_v1.clone(),
+        task_spawner_filter.clone(),
+        chain_filter.clone(),
+        network_tx_filter.clone(),
+    );
+
+    // POST beacon/execution_proofs (SSZ)
+    let post_beacon_execution_proofs_ssz = post_beacon_execution_proofs_ssz(
+        eth_v1.clone(),
+        task_spawner_filter.clone(),
+        chain_filter.clone(),
+        network_tx_filter.clone(),
+    );
+
+    // GET beacon/execution_proofs/{block_id}
+    let get_beacon_execution_proofs = get_beacon_execution_proofs(
+        eth_v1.clone(),
+        block_id_or_err,
+        task_spawner_filter.clone(),
+        chain_filter.clone(),
+    );
+
     let beacon_rewards_path = eth_v1
         .clone()
         .and(warp::path("beacon"))
@@ -2292,11 +2319,7 @@ pub async fn serve<T: BeaconChainTypes>(
              network_globals: Arc<NetworkGlobals<T::EthSpec>>,
              chain: Arc<BeaconChain<T>>| {
                 async move {
-                    let el_offline = if let Some(el) = &chain.execution_layer {
-                        el.is_offline_or_erroring().await
-                    } else {
-                        true
-                    };
+                    let el_offline = chain.is_execution_layer_offline().await;
 
                     task_spawner
                         .blocking_json_task(Priority::P0, move || {
@@ -2354,11 +2377,7 @@ pub async fn serve<T: BeaconChainTypes>(
              network_globals: Arc<NetworkGlobals<T::EthSpec>>,
              chain: Arc<BeaconChain<T>>| {
                 async move {
-                    let el_offline = if let Some(el) = &chain.execution_layer {
-                        el.is_offline_or_erroring().await
-                    } else {
-                        true
-                    };
+                    let el_offline = chain.is_execution_layer_offline().await;
 
                     task_spawner
                         .blocking_response_task(Priority::P0, move || {
@@ -3401,6 +3420,7 @@ pub async fn serve<T: BeaconChainTypes>(
                 .uor(get_blob_sidecars)
                 .uor(get_blobs)
                 .uor(get_beacon_execution_payload_envelopes)
+                .uor(get_beacon_execution_proofs)
                 .uor(get_beacon_pool_attestations)
                 .uor(get_beacon_pool_attester_slashings)
                 .uor(get_beacon_pool_proposer_slashings)
@@ -3464,6 +3484,7 @@ pub async fn serve<T: BeaconChainTypes>(
                             .uor(post_beacon_blinded_blocks_v2_ssz)
                             .uor(post_beacon_execution_payload_envelopes_ssz)
                             .uor(post_beacon_execution_payload_bids_ssz)
+                            .uor(post_beacon_execution_proofs_ssz)
                             .uor(post_beacon_pool_payload_attestations_ssz)
                             .uor(post_validator_proposer_preferences_ssz),
                     )
@@ -3481,6 +3502,7 @@ pub async fn serve<T: BeaconChainTypes>(
                     .uor(post_validator_proposer_preferences)
                     .uor(post_beacon_execution_payload_envelopes)
                     .uor(post_beacon_execution_payload_bids)
+                    .uor(post_beacon_execution_proofs)
                     .uor(post_beacon_state_validators)
                     .uor(post_beacon_state_builders)
                     .uor(post_beacon_state_validator_balances)
