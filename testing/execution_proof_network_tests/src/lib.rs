@@ -6,7 +6,7 @@
 //! - choose the topology: per node, whether it runs an execution layer, a proof engine or both,
 //!   which proof bytes its engine accepts, and whether it carries validators ([`NodeSpec`]);
 //! - inject a deterministic [`MockProofEngine`](proof_engine::test_utils::MockProofEngine) per
-//!   node through `ClientConfig::proof_engine_override` (behind the `client/test-utils`
+//!   node through `ProofEngineConfig::with_engine` (behind the `proof_engine/test-utils`
 //!   feature), so valid and invalid proof data are chosen per scenario instead of by a zkVM
 //!   verifier;
 //! - build and sign proof envelopes with the deterministic interop validator keys, and submit

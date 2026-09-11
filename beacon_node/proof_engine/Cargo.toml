@@ -6,6 +6,8 @@ authors = ["Sigma Prime <contact@sigmaprime.io>"]
 
 [features]
 ere-verifier = ["dep:flate2", "dep:reqwest", "dep:sha2", "dep:tar"]
+# Lets tests inject a ready-built engine through `ProofEngineConfig::with_engine`.
+test-utils = []
 
 [dependencies]
 ethereum_serde_utils = { workspace = true }

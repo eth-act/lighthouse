@@ -6,12 +6,11 @@ edition = { workspace = true }
 
 [dependencies]
 beacon_chain = { workspace = true }
-client = { path = "../../beacon_node/client", features = ["test-utils"] }
 execution_layer = { workspace = true }
 lighthouse_network = { workspace = true }
 network = { workspace = true }
 node_test_rig = { workspace = true }
-proof_engine = { workspace = true }
+proof_engine = { workspace = true, features = ["test-utils"] }
 reqwest = { workspace = true }
 sensitive_url = { workspace = true }
 serde_json = { workspace = true }

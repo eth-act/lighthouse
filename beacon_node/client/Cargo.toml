@@ -6,8 +6,6 @@ edition = { workspace = true }
 
 [features]
 ere-verifier = ["proof_engine/ere-verifier"]
-# Exposes `Config::proof_engine_override` so tests can inject an in-process proof engine.
-test-utils = []
 
 [dependencies]
 beacon_chain = { workspace = true }

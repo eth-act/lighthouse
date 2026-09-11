@@ -5,7 +5,7 @@ use directory::DEFAULT_ROOT_DIR;
 use environment::LoggerConfig;
 use kzg::trusted_setup::get_trusted_setup;
 use network::NetworkConfig;
-use proof_engine::{ProofEngine, ProofEngineConfig};
+use proof_engine::ProofEngineConfig;
 use sensitive_url::SensitiveUrl;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -71,12 +71,6 @@ pub struct Config {
     pub chain: beacon_chain::ChainConfig,
     pub execution_layer: Option<execution_layer::Config>,
     pub proof_engine: Option<ProofEngineConfig>,
-    /// Ready-built proof engine that takes precedence over `proof_engine`. Never serialized and
-    /// only present with the `test-utils` feature: it lets in-process tests and simulations
-    /// inject a mock verifier without an `ere-verifier` build.
-    #[cfg(feature = "test-utils")]
-    #[serde(skip)]
-    pub proof_engine_override: Option<ProofEngine>,
     /// Settings for the Gloas builder client, which exists whenever the Gloas fork is scheduled
     /// and so must be configurable on a node that has no execution layer.
     pub builder_client: BuilderClientConfig,
@@ -115,8 +109,6 @@ impl Default for Config {
             chain: <_>::default(),
             execution_layer: None,
             proof_engine: None,
-            #[cfg(feature = "test-utils")]
-            proof_engine_override: None,
             builder_client: <_>::default(),
             trusted_setup: get_trusted_setup(),
             beacon_graffiti: GraffitiOrigin::default(),
@@ -136,18 +128,6 @@ impl Default for Config {
 }
 
 impl Config {
-    /// The injected proof engine, if any. Always `None` without the `test-utils` feature.
-    pub fn proof_engine_override(&self) -> Option<ProofEngine> {
-        #[cfg(feature = "test-utils")]
-        {
-            self.proof_engine_override.clone()
-        }
-        #[cfg(not(feature = "test-utils"))]
-        {
-            None
-        }
-    }
-
     /// Updates the data directory for the Client.
     pub fn set_data_dir(&mut self, data_dir: PathBuf) {
         self.data_dir.clone_from(&data_dir);

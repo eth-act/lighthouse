@@ -1,5 +1,6 @@
 //! Configuration for mapping EIP-8025 proof types to ERE zkVM verifiers.
 
+use crate::{ProofEngine, ProofEngineError};
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::{collections::HashSet, str::FromStr};
 use types::execution::{ProofType, is_supported_proof_type};
@@ -21,10 +22,25 @@ const DEFAULT_RETH_ZISK_PROGRAM_VK: &str =
     "271ffd2449e1ca3ad8b63f18e0786a9d8267ae478bb5fb7a2dc55ef00cdfb968";
 
 /// Configuration for the in-process EIP-8025 proof engine.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ProofEngineConfig {
     execution_proofs: Vec<ExecutionProofConfig>,
+    /// Ready-built engine returned by [`Self::build_engine`] instead of the configured
+    /// verifiers. Never serialized and only present with the `test-utils` feature, so tests can
+    /// inject a mock without an `ere-verifier` build.
+    #[cfg(feature = "test-utils")]
+    #[serde(skip)]
+    engine: Option<ProofEngine>,
 }
+
+/// Equality covers the configured verifiers only; an injected test engine is not compared.
+impl PartialEq for ProofEngineConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.execution_proofs == other.execution_proofs
+    }
+}
+
+impl Eq for ProofEngineConfig {}
 
 impl ProofEngineConfig {
     /// Validate and construct a non-empty configuration with unique, supported proof types.
@@ -53,12 +69,44 @@ impl ProofEngineConfig {
             }
         }
 
-        Ok(Self { execution_proofs })
+        Ok(Self {
+            execution_proofs,
+            #[cfg(feature = "test-utils")]
+            engine: None,
+        })
     }
 
     /// Return the configured proof-type/verifier mappings.
     pub fn execution_proofs(&self) -> &[ExecutionProofConfig] {
         &self.execution_proofs
+    }
+
+    /// Yield `engine` from [`Self::build_engine`] instead of building the configured verifiers.
+    #[cfg(feature = "test-utils")]
+    pub fn with_engine(mut self, engine: ProofEngine) -> Self {
+        self.engine = Some(engine);
+        self
+    }
+
+    /// Build the proof engine this configuration describes: an injected test engine if one was
+    /// supplied, otherwise the ERE verifiers, which need the `ere-verifier` feature.
+    pub fn build_engine(&self) -> Result<ProofEngine, ProofEngineError> {
+        #[cfg(feature = "test-utils")]
+        if let Some(engine) = &self.engine {
+            return Ok(engine.clone());
+        }
+
+        #[cfg(feature = "ere-verifier")]
+        {
+            crate::ere::EreProofEngine::new(self.clone()).map(ProofEngine::new)
+        }
+
+        #[cfg(not(feature = "ere-verifier"))]
+        {
+            Err(ProofEngineError::ProofVerifierError(
+                "Lighthouse was built without `ere-verifier`".to_string(),
+            ))
+        }
     }
 }
 
