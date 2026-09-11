@@ -3561,15 +3561,20 @@ version = "0.1.0"
 dependencies = [
  "beacon_chain",
  "client",
+ "execution_layer",
  "lighthouse_network",
  "network",
  "node_test_rig",
  "proof_engine",
+ "reqwest",
+ "sensitive_url",
+ "serde_json",
  "simulator",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "types",
+ "warp",
 ]
 
 [[package]]

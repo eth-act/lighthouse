@@ -1,6 +1,7 @@
 //! Per-node observation of proofs, payloads and peers, with bounded waits.
 
 use crate::ProofNetwork;
+use node_test_rig::eth2::types::BlockId;
 use std::time::{Duration, Instant};
 use types::{Hash256, Slot, execution::ProofType};
 
@@ -14,15 +15,18 @@ pub struct ProofStatus {
     pub block_known: bool,
     /// A valid proof of the requested type was verified for the block.
     pub valid_proof_verified: bool,
-    /// Proof types held in the pending payload cache for the block.
+    /// Proof types held in the pending payload cache for the block, ascending.
     pub cached_proof_types: Vec<ProofType>,
-    /// The executed payload envelope sits in the pending payload cache, waiting for proofs or
-    /// data columns before it can be imported.
+    /// The executed payload envelope sits in the pending payload cache. On a proof-only node it
+    /// stays there until enough proofs verify; nodes with an execution layer import at once.
     pub envelope_pending: bool,
     /// The payload envelope is persisted in the store.
     pub envelope_stored: bool,
     /// Fork choice marks the block's payload as received.
     pub payload_received: bool,
+    /// Distinct proof types the node requires before importing a payload (zero with an
+    /// execution layer).
+    pub required_proofs: usize,
     pub head_slot: Slot,
 }
 
@@ -55,8 +59,10 @@ impl ProofNetwork {
             valid_proof_verified,
             cached_proof_types: chain
                 .pending_payload_cache
-                .cached_execution_proof_types(&block_root)
-                .unwrap_or_default(),
+                .get_execution_proofs(&block_root)
+                .iter()
+                .map(|proof| proof.proof_type())
+                .collect(),
             envelope_pending: chain
                 .pending_payload_cache
                 .get_executed_payload_envelope(&block_root)
@@ -66,6 +72,7 @@ impl ProofNetwork {
                 .payload_envelope_exists(&block_root)
                 .map_err(|e| format!("node {node} store error: {e:?}"))?,
             payload_received,
+            required_proofs: chain.pending_payload_cache.required_execution_proofs(),
             head_slot: chain.canonical_head.cached_head().head_slot(),
         })
     }
@@ -79,6 +86,32 @@ impl ProofNetwork {
         (0..self.node_count())
             .map(|node| self.proof_status(node, block_root, proof_type))
             .collect()
+    }
+
+    /// Proof types node `node` returns for `block_root` from
+    /// `GET /eth/v1/beacon/execution_proofs/{block_id}`, ascending. Nodes without a proof engine
+    /// answer `501` and so return an error.
+    pub async fn retrieved_proof_types(
+        &self,
+        node: usize,
+        block_root: Hash256,
+    ) -> Result<Vec<ProofType>, String> {
+        let response = self
+            .remote_node(node)?
+            .get_beacon_execution_proofs(BlockId::Root(block_root))
+            .await
+            .map_err(|e| format!("node {node} could not serve execution proofs: {e:?}"))?;
+        let mut proof_types: Vec<ProofType> = response
+            .map(|response| {
+                response
+                    .data
+                    .iter()
+                    .map(|proof| proof.proof_type())
+                    .collect()
+            })
+            .unwrap_or_default();
+        proof_types.sort_unstable();
+        Ok(proof_types)
     }
 
     pub fn head_block_root(&self, node: usize) -> Result<Hash256, String> {
@@ -108,10 +141,14 @@ impl ProofNetwork {
             .map(|info| info.score().score()))
     }
 
-    /// One line per node: head, payload status of the head, finality and peer count.
+    /// One line per node: mode, head, payload status of the head, finality and peer count.
     pub fn describe(&self) -> String {
         let mut lines = Vec::with_capacity(self.node_count());
         for node in 0..self.node_count() {
+            let mode = self
+                .node_spec(node)
+                .map(|spec| spec.mode())
+                .unwrap_or("unknown");
             let line = match self.chain(node) {
                 Ok(chain) => {
                     let head = chain.canonical_head.cached_head();
@@ -129,16 +166,14 @@ impl ProofNetwork {
                         .map(|globals| globals.connected_peers())
                         .unwrap_or_default();
                     format!(
-                        "node {node}: head slot {} root {head_root:?} payload_received={payload_received} \
-                         finalized epoch {} peers {peers} proof_engine={}",
+                        "node {node} ({mode}, requires {} proofs): head slot {} root {head_root:?} \
+                         payload_received={payload_received} finalized epoch {} peers {peers}",
+                        chain.pending_payload_cache.required_execution_proofs(),
                         head.head_slot(),
                         head.finalized_checkpoint().epoch,
-                        self.node_spec(node)
-                            .map(|spec| spec.valid_proof_data.is_some())
-                            .unwrap_or(false),
                     )
                 }
-                Err(e) => format!("node {node}: {e}"),
+                Err(e) => format!("node {node} ({mode}): {e}"),
             };
             lines.push(line);
         }
@@ -190,9 +225,9 @@ impl ProofNetwork {
     /// Wait until node `node`'s head block has an executed payload envelope waiting in the pending
     /// payload cache, returning that block's root.
     ///
-    /// A node with a proof engine stops at the first full block: it executes the envelope but
-    /// cannot import it without proofs, and every later block builds on that payload. This is
-    /// the block scenarios should submit proofs for.
+    /// A proof-only node stops at the first full block: it holds the envelope but cannot import
+    /// it without proofs, and every later block builds on that payload. This is the block
+    /// scenarios should submit proofs for.
     pub async fn wait_for_pending_payload(
         &self,
         node: usize,
@@ -238,6 +273,24 @@ impl ProofNetwork {
         .await
     }
 
+    /// Wait until every node in `nodes` knows `block_root`.
+    pub async fn wait_for_block_known(
+        &self,
+        nodes: &[usize],
+        block_root: Hash256,
+        timeout: Duration,
+    ) -> Result<(), String> {
+        self.wait_for_statuses(
+            &format!("nodes {nodes:?} to know block {block_root:?}"),
+            nodes,
+            block_root,
+            0,
+            timeout,
+            |status| status.block_known,
+        )
+        .await
+    }
+
     /// Wait until every node in `nodes` has verified a valid proof of `proof_type` for
     /// `block_root`. The timeout error includes each node's [`ProofStatus`].
     pub async fn wait_for_valid_proof(
@@ -254,6 +307,26 @@ impl ProofNetwork {
             proof_type,
             timeout,
             |status| status.valid_proof_verified,
+        )
+        .await
+    }
+
+    /// Wait until every node in `nodes` caches exactly `proof_types` (ascending) for
+    /// `block_root`.
+    pub async fn wait_for_cached_proof_types(
+        &self,
+        nodes: &[usize],
+        block_root: Hash256,
+        proof_types: &[ProofType],
+        timeout: Duration,
+    ) -> Result<(), String> {
+        self.wait_for_statuses(
+            &format!("nodes {nodes:?} to cache proof types {proof_types:?} for {block_root:?}"),
+            nodes,
+            block_root,
+            0,
+            timeout,
+            |status| status.cached_proof_types == proof_types,
         )
         .await
     }
