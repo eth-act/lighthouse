@@ -7,7 +7,7 @@ use node_test_rig::{
     eth2::BeaconNodeHttpClient,
     testing_validator_config,
 };
-use proof_engine::{ProofEngine, test_utils::MockProofEngine};
+use proof_engine::{ProofEngine, ProofEngineConfig, test_utils::MockProofEngine};
 use sensitive_url::SensitiveUrl;
 use simulator::local_network::{EXECUTION_PORT, LocalNetwork, LocalNetworkParams};
 use std::{
@@ -244,8 +244,11 @@ impl ProofNetwork {
             extra_nodes: 0,
             genesis_delay: genesis_delay_secs,
         };
-        let (network, base_config, execution_config) =
-            LocalNetwork::create_local_network(None, None, params, context.clone()).await?;
+        // Node start-up futures are large; box them so `build` keeps a small stack frame.
+        let (network, base_config, execution_config) = Box::pin(
+            LocalNetwork::create_local_network(None, None, params, context.clone()),
+        )
+        .await?;
 
         let mut provers = Vec::new();
         let mut proving_execution_nodes = Vec::new();
@@ -285,9 +288,10 @@ impl ProofNetwork {
                         secret_file: Some(execution_node.datadir.path().join("jwt.hex")),
                         ..Default::default()
                     });
-                    network
-                        .add_beacon_node_without_mock_execution_layer(client_config, false)
-                        .await?;
+                    Box::pin(
+                        network.add_beacon_node_without_mock_execution_layer(client_config, false),
+                    )
+                    .await?;
                     let remote = network
                         .beacon_nodes
                         .read()
@@ -299,15 +303,19 @@ impl ProofNetwork {
                     proving_execution_nodes.push(execution_node);
                 }
                 (None, true) => {
-                    network
-                        .add_beacon_node(client_config, execution_config.clone(), false)
-                        .await?;
+                    Box::pin(network.add_beacon_node(
+                        client_config,
+                        execution_config.clone(),
+                        false,
+                    ))
+                    .await?;
                 }
                 (None, false) => {
                     client_config.execution_layer = None;
-                    network
-                        .add_beacon_node_without_mock_execution_layer(client_config, false)
-                        .await?;
+                    Box::pin(
+                        network.add_beacon_node_without_mock_execution_layer(client_config, false),
+                    )
+                    .await?;
                 }
             }
         }
@@ -339,9 +347,7 @@ impl ProofNetwork {
                 .map_err(|e| format!("keystore generation panicked: {e:?}"))??;
             let mut validator_config = testing_validator_config();
             validator_config.validator_store.fee_recipient = Some(Address::from(FEE_RECIPIENT));
-            network
-                .add_validator_client(validator_config, *node_index, files)
-                .await?;
+            Box::pin(network.add_validator_client(validator_config, *node_index, files)).await?;
         }
 
         // The mock execution layers are infallible.
@@ -438,9 +444,8 @@ impl ProofNetwork {
 
 fn configure_proof_engine(client_config: &mut ClientConfig, node: &NodeSpec) {
     if let Some(valid_proof_data) = &node.valid_proof_data {
-        client_config.proof_engine_override = Some(ProofEngine::new(MockProofEngine::new(
-            valid_proof_data.iter().cloned(),
-        )));
+        let engine = ProofEngine::new(MockProofEngine::new(valid_proof_data.iter().cloned()));
+        client_config.proof_engine = Some(ProofEngineConfig::default().with_engine(engine));
         client_config.network.enable_execution_proof = true;
     }
 }
