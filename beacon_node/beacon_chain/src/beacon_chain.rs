@@ -461,7 +461,7 @@ pub struct BeaconChain<T: BeaconChainTypes> {
         Mutex<ObservedOperations<SignedBlsToExecutionChange, T::EthSpec>>,
     /// Interfaces with the execution client.
     pub execution_layer: Option<ExecutionLayer<T::EthSpec>>,
-    /// Client for the EIP-8025 proof engine, if one is configured.
+    /// Verifies EIP-8025 execution proofs in-process, if one is configured.
     pub proof_engine: Option<ProofEngine>,
     /// Orchestrates direct builder bid requests and preference submissions over the Gloas Builder
     /// API. Present only when the Gloas fork is scheduled.
@@ -7100,6 +7100,17 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         self.canonical_head
             .head_execution_status()
             .map(|status| status.is_optimistic_or_invalid())
+    }
+
+    /// Returns `true` if execution validation is unavailable.
+    ///
+    /// A node without an engine validates with execution proofs instead, so having no engine to
+    /// reach is not a fault.
+    pub async fn is_execution_layer_offline(&self) -> bool {
+        match self.execution_layer.as_ref() {
+            Some(execution_layer) => execution_layer.is_offline_or_erroring().await,
+            None => false,
+        }
     }
 
     pub fn is_optimistic_or_invalid_block_root(

@@ -215,18 +215,11 @@ where
         // still honors the same `--builder-user-agent` / `--builder-disable-ssz` flags as the
         // pre-Gloas builder client.
         let builders = if spec.gloas_fork_epoch.is_some() {
-            let (user_agent, disable_ssz) = config
-                .execution_layer
-                .as_ref()
-                .map(|el| {
-                    (
-                        el.builder_user_agent.clone(),
-                        el.disable_builder_ssz_requests,
-                    )
-                })
-                .unwrap_or((None, false));
-            let client = BuilderHttpClient::new(user_agent, disable_ssz)
-                .map_err(|e| format!("unable to start builder client: {:?}", e))?;
+            let client = BuilderHttpClient::new(
+                config.builder_client.user_agent.clone(),
+                config.builder_client.disable_ssz,
+            )
+            .map_err(|e| format!("unable to start builder client: {:?}", e))?;
             Some(Arc::new(Builders::new(Arc::new(client))))
         } else {
             None
