@@ -9683,6 +9683,7 @@ dependencies = [
  "smallvec",
  "ssz_types",
  "state_processing",
+ "strum",
  "superstruct",
  "swap_or_not_shuffle",
  "tempfile",

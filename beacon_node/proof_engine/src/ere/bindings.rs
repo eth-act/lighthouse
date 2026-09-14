@@ -3,10 +3,10 @@
 //! The declarations below mirror `ere_verifier.h` as published in ERE v0.17.0, the release
 //! pinned by `build/ere_verifier.rs`. `ere_verifier_zkvm_kind` is the only other function the
 //! library exports and is deliberately left undeclared: it echoes back the `zkvm_kind`
-//! argument the handle was constructed with, which `Verifier` already keeps.
+//! argument the handle was constructed with, which the caller derives from the proof type.
 
-use crate::ZkvmKind;
 use std::{ptr::NonNull, slice};
+use types::execution::ZkvmKind;
 
 const ERE_OK: i32 = 0;
 
@@ -59,10 +59,7 @@ unsafe extern "C" {
     fn ere_bytes_free(ptr: *mut u8, len: usize);
 }
 
-pub(super) struct Verifier {
-    handle: NonNull<EreVerifier>,
-    zkvm_kind: ZkvmKind,
-}
+pub(super) struct Verifier(NonNull<EreVerifier>);
 
 // ERE's Rust verifier trait requires Send + Sync, and the C handle only exposes shared
 // verification plus exclusive destruction after the last Arc is dropped.
@@ -92,14 +89,8 @@ impl Verifier {
             return Err(EreVerifierError::from_code(status));
         }
         NonNull::new(output)
-            .map(|handle| Self { handle, zkvm_kind })
+            .map(Self)
             .ok_or(EreVerifierError::Internal)
-    }
-
-    /// The zkVM this verifier was constructed for, which fixes its public-value output
-    /// contract.
-    pub(super) fn zkvm_kind(&self) -> ZkvmKind {
-        self.zkvm_kind
     }
 
     pub(super) fn verify(&self, encoded_proof: &[u8]) -> Result<Vec<u8>, EreVerifierError> {
@@ -109,7 +100,7 @@ impl Verifier {
         // output pointers are writable.
         let status = unsafe {
             ere_verifier_verify(
-                self.handle.as_ptr(),
+                self.0.as_ptr(),
                 encoded_proof.as_ptr(),
                 encoded_proof.len(),
                 &mut output,
@@ -140,7 +131,7 @@ impl Verifier {
 impl Drop for Verifier {
     fn drop(&mut self) {
         // SAFETY: the handle is live, uniquely owned by this value, and dropped once.
-        unsafe { ere_verifier_free(self.handle.as_ptr()) };
+        unsafe { ere_verifier_free(self.0.as_ptr()) };
     }
 }
 

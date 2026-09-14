@@ -16,7 +16,7 @@ use state_processing::builder_deposits_cache::OnboardBuildersCache;
 use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
 use std::sync::Arc;
 use tree_hash::TreeHash;
-use types::execution::{ExecutionProof, SignedExecutionProofEnvelope, is_supported_proof_type};
+use types::execution::{ExecutionProof, ProofType, SignedExecutionProofEnvelope};
 use types::{BeaconStateError, ChainSpec, Domain, EthSpec, Hash256, SignedRoot, Slot};
 
 pub struct GossipVerificationContext<'a, T: BeaconChainTypes> {
@@ -53,10 +53,9 @@ impl GossipVerifiedExecutionProof {
         let proof_type = proof.proof_type();
         let validator_index = proof.validator_index;
 
-        // [REJECT] The proof type is supported.
-        if !is_supported_proof_type(proof_type) {
-            return Err(Error::UnsupportedProofType { proof_type });
-        }
+        // [REJECT] The proof type is supported. Enforced by the `ProofType` codec rather than
+        // here: an unassigned proof type fails to decode, so it cannot reach this function. See
+        // `envelope_with_unassigned_proof_type_does_not_decode` in `types`.
 
         // [IGNORE] The referenced beacon block is known. Its slot determines the fork for the
         // signing domain.
@@ -286,7 +285,7 @@ mod tests {
     type E = MinimalEthSpec;
     fn execution_proof(
         beacon_block_root: Hash256,
-        proof_type: u8,
+        proof_type: ProofType,
         proof_data: Vec<u8>,
         validator_index: u64,
     ) -> SignedExecutionProofEnvelope {
@@ -319,7 +318,7 @@ mod tests {
 
         let mock_proof = ExecutionProof::new(
             ProofData::new(valid_proof_data).expect("valid proof data"),
-            1,
+            ProofType::RethOpenvm,
             Hash256::default(),
             chain.spec.deposit_chain_id,
         );
@@ -343,7 +342,7 @@ mod tests {
         );
 
         let unknown_root = Hash256::repeat_byte(0xaa);
-        let empty_proof = execution_proof(unknown_root, 1, vec![], 0);
+        let empty_proof = execution_proof(unknown_root, ProofType::RethOpenvm, vec![], 0);
         assert!(matches!(
             chain
                 .verify_execution_proof_for_gossip(Arc::new(empty_proof))
@@ -351,15 +350,7 @@ mod tests {
             Err(Error::EmptyProofData)
         ));
 
-        let unsupported_proof = execution_proof(unknown_root, 0, vec![1], 0);
-        assert!(matches!(
-            chain
-                .verify_execution_proof_for_gossip(Arc::new(unsupported_proof))
-                .await,
-            Err(Error::UnsupportedProofType { proof_type: 0 })
-        ));
-
-        let proof_type = 1;
+        let proof_type = ProofType::RethOpenvm;
         let exact_proof = execution_proof(genesis_root, proof_type, vec![1], 0);
         assert!(
             chain
@@ -407,7 +398,7 @@ mod tests {
             Err(Error::ValidProofAlreadyKnown)
         ));
 
-        let second_proof_type = 2;
+        let second_proof_type = ProofType::RethSp1;
         let prior_proof = execution_proof(genesis_root, second_proof_type, vec![3], 0);
         assert!(
             chain
@@ -502,7 +493,7 @@ mod tests {
             "the envelope must still be absent from the store"
         );
 
-        let mut proof = execution_proof(genesis_root, 1, valid_proof_data, 1);
+        let mut proof = execution_proof(genesis_root, ProofType::RethOpenvm, valid_proof_data, 1);
         let fork_name = chain.spec.fork_name_at_slot::<E>(Slot::new(0));
         let domain = chain.spec.compute_domain(
             Domain::ExecutionProof,

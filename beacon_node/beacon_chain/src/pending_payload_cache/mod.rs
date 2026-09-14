@@ -1029,20 +1029,22 @@ mod data_availability_checker_tests {
         s.put_envelope();
         assert_missing(s.put_columns(s.custody.clone()));
 
+        let assigned = ProofType::all();
+
         // One prover, however many proofs, is never enough.
         for _ in 0..=REQUIRED_EXECUTION_PROOFS {
-            assert_missing(s.put_proof(0));
+            assert_missing(s.put_proof(assigned[0]));
         }
 
         // Distinct provers up to the requirement flip it to available.
         let mut availability = None;
-        for proof_type in 1..REQUIRED_EXECUTION_PROOFS {
-            availability = Some(s.put_proof(proof_type as ProofType));
+        for proof_type in &assigned[1..REQUIRED_EXECUTION_PROOFS] {
+            availability = Some(s.put_proof(*proof_type));
         }
         let envelope = assert_available(availability.expect("gate needs two provers or more"));
         assert_eq!(envelope.block_root, s.block_root);
 
-        assert_missing(s.put_proof(REQUIRED_EXECUTION_PROOFS as ProofType));
+        assert_missing(s.put_proof(assigned[REQUIRED_EXECUTION_PROOFS]));
     }
 
     /// Cached proofs are returned by proof type; unknown payloads and repeats add nothing.
@@ -1052,9 +1054,9 @@ mod data_availability_checker_tests {
         assert!(s.cache.get_execution_proofs(&s.block_root).is_empty());
         assert!(s.cache.get_execution_proofs(&Hash256::default()).is_empty());
 
-        assert_missing(s.put_proof(2));
-        assert_missing(s.put_proof(1));
-        assert_missing(s.put_proof(2));
+        assert_missing(s.put_proof(ProofType::RethZisk));
+        assert_missing(s.put_proof(ProofType::RethSp1));
+        assert_missing(s.put_proof(ProofType::RethZisk));
 
         let proof_types = s
             .cache
@@ -1062,7 +1064,7 @@ mod data_availability_checker_tests {
             .iter()
             .map(|proof| proof.proof_type())
             .collect::<Vec<_>>();
-        assert_eq!(proof_types, vec![1, 2]);
+        assert_eq!(proof_types, vec![ProofType::RethSp1, ProofType::RethZisk]);
         assert!(s.cache.get_execution_proofs(&Hash256::default()).is_empty());
     }
 

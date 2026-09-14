@@ -35,10 +35,6 @@ pub enum Error {
     },
     /// `proof_data` is empty (REJECT).
     EmptyProofData,
-    /// The proof type is not assigned by the current specification (REJECT).
-    UnsupportedProofType {
-        proof_type: ProofType,
-    },
     /// The execution payload for the referenced block is not yet available (IGNORE).
     PayloadUnavailable {
         beacon_block_root: Hash256,

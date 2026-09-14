@@ -303,12 +303,6 @@ async fn submit_execution_proofs_rejections() {
             .await,
         &[(0, "DuplicateFromValidator")],
     );
-    assert_rejected(
-        client
-            .post_beacon_execution_proofs(&list(vec![tester.proof(0, &VALID_PROOF_DATA, 3)]))
-            .await,
-        &[(0, "UnsupportedProofType")],
-    );
     let mut forged = tester.proof(3, &VALID_PROOF_DATA, 4);
     forged.signature = Signature::empty();
     assert_rejected(

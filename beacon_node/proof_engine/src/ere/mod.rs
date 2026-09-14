@@ -2,13 +2,11 @@
 
 mod bindings;
 
-use crate::{
-    ProofEngineConfig, ProofEngineError, ProofEngineT, ProofVerificationOutcome, ZkvmKind,
-};
+use crate::{ProofEngineConfig, ProofEngineError, ProofEngineT, ProofVerificationOutcome};
 use bindings::{EreVerifierError, Verifier};
 use ssz::Encode;
 use std::collections::HashMap;
-use types::execution::{ExecutionProof, ProofType};
+use types::execution::{ExecutionProof, ProofType, ZkvmKind};
 
 /// In-process proof engine backed by ERE's native verifier library.
 pub struct EreProofEngine {
@@ -22,7 +20,7 @@ impl EreProofEngine {
 
         for config in config.execution_proofs() {
             let verifier =
-                Verifier::new(config.zkvm_kind, &config.program_vk).map_err(|error| {
+                Verifier::new(config.proof_type.zkvm(), &config.program_vk).map_err(|error| {
                     ProofEngineError::ProofVerifierError(format!(
                         "failed to initialize ERE verifier for proof type {:?}: {error:?}",
                         config.proof_type
@@ -64,7 +62,7 @@ impl ProofEngineT for EreProofEngine {
         Ok(verify_public_values(
             &public_values,
             &expected_public_values,
-            verifier.zkvm_kind(),
+            proof.proof_type.zkvm(),
         ))
     }
 }
@@ -105,13 +103,15 @@ mod tests {
         execution::{ProofData, PublicInput},
     };
 
-    /// Every zkVM whose output contract the comparison distinguishes.
-    const ZKVM_KINDS: [ZkvmKind; 3] = [ZkvmKind::Openvm, ZkvmKind::Sp1, ZkvmKind::Zisk];
+    /// Every zkVM the comparison distinguishes, derived from the assigned proof types.
+    fn zkvm_kinds() -> impl Iterator<Item = ZkvmKind> {
+        ProofType::all().iter().map(|proof_type| proof_type.zkvm())
+    }
 
     fn public_input() -> PublicInput {
         ExecutionProof::new(
             ProofData::new(vec![1]).expect("proof data within bound"),
-            2,
+            ProofType::RethSp1,
             Hash256::repeat_byte(0x33),
             1,
         )
@@ -130,7 +130,7 @@ mod tests {
             .expect("default verifiers initialize");
         let proof = ExecutionProof::new(
             ProofData::new(vec![0xff]).expect("proof data within bound"),
-            2,
+            ProofType::RethSp1,
             Hash256::default(),
             1,
         );
@@ -166,7 +166,7 @@ mod tests {
         let tree_hash_root = public_input.tree_hash_root();
 
         assert_ne!(serialized.as_slice(), tree_hash_root.as_slice());
-        for zkvm_kind in ZKVM_KINDS {
+        for zkvm_kind in zkvm_kinds() {
             assert_eq!(
                 verify_public_values(tree_hash_root.as_slice(), &serialized, zkvm_kind),
                 ProofVerificationOutcome::Invalid
@@ -178,7 +178,7 @@ mod tests {
     fn accepts_the_serialized_public_input_with_permitted_zero_padding() {
         let expected = public_input().as_ssz_bytes();
 
-        for zkvm_kind in ZKVM_KINDS {
+        for zkvm_kind in zkvm_kinds() {
             assert_eq!(
                 verify_public_values(&expected, &expected, zkvm_kind),
                 ProofVerificationOutcome::Valid
@@ -210,7 +210,7 @@ mod tests {
         let mut non_zero_padding = expected.clone();
         non_zero_padding.extend_from_slice(&[0, 0, 1]);
 
-        for zkvm_kind in ZKVM_KINDS {
+        for zkvm_kind in zkvm_kinds() {
             for public_values in [&changed_field, &truncated, &non_zero_padding, &Vec::new()] {
                 assert_eq!(
                     verify_public_values(public_values, &expected, zkvm_kind),

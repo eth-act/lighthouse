@@ -34,8 +34,7 @@ pub use execution_payload_header::{
 };
 pub use execution_proof::{
     ExecutionProof, ExecutionProofEnvelope, MaxExecutionProofsPerPayload, MaxProofSize, ProofData,
-    ProofType, PublicInput, SignedExecutionProofEnvelope, SignedExecutionProofEnvelopes,
-    is_supported_proof_type,
+    ProofType, PublicInput, SignedExecutionProofEnvelope, SignedExecutionProofEnvelopes, ZkvmKind,
 };
 pub use execution_requests::{
     BuilderDepositRequests, BuilderExitRequests, ConsolidationRequests, DepositRequests,

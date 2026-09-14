@@ -158,62 +158,103 @@ mod tests {
         let slot = Slot::new(5);
 
         assert_eq!(
-            cache.check(proof_root, block_root, 0, 0, slot),
+            cache.check(proof_root, block_root, ProofType::RethOpenvm, 0, slot),
             Ok(ProofObservation::New),
             "unknown proof is new"
         );
         assert_eq!(
-            cache.observe_signature_verified_proof(proof_root, block_root, 0, 0, slot),
+            cache.observe_signature_verified_proof(
+                proof_root,
+                block_root,
+                ProofType::RethOpenvm,
+                0,
+                slot
+            ),
             Ok(true),
             "first observation indicates proof unobserved"
         );
         assert_eq!(
-            cache.observe_signature_verified_proof(proof_root, block_root, 0, 0, slot),
+            cache.observe_signature_verified_proof(
+                proof_root,
+                block_root,
+                ProofType::RethOpenvm,
+                0,
+                slot
+            ),
             Ok(false),
             "second observation indicates proof observed"
         );
         assert_eq!(cache.items.len(), 1, "only one block should be present");
         assert_eq!(
-            cache.has_valid_proof(block_root, 0, slot),
+            cache.has_valid_proof(block_root, ProofType::RethOpenvm, slot),
             Ok(false),
             "no valid proof has been observed"
         );
 
         assert_eq!(
-            cache.check(proof_root, block_root, 0, 0, slot),
+            cache.check(proof_root, block_root, ProofType::RethOpenvm, 0, slot),
             Ok(ProofObservation::ProofAlreadySeen),
             "same proof root is a duplicate regardless of validator"
         );
         assert_eq!(
-            cache.check(Hash256::repeat_byte(3), block_root, 0, 0, slot),
+            cache.check(
+                Hash256::repeat_byte(3),
+                block_root,
+                ProofType::RethOpenvm,
+                0,
+                slot
+            ),
             Ok(ProofObservation::DuplicateFromValidator),
             "different proof from the same validator and type is a duplicate"
         );
         assert_eq!(
-            cache.check(Hash256::repeat_byte(3), block_root, 0, 1, slot),
+            cache.check(
+                Hash256::repeat_byte(3),
+                block_root,
+                ProofType::RethOpenvm,
+                1,
+                slot
+            ),
             Ok(ProofObservation::New),
             "different validator is new"
         );
 
         assert_eq!(
-            cache
-                .observe_signature_verified_proof(Hash256::repeat_byte(4), block_root, 0, 1, slot,),
+            cache.observe_signature_verified_proof(
+                Hash256::repeat_byte(4),
+                block_root,
+                ProofType::RethOpenvm,
+                1,
+                slot,
+            ),
             Ok(true),
             "valid proof is newly observed"
         );
-        cache.observe_valid_proof(block_root, 0);
+        cache.observe_valid_proof(block_root, ProofType::RethOpenvm);
         assert_eq!(
-            cache.has_valid_proof(block_root, 0, slot),
+            cache.has_valid_proof(block_root, ProofType::RethOpenvm, slot),
             Ok(true),
             "valid proof is known"
         );
         assert_eq!(
-            cache.check(Hash256::repeat_byte(3), block_root, 0, 1, slot),
+            cache.check(
+                Hash256::repeat_byte(3),
+                block_root,
+                ProofType::RethOpenvm,
+                1,
+                slot
+            ),
             Ok(ProofObservation::ValidProofAlreadyKnown),
             "any proof for a type with a valid proof is ignored"
         );
         assert_eq!(
-            cache.check(Hash256::repeat_byte(3), block_root, 1, 1, slot),
+            cache.check(
+                Hash256::repeat_byte(3),
+                block_root,
+                ProofType::RethSp1,
+                1,
+                slot
+            ),
             Ok(ProofObservation::New),
             "other proof types are unaffected"
         );
@@ -227,7 +268,13 @@ mod tests {
         let slot = Slot::new(5);
 
         cache
-            .observe_signature_verified_proof(proof_root, block_root, 0, 0, slot)
+            .observe_signature_verified_proof(
+                proof_root,
+                block_root,
+                ProofType::RethOpenvm,
+                0,
+                slot,
+            )
             .expect("should observe proof");
 
         assert_eq!(cache.finalized_slot, 0, "finalized slot is zero");
@@ -250,7 +297,13 @@ mod tests {
         assert_eq!(cache.items.len(), 0, "no items left");
 
         assert_eq!(
-            cache.observe_signature_verified_proof(proof_root, block_root, 0, 0, slot),
+            cache.observe_signature_verified_proof(
+                proof_root,
+                block_root,
+                ProofType::RethOpenvm,
+                0,
+                slot
+            ),
             Err(Error::FinalizedProof {
                 slot,
                 finalized_slot: slot,
