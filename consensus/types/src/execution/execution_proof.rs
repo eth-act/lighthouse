@@ -1,7 +1,7 @@
 use crate::{ForkName, Hash256, SignedRoot};
 use bls::Signature;
 use context_deserialize::context_deserialize;
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _};
+use serde::{Deserialize, Serialize};
 use ssz::{Decode as SszDecode, DecodeError, Encode as SszEncode};
 use ssz_derive::{Decode, Encode};
 use ssz_types::VariableList;
@@ -42,7 +42,10 @@ pub enum ZkvmKind {
 /// The discriminants are the assigned EIP-8025 wire encodings and are serialized as a `u8`. The
 /// assignments are provisional while EIP-8025 is under development.
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray, Serialize, Deserialize,
+)]
+#[serde(try_from = "u8", into = "u8")]
 #[repr(u8)]
 pub enum ProofType {
     /// reth stateless validator proven on OpenVM.
@@ -74,17 +77,34 @@ impl ProofType {
     }
 }
 
+/// A `u8` encoding that no EIP-8025 proof type is assigned to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnassignedProofType(pub u8);
+
+impl std::fmt::Display for UnassignedProofType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unassigned EIP-8025 proof type: {}", self.0)
+    }
+}
+
+impl std::error::Error for UnassignedProofType {}
+
 impl TryFrom<u8> for ProofType {
-    /// The unassigned encoding that was rejected.
-    type Error = u8;
+    type Error = UnassignedProofType;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
             1 => Ok(Self::RethOpenvm),
             2 => Ok(Self::RethSp1),
             3 => Ok(Self::RethZisk),
-            unassigned => Err(unassigned),
+            unassigned => Err(UnassignedProofType(unassigned)),
         }
+    }
+}
+
+impl From<ProofType> for u8 {
+    fn from(value: ProofType) -> Self {
+        value.to_u8()
     }
 }
 
@@ -125,9 +145,8 @@ impl SszDecode for ProofType {
     }
 
     fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, DecodeError> {
-        Self::try_from(u8::from_ssz_bytes(bytes)?).map_err(|unassigned| {
-            DecodeError::BytesInvalid(format!("unassigned EIP-8025 proof type: {unassigned}"))
-        })
+        Self::try_from(u8::from_ssz_bytes(bytes)?)
+            .map_err(|error| DecodeError::BytesInvalid(error.to_string()))
     }
 }
 
@@ -149,19 +168,6 @@ impl TreeHashTrait for ProofType {
     }
 }
 
-impl Serialize for ProofType {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_u8(self.to_u8())
-    }
-}
-
-impl<'de> Deserialize<'de> for ProofType {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Self::try_from(u8::deserialize(deserializer)?)
-            .map_err(|unassigned| D::Error::custom(format!("unassigned proof type {unassigned}")))
-    }
-}
-
 /// Serialize a [`ProofType`] as a quoted decimal string, as the Beacon API requires.
 pub mod quoted_proof_type {
     use super::ProofType;
@@ -173,8 +179,7 @@ pub mod quoted_proof_type {
 
     pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<ProofType, D::Error> {
         let value: u8 = serde_utils::quoted_u8::deserialize(deserializer)?;
-        ProofType::try_from(value)
-            .map_err(|unassigned| D::Error::custom(format!("unassigned proof type {unassigned}")))
+        ProofType::try_from(value).map_err(D::Error::custom)
     }
 }
 
@@ -262,7 +267,7 @@ pub type SignedExecutionProofEnvelopes =
 mod tests {
     use super::*;
     use fixed_bytes::FixedBytesExtended;
-    use ssz::{Decode as _, Encode as _};
+    use ssz::{BYTES_PER_LENGTH_OFFSET, Decode as _, Encode as _};
     use tree_hash::TreeHash as _;
     use typenum::Unsigned;
 
@@ -320,7 +325,10 @@ mod tests {
         }
 
         for unassigned in [0, 4, u8::MAX] {
-            assert_eq!(ProofType::try_from(unassigned), Err(unassigned));
+            assert_eq!(
+                ProofType::try_from(unassigned),
+                Err(UnassignedProofType(unassigned))
+            );
         }
     }
 
@@ -330,10 +338,19 @@ mod tests {
         // enforced here, by the codec, so an unassigned proof type never reaches validation.
         let envelope = signed_envelope(ProofType::RethSp1);
         let encoded = envelope.as_ssz_bytes();
-        let offset = encoded
-            .windows(1)
-            .position(|byte| byte == [ProofType::RethSp1.to_u8()])
-            .expect("the proof type byte is present");
+        // The message is the only variable-size field, so its offset leads the encoding, and the
+        // proof data offset leads the message.
+        let message_offset = u32::from_le_bytes(
+            encoded[..BYTES_PER_LENGTH_OFFSET]
+                .try_into()
+                .expect("the message offset is four bytes"),
+        ) as usize;
+        let offset = message_offset + BYTES_PER_LENGTH_OFFSET;
+        assert_eq!(
+            encoded[offset],
+            ProofType::RethSp1.to_u8(),
+            "located the proof type byte"
+        );
 
         for unassigned in [0u8, 4, u8::MAX] {
             let mut corrupted = encoded.clone();

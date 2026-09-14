@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::{collections::HashSet, str::FromStr};
-use types::execution::{ProofType, ZkvmKind};
+use types::execution::ProofType;
 
 // Program verification keys from reth stateless-validator guest v0.1.0-rc.2.
 const DEFAULT_RETH_OPENVM_PROGRAM_VK: &str = concat!(
@@ -127,6 +127,7 @@ pub struct ExecutionProofConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use types::execution::ZkvmKind;
 
     #[test]
     fn parses_and_serializes_json_config() {
