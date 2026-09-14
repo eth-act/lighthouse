@@ -7196,6 +7196,7 @@ name = "proof_engine"
 version = "0.1.0"
 dependencies = [
  "ethereum_serde_utils",
+ "ethereum_ssz",
  "flate2",
  "hex",
  "reqwest",

@@ -2,10 +2,12 @@
 
 mod bindings;
 
-use crate::{ProofEngineConfig, ProofEngineError, ProofEngineT, ProofVerificationOutcome};
+use crate::{
+    ProofEngineConfig, ProofEngineError, ProofEngineT, ProofVerificationOutcome, ZkvmKind,
+};
 use bindings::{EreVerifierError, Verifier};
+use ssz::Encode;
 use std::collections::HashMap;
-use tree_hash::TreeHash;
 use types::execution::{ExecutionProof, ProofType};
 
 /// In-process proof engine backed by ERE's native verifier library.
@@ -42,7 +44,10 @@ impl ProofEngineT for EreProofEngine {
             .verifiers
             .get(&proof.proof_type)
             .ok_or(ProofEngineError::UnconfiguredProofType(proof.proof_type))?;
-        let expected_public_values = proof.public_input.tree_hash_root();
+        // The guest commits the canonical SSZ serialization of its validation result, whose layout
+        // is the one `PublicInput` encodes, so the proven public values are compared with those
+        // bytes rather than with any hash of them.
+        let expected_public_values = proof.public_input.as_ssz_bytes();
         let public_values = match verifier.verify(proof.proof_data.as_ref()) {
             Ok(public_values) => public_values,
             Err(EreVerifierError::DecodeProof | EreVerifierError::Verify) => {
@@ -56,25 +61,62 @@ impl ProofEngineT for EreProofEngine {
             }
         };
 
-        // OpenVM and Zisk may zero-pad the guest's public-value buffer.
-        let outcome = if public_values
-            .split_at_checked(expected_public_values.len())
-            .is_some_and(|(value, padding)| {
-                value == expected_public_values.as_slice() && padding.iter().all(|byte| *byte == 0)
-            }) {
-            ProofVerificationOutcome::Valid
-        } else {
-            ProofVerificationOutcome::Invalid
-        };
+        Ok(verify_public_values(
+            &public_values,
+            &expected_public_values,
+            verifier.zkvm_kind(),
+        ))
+    }
+}
 
-        Ok(outcome)
+/// Verify that `public_values` proves exactly `expected`, allowing only the trailing zero
+/// padding that the zkVM's ERE output contract adds.
+///
+/// OpenVM reveals a fixed-size public-value buffer and Zisk a fixed public-word count, so both
+/// zero-pad a shorter guest commitment. SP1 returns the committed bytes verbatim, so anything
+/// beyond `expected` there is unexpected output rather than padding.
+fn verify_public_values(
+    public_values: &[u8],
+    expected: &[u8],
+    zkvm_kind: ZkvmKind,
+) -> ProofVerificationOutcome {
+    let proven = match zkvm_kind {
+        ZkvmKind::Openvm | ZkvmKind::Zisk => public_values
+            .split_at_checked(expected.len())
+            .is_some_and(|(value, padding)| {
+                value == expected && padding.iter().all(|byte| *byte == 0)
+            }),
+        ZkvmKind::Sp1 => public_values == expected,
+    };
+
+    if proven {
+        ProofVerificationOutcome::Valid
+    } else {
+        ProofVerificationOutcome::Invalid
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use types::{Hash256, execution::ProofData};
+    use tree_hash::TreeHash;
+    use types::{
+        Hash256,
+        execution::{ProofData, PublicInput},
+    };
+
+    /// Every zkVM whose output contract the comparison distinguishes.
+    const ZKVM_KINDS: [ZkvmKind; 3] = [ZkvmKind::Openvm, ZkvmKind::Sp1, ZkvmKind::Zisk];
+
+    fn public_input() -> PublicInput {
+        ExecutionProof::new(
+            ProofData::new(vec![1]).expect("proof data within bound"),
+            2,
+            Hash256::repeat_byte(0x33),
+            1,
+        )
+        .public_input
+    }
 
     #[test]
     fn default_config_initializes_ere_verifier() {
@@ -99,5 +141,83 @@ mod tests {
                 .expect("ERE reports a verification outcome"),
             ProofVerificationOutcome::Invalid
         );
+    }
+
+    #[test]
+    fn serialized_public_input_matches_the_guest_output_layout() {
+        let public_input = public_input();
+        let serialized = public_input.as_ssz_bytes();
+
+        // The reth stateless-validator guest commits this fixed 43-byte encoding.
+        assert_eq!(serialized.len(), 43);
+        assert_eq!(
+            &serialized[..32],
+            public_input.new_payload_request_root.as_slice()
+        );
+        assert_eq!(serialized[32], u8::from(public_input.successful_validation));
+        assert_eq!(&serialized[33..41], &public_input.chain_id.to_le_bytes());
+        assert_eq!(&serialized[41..], &public_input.schema_id.to_le_bytes());
+    }
+
+    #[test]
+    fn serialized_public_input_and_its_tree_hash_root_are_not_interchangeable() {
+        let public_input = public_input();
+        let serialized = public_input.as_ssz_bytes();
+        let tree_hash_root = public_input.tree_hash_root();
+
+        assert_ne!(serialized.as_slice(), tree_hash_root.as_slice());
+        for zkvm_kind in ZKVM_KINDS {
+            assert_eq!(
+                verify_public_values(tree_hash_root.as_slice(), &serialized, zkvm_kind),
+                ProofVerificationOutcome::Invalid
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_the_serialized_public_input_with_permitted_zero_padding() {
+        let expected = public_input().as_ssz_bytes();
+
+        for zkvm_kind in ZKVM_KINDS {
+            assert_eq!(
+                verify_public_values(&expected, &expected, zkvm_kind),
+                ProofVerificationOutcome::Valid
+            );
+        }
+
+        // Only OpenVM and Zisk reveal a padded buffer.
+        let mut padded = expected.clone();
+        padded.resize(256, 0);
+        for (zkvm_kind, expected_outcome) in [
+            (ZkvmKind::Openvm, ProofVerificationOutcome::Valid),
+            (ZkvmKind::Zisk, ProofVerificationOutcome::Valid),
+            (ZkvmKind::Sp1, ProofVerificationOutcome::Invalid),
+        ] {
+            assert_eq!(
+                verify_public_values(&padded, &expected, zkvm_kind),
+                expected_outcome
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_changed_truncated_and_non_zero_padded_public_values() {
+        let expected = public_input().as_ssz_bytes();
+
+        let mut changed_field = expected.clone();
+        changed_field[33] ^= 1;
+        let truncated = expected[..expected.len() - 1].to_vec();
+        let mut non_zero_padding = expected.clone();
+        non_zero_padding.extend_from_slice(&[0, 0, 1]);
+
+        for zkvm_kind in ZKVM_KINDS {
+            for public_values in [&changed_field, &truncated, &non_zero_padding, &Vec::new()] {
+                assert_eq!(
+                    verify_public_values(public_values, &expected, zkvm_kind),
+                    ProofVerificationOutcome::Invalid,
+                    "accepted {public_values:?} for {zkvm_kind:?}"
+                );
+            }
+        }
     }
 }

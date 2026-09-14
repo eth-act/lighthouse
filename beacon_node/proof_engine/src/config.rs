@@ -127,7 +127,7 @@ pub struct ExecutionProofConfig {
     pub program_vk: Vec<u8>,
 }
 
-/// zkVM verifier supported by the ERE v0.18.0 C API.
+/// zkVM verifier supported by the ERE v0.17.0 C API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ZkvmKind {

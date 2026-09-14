@@ -1,4 +1,9 @@
 //! Safe ownership wrapper around the minimal ERE verifier C API.
+//!
+//! The declarations below mirror `ere_verifier.h` as published in ERE v0.17.0, the release
+//! pinned by `build/ere_verifier.rs`. `ere_verifier_zkvm_kind` is the only other function the
+//! library exports and is deliberately left undeclared: it echoes back the `zkvm_kind`
+//! argument the handle was constructed with, which `Verifier` already keeps.
 
 use crate::ZkvmKind;
 use std::{ptr::NonNull, slice};
@@ -54,7 +59,10 @@ unsafe extern "C" {
     fn ere_bytes_free(ptr: *mut u8, len: usize);
 }
 
-pub(super) struct Verifier(NonNull<EreVerifier>);
+pub(super) struct Verifier {
+    handle: NonNull<EreVerifier>,
+    zkvm_kind: ZkvmKind,
+}
 
 // ERE's Rust verifier trait requires Send + Sync, and the C handle only exposes shared
 // verification plus exclusive destruction after the last Arc is dropped.
@@ -84,8 +92,14 @@ impl Verifier {
             return Err(EreVerifierError::from_code(status));
         }
         NonNull::new(output)
-            .map(Self)
+            .map(|handle| Self { handle, zkvm_kind })
             .ok_or(EreVerifierError::Internal)
+    }
+
+    /// The zkVM this verifier was constructed for, which fixes its public-value output
+    /// contract.
+    pub(super) fn zkvm_kind(&self) -> ZkvmKind {
+        self.zkvm_kind
     }
 
     pub(super) fn verify(&self, encoded_proof: &[u8]) -> Result<Vec<u8>, EreVerifierError> {
@@ -95,7 +109,7 @@ impl Verifier {
         // output pointers are writable.
         let status = unsafe {
             ere_verifier_verify(
-                self.0.as_ptr(),
+                self.handle.as_ptr(),
                 encoded_proof.as_ptr(),
                 encoded_proof.len(),
                 &mut output,
@@ -126,7 +140,7 @@ impl Verifier {
 impl Drop for Verifier {
     fn drop(&mut self) {
         // SAFETY: the handle is live, uniquely owned by this value, and dropped once.
-        unsafe { ere_verifier_free(self.0.as_ptr()) };
+        unsafe { ere_verifier_free(self.handle.as_ptr()) };
     }
 }
 

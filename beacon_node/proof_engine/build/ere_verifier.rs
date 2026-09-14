@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const ERE_VERSION: &str = "v0.18.0";
+const ERE_VERSION: &str = "v0.17.0";
 const LIBRARY_FILENAME: &str = "libere_verifier_c.a";
 
 struct Artifact {
@@ -48,15 +48,15 @@ pub fn configure() -> Result<(), Box<dyn Error>> {
 fn artifact_for_target(target: &str) -> Option<&'static Artifact> {
     static DARWIN_ARM64: Artifact = Artifact {
         archive_filename: "libere_verifier_c.darwin-arm64.tar.gz",
-        sha256: "764dedba66690f105b797be6ba8a485f1c53ed8d3a0fcdef15d350ab2fc3ef7d",
+        sha256: "4ebf4ff539c434401f1eb74ab19e89c9633f8a4284905436c432d5a16a2826be",
     };
     static LINUX_AMD64: Artifact = Artifact {
         archive_filename: "libere_verifier_c.linux-amd64.tar.gz",
-        sha256: "9e619994126aa9f7632bea6fce02659aa3ff8bc202e5e017dd21abf967210026",
+        sha256: "dcc5ba388f363fff4432eb332210596632d47f0a0e03db8337af9bb72810c30f",
     };
     static LINUX_ARM64: Artifact = Artifact {
         archive_filename: "libere_verifier_c.linux-arm64.tar.gz",
-        sha256: "1b6acdfdaf02ffb84fabb1ea081fc88443f194cf60f767827ff1c60393ececf2",
+        sha256: "223e8bb05258501672f2a61e774d49cae575ffd5d756977abe942cf55523bb60",
     };
 
     match target {
