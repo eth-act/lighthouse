@@ -16,7 +16,7 @@ use state_processing::builder_deposits_cache::OnboardBuildersCache;
 use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
 use std::sync::Arc;
 use tree_hash::TreeHash;
-use types::execution::{ExecutionProof, ProofType, SignedExecutionProofEnvelope};
+use types::execution::{ExecutionProof, SignedExecutionProofEnvelope};
 use types::{BeaconStateError, ChainSpec, Domain, EthSpec, Hash256, SignedRoot, Slot};
 
 pub struct GossipVerificationContext<'a, T: BeaconChainTypes> {
@@ -52,10 +52,6 @@ impl GossipVerifiedExecutionProof {
         let block_root = proof.beacon_block_root();
         let proof_type = proof.proof_type();
         let validator_index = proof.validator_index;
-
-        // [REJECT] The proof type is supported. Enforced by the `ProofType` codec rather than
-        // here: an unassigned proof type fails to decode, so it cannot reach this function. See
-        // `envelope_with_unassigned_proof_type_does_not_decode` in `types`.
 
         // [IGNORE] The referenced beacon block is known. Its slot determines the fork for the
         // signing domain.
@@ -277,6 +273,7 @@ mod tests {
     use bls::Signature;
     use fork_choice::PayloadVerificationStatus;
     use proof_engine::{ProofEngine, test_utils::MockProofEngine};
+    use types::execution::ProofType;
     use types::{
         ForkName, MinimalEthSpec, SignedExecutionPayloadBid, SignedExecutionPayloadEnvelope,
         execution::{ExecutionPayloadEnvelope, ExecutionProofEnvelope, ProofData},

@@ -2,7 +2,7 @@
 
 use crate::BeaconChainError;
 use proof_engine::ProofEngineError;
-use types::{Hash256, Slot, execution::ProofType};
+use types::{Hash256, Slot};
 
 pub mod gossip_verified_execution_proof;
 pub mod observed_execution_proofs;
