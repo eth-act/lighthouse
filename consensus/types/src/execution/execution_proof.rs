@@ -23,8 +23,7 @@ pub type ProofData = VariableList<u8, MaxProofSize>;
 
 /// Proof system that verifies an execution proof.
 ///
-/// Each assigned [`ProofType`] names exactly one of these, so it is derived from the proof type
-/// rather than configured alongside it.
+/// Each assigned [`ProofType`] names exactly one of these.
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
