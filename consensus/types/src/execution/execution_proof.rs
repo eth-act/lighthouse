@@ -266,8 +266,7 @@ pub type SignedExecutionProofEnvelopes =
 mod tests {
     use super::*;
     use fixed_bytes::FixedBytesExtended;
-    use ssz::{BYTES_PER_LENGTH_OFFSET, Decode as _, Encode as _};
-    use tree_hash::TreeHash as _;
+    use ssz::BYTES_PER_LENGTH_OFFSET;
     use typenum::Unsigned;
 
     ssz_and_tree_hash_tests!(SignedExecutionProofEnvelope);
