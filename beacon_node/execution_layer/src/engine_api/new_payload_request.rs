@@ -2,7 +2,7 @@ use crate::{Error, block_hash::calculate_execution_block_hash, metrics};
 
 use crate::versioned_hashes::verify_versioned_hashes;
 use ssz_derive::Encode;
-use ssz_types::VariableList;
+use ssz_types::{ProgressiveVariableList, VariableList};
 use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
 use superstruct::superstruct;
 use tree_hash_derive::TreeHash;
@@ -19,10 +19,7 @@ use types::{
 #[superstruct(
     variants(Bellatrix, Capella, Deneb, Electra, Fulu, Gloas, Heze),
     variant_attributes(derive(Clone, Debug, PartialEq),),
-    specific_variant_attributes(Gloas(
-        derive(Encode, TreeHash),
-        tree_hash(struct_behaviour = "progressive_container", active_fields(1, 1, 1, 1))
-    )),
+    specific_variant_attributes(Gloas(derive(Encode, TreeHash))),
     map_into(ExecutionPayload),
     map_ref_into(ExecutionPayloadRef),
     cast_error(
@@ -53,8 +50,16 @@ pub struct NewPayloadRequest<'block, E: EthSpec> {
     pub execution_payload: &'block ExecutionPayloadGloas<E>,
     #[superstruct(only(Heze), partial_getter(rename = "execution_payload_heze"))]
     pub execution_payload: &'block ExecutionPayloadHeze<E>,
-    #[superstruct(only(Deneb, Electra, Fulu, Gloas, Heze))]
+    #[superstruct(
+        only(Deneb, Electra, Fulu),
+        partial_getter(rename = "versioned_hashes_bounded")
+    )]
     pub versioned_hashes: VariableList<VersionedHash, <E as EthSpec>::MaxBlobCommitmentsPerBlock>,
+    #[superstruct(
+        only(Gloas, Heze),
+        partial_getter(rename = "versioned_hashes_progressive")
+    )]
+    pub versioned_hashes: ProgressiveVariableList<VersionedHash>,
     #[superstruct(only(Deneb, Electra, Fulu, Gloas, Heze))]
     pub parent_beacon_block_root: Hash256,
     #[superstruct(
@@ -67,6 +72,18 @@ pub struct NewPayloadRequest<'block, E: EthSpec> {
 }
 
 impl<'block, E: EthSpec> NewPayloadRequest<'block, E> {
+    /// Unified access to the blob versioned hashes across bounded and progressive lists.
+    pub fn versioned_hashes(&self) -> Result<&[VersionedHash], BeaconStateError> {
+        match self {
+            Self::Bellatrix(_) | Self::Capella(_) => Err(BeaconStateError::IncorrectStateVariant),
+            Self::Deneb(request) => Ok(&request.versioned_hashes),
+            Self::Electra(request) => Ok(&request.versioned_hashes),
+            Self::Fulu(request) => Ok(&request.versioned_hashes),
+            Self::Gloas(request) => Ok(&request.versioned_hashes),
+            Self::Heze(request) => Ok(&request.versioned_hashes),
+        }
+    }
+
     pub fn parent_hash(&self) -> ExecutionBlockHash {
         match self {
             Self::Bellatrix(payload) => payload.execution_payload.parent_hash,
@@ -294,7 +311,7 @@ mod test {
     use crate::versioned_hashes::Error as VersionedHashError;
     use crate::{Error, NewPayloadRequest, NewPayloadRequestGloas};
     use bls::Signature;
-    use ssz_types::VariableList;
+    use ssz_types::ProgressiveVariableList;
     use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
     use std::str::FromStr;
     use tree_hash::TreeHash;
@@ -314,20 +331,19 @@ mod test {
         let commitments = ProgressiveKzgCommitments::new(vec![commitment]);
         let native = NewPayloadRequestGloas {
             execution_payload: &payload_envelope.message.payload,
-            versioned_hashes: VariableList::new(
+            versioned_hashes: ProgressiveVariableList::new(
                 commitments
                     .iter()
                     .map(kzg_commitment_to_versioned_hash)
                     .collect(),
-            )
-            .expect("request should be valid"),
+            ),
             parent_beacon_block_root: payload_envelope.message.parent_beacon_block_root,
             execution_requests: &payload_envelope.message.execution_requests,
         };
 
         assert_eq!(
             native.tree_hash_root(),
-            Hash256::from_str("0x36533e2a25991d56c930da43315cfc2965ae9909d87f5cfc2cda42e4583ca225")
+            Hash256::from_str("0x4a10be91224e03ff21b4b01fa8f2ca1cfb282628a4232268fd51aec01e9d89e1")
                 .expect("valid root")
         );
     }

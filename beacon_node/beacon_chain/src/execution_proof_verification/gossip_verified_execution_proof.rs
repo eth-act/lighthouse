@@ -11,13 +11,13 @@ use crate::{BeaconChain, BeaconChainError, BeaconChainTypes};
 use execution_layer::NewPayloadRequestGloas;
 use parking_lot::RwLock;
 use proof_engine::{ProofEngine, ProofVerificationOutcome};
-use ssz_types::VariableList;
+use ssz_types::ProgressiveVariableList;
 use state_processing::builder_deposits_cache::OnboardBuildersCache;
 use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
 use std::sync::Arc;
 use tree_hash::TreeHash;
 use types::execution::{ExecutionProof, SignedExecutionProofEnvelope};
-use types::{BeaconStateError, ChainSpec, Domain, EthSpec, Hash256, SignedRoot, Slot};
+use types::{ChainSpec, Domain, EthSpec, Hash256, SignedRoot, Slot};
 
 pub struct GossipVerificationContext<'a, T: BeaconChainTypes> {
     pub canonical_head: &'a CanonicalHead<T>,
@@ -154,14 +154,12 @@ impl GossipVerifiedExecutionProof {
             .signed_execution_payload_bid()
             .map_err(BeaconChainError::from)?
             .message;
-        let versioned_hashes = VariableList::new(
+        let versioned_hashes = ProgressiveVariableList::new(
             bid.blob_kzg_commitments
                 .iter()
                 .map(kzg_commitment_to_versioned_hash)
                 .collect(),
-        )
-        .map_err(BeaconStateError::from)
-        .map_err(BeaconChainError::from)?;
+        );
         // [IGNORE] The payload has been received and executed locally. Without an engine the
         // store only gains the envelope after an import that waits on proofs, so reading the
         // store alone would deadlock. Try the pending cache first, then the store for blocks
