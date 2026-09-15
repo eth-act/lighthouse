@@ -22,4 +22,7 @@ sha2 = { workspace = true, optional = true }
 tar = { version = "0.4", default-features = false, optional = true }
 
 [dev-dependencies]
+execution_layer = { workspace = true }
+ssz_types = { workspace = true }
+ethereum_ssz_derive = { workspace = true }
 tree_hash = { workspace = true }

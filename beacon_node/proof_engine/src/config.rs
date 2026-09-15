@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn default_config_matches_all_ere_guests_reth_v0_1_0_rc_2_verifiers() {
+    fn default_config_matches_all_ere_guests_reth_v0_1_0_rc_3_verifiers() {
         let config = ProofEngineConfig::default();
         let expected = [
             (
