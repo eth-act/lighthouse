@@ -4,9 +4,9 @@ use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::{collections::HashSet, str::FromStr};
 use types::execution::ProofType;
 
-// Program verification keys from reth stateless-validator guest v0.1.0-rc.2.
+// Program verification keys from reth stateless-validator guest v0.1.0-rc.3.
 const DEFAULT_RETH_OPENVM_PROGRAM_VK: &str = concat!(
-    "001242647100d986f257006692793600fac3cc7600dd1f982800d7efb7340086f7837100fb65952b06030619068000a2",
+    "0025e8d0440012375702004a22c350005a7cef2700f3654950004ba3266800e754e517007b9ca23d06030619068000a2",
     "c21b53000a2fee4f0036169c2800aaaa8d6c0087fbce5b00328dc26f009fe7de5a004686562400e77e894500a128f20f",
     "00674f7c2400b38df01800309c530900a487cf0400725bac510051af497500e4abff6e00a58ac939000775b41a001a76",
     "e84100c5e8944400c94e8e1600330e6b39001cacbc5a00ca47cd51001b418e02000fe02a480009a32070002554164500",
@@ -16,9 +16,9 @@ const DEFAULT_RETH_OPENVM_PROGRAM_VK: &str = concat!(
     "003de28a5f008584cc2a00033ab1020025f59e4a00c3a9f64a00b8ef166500",
 );
 const DEFAULT_RETH_SP1_PROGRAM_VK: &str =
-    "00cf96ecee478c118cba3ac169054a25d7cb2d06df2d2dcb4bd9ab62dd47ef56";
+    "00a03cbfa95559cfee3b45ef925f3f7a631181e35e774e92b040277d893511dd";
 const DEFAULT_RETH_ZISK_PROGRAM_VK: &str =
-    "271ffd2449e1ca3ad8b63f18e0786a9d8267ae478bb5fb7a2dc55ef00cdfb968";
+    "7b0f7b082966c8155b496c2e1a371b3824b461ad2e1c2931f222c63a10004a14";
 
 /// Configuration for the in-process EIP-8025 proof engine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -60,8 +60,9 @@ impl ProofEngineConfig {
 }
 
 impl Default for ProofEngineConfig {
-    /// Built-in verifier configuration for the reth stateless-validator guest v0.1.0-rc.2 in
-    /// `eth-act/ere-guests` at commit `dd6ac1a43fc14a34e0dc764937ba64f4b0237885`.
+    /// Built-in verifier configuration for the reth stateless-validator guest v0.1.0-rc.3,
+    /// as published by `eth-act/ere-guests` at tag `v0.17.0`, the tag this crate's verifier is
+    /// built from.
     /// The proof-type assignments are provisional while EIP-8025 is under development.
     fn default() -> Self {
         Self::new(
