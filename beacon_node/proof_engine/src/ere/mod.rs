@@ -44,7 +44,7 @@ impl ProofEngineT for EreProofEngine {
             .ok_or(ProofEngineError::UnconfiguredProofType(proof.proof_type))?;
         // The guest commits the canonical SSZ serialization of its validation result, whose layout
         // is the one `PublicInput` encodes, so the proven public values are compared with those
-        // bytes rather than with any hash of them.
+        // bytes.
         let expected_public_values = proof.public_input.as_ssz_bytes();
         let public_values = match verifier.verify(proof.proof_data.as_ref()) {
             Ok(public_values) => public_values,
@@ -71,8 +71,8 @@ impl ProofEngineT for EreProofEngine {
 /// padding that the zkVM's ERE output contract adds.
 ///
 /// OpenVM reveals a fixed-size public-value buffer and Zisk a fixed public-word count, so both
-/// zero-pad a shorter guest commitment. SP1 returns the committed bytes verbatim, so anything
-/// beyond `expected` there is unexpected output rather than padding.
+/// zero-pad a shorter guest commitment. SP1 returns the committed bytes verbatim, so `expected` is
+/// the whole of its output.
 fn verify_public_values(
     public_values: &[u8],
     expected: &[u8],

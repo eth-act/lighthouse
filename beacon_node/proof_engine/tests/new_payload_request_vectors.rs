@@ -3,9 +3,7 @@
 //! The vectors are SSZ-encoded `NewPayloadRequestGloas` values generated with
 //! [ere-guests v0.17.0](https://github.com/eth-act/ere-guests/tree/0bfcdd9f318774761de8b8c13dcebf425673285f),
 //! which implements the execution-specs `tests-zkevm@v0.8.4` stateless schema, and the expected
-//! roots come from that crate's `HashTreeRoot`. An execution proof commits to
-//! `hash_tree_root(NewPayloadRequest)`, so a shape that disagrees with the guest would make every
-//! proof fail to verify.
+//! roots come from that crate's `HashTreeRoot`.
 
 use execution_layer::NewPayloadRequestGloas;
 use ssz::{Decode, Encode};

@@ -123,8 +123,7 @@ fn known_valid_proofs_reject_a_different_public_input() {
 /// The OpenVM proof is not offered to the SP1 verifier. That combination aborts the process
 /// inside the ERE verifier library rather than returning an error: the SP1 decoder reads a length
 /// from OpenVM-shaped bytes and attempts an allocation of several hundred petabytes. Every other
-/// combination, and arbitrary or truncated bytes, is rejected cleanly. Restore the excluded pair
-/// once the upstream decoder bounds that length.
+/// combination, and arbitrary or truncated bytes, is rejected cleanly.
 #[test]
 fn known_valid_proofs_reject_a_foreign_proof_type() {
     let engine = EreProofEngine::new(ProofEngineConfig::default()).expect("engine initializes");
