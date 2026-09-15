@@ -46,6 +46,9 @@ impl ProofEngineT for EreProofEngine {
         // is the one `PublicInput` encodes, so the proven public values are compared with those
         // bytes.
         let expected_public_values = proof.public_input.as_ssz_bytes();
+        if !accepted_proof_shape(proof.proof_type.zkvm(), proof.proof_data.as_ref()) {
+            return Ok(ProofVerificationOutcome::Invalid);
+        }
         let public_values = match verifier.verify(proof.proof_data.as_ref()) {
             Ok(public_values) => public_values,
             Err(EreVerifierError::DecodeProof | EreVerifierError::Verify) => {
@@ -64,6 +67,33 @@ impl ProofEngineT for EreProofEngine {
             &expected_public_values,
             proof.proof_type.zkvm(),
         ))
+    }
+}
+
+/// The only `SP1Proof` variant an ERE verifier accepts, as a bincode-legacy enum selector.
+///
+/// `sp1_verifier::SP1Proof` orders its variants `Core`, `Compressed`, `Plonk`, `Groth16`.
+const SP1_COMPRESSED_SELECTOR: u32 = 1;
+
+/// Whether `proof_data` is shaped like a proof the verifier for `zkvm_kind` accepts.
+///
+/// The verifier decodes a proof before deciding whether its kind is one it handles, and the
+/// decoder allocates on a length it reads out of the input. Proof data arrives from gossip, so a
+/// sender chooses both the proof type that selects the verifier and the bytes handed to it. Bytes
+/// carrying another proof system's shape can therefore reach a decoder that reads a length from
+/// them, and an allocation refused by the allocator ends the process rather than the request.
+///
+/// Checking the selector first admits exactly what the verifier admits: SP1 accepts the compressed
+/// proof alone and answers every other kind with an error, so rejecting the others here loses
+/// nothing and keeps those bytes away from the decoder. OpenVM and Zisk expose no such selector,
+/// and no input has been found that makes either of them allocate on a length it has not read.
+fn accepted_proof_shape(zkvm_kind: ZkvmKind, proof_data: &[u8]) -> bool {
+    match zkvm_kind {
+        ZkvmKind::Sp1 => proof_data
+            .get(..size_of::<u32>())
+            .and_then(|selector| selector.try_into().ok())
+            .is_some_and(|selector| u32::from_le_bytes(selector) == SP1_COMPRESSED_SELECTOR),
+        ZkvmKind::Openvm | ZkvmKind::Zisk => true,
     }
 }
 
@@ -122,6 +152,30 @@ mod tests {
     fn default_config_initializes_ere_verifier() {
         EreProofEngine::new(ProofEngineConfig::default())
             .expect("ERE accepts the embedded program verification keys");
+    }
+
+    #[test]
+    fn sp1_admits_only_the_compressed_proof_shape() {
+        for selector in [0u32, 2, 3, u32::MAX] {
+            assert!(!accepted_proof_shape(
+                ZkvmKind::Sp1,
+                &selector.to_le_bytes()
+            ));
+        }
+        assert!(accepted_proof_shape(
+            ZkvmKind::Sp1,
+            &SP1_COMPRESSED_SELECTOR.to_le_bytes()
+        ));
+
+        // Too short to carry a selector.
+        for truncated in [&[][..], &[1][..], &[1, 0, 0][..]] {
+            assert!(!accepted_proof_shape(ZkvmKind::Sp1, truncated));
+        }
+
+        // The other verifiers expose no selector to check.
+        for zkvm_kind in [ZkvmKind::Openvm, ZkvmKind::Zisk] {
+            assert!(accepted_proof_shape(zkvm_kind, &[]));
+        }
     }
 
     #[test]
