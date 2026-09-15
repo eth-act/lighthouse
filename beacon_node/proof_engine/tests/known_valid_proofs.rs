@@ -118,11 +118,8 @@ fn known_valid_proofs_reject_a_different_public_input() {
 }
 
 /// A proof is bound to the proof system that produced it, so a fixture must not verify under
-/// another proof type's verifier and program key.
-///
-/// Every pairing is offered, including an OpenVM proof to the SP1 verifier. That one reaches a
-/// decoder that reads a length out of the bytes and ends the process on the allocation, so the
-/// engine checks the proof's shape before the verifier sees it.
+/// another proof type's verifier and program key. Every pairing is offered, including an OpenVM
+/// proof to the SP1 verifier, which the bounded decoder rejects rather than aborting on.
 #[test]
 fn known_valid_proofs_reject_a_foreign_proof_type() {
     let engine = EreProofEngine::new(ProofEngineConfig::default()).expect("engine initializes");
