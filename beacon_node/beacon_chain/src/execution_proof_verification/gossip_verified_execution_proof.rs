@@ -11,13 +11,13 @@ use crate::{BeaconChain, BeaconChainError, BeaconChainTypes};
 use execution_layer::NewPayloadRequestGloas;
 use parking_lot::RwLock;
 use proof_engine::{ProofEngine, ProofVerificationOutcome};
-use ssz_types::VariableList;
+use ssz_types::ProgressiveVariableList;
 use state_processing::builder_deposits_cache::OnboardBuildersCache;
 use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
 use std::sync::Arc;
 use tree_hash::TreeHash;
-use types::execution::{ExecutionProof, SignedExecutionProofEnvelope, is_supported_proof_type};
-use types::{BeaconStateError, ChainSpec, Domain, EthSpec, Hash256, SignedRoot, Slot};
+use types::execution::{ExecutionProof, SignedExecutionProofEnvelope};
+use types::{ChainSpec, Domain, EthSpec, Hash256, SignedRoot, Slot};
 
 pub struct GossipVerificationContext<'a, T: BeaconChainTypes> {
     pub canonical_head: &'a CanonicalHead<T>,
@@ -52,11 +52,6 @@ impl GossipVerifiedExecutionProof {
         let block_root = proof.beacon_block_root();
         let proof_type = proof.proof_type();
         let validator_index = proof.validator_index;
-
-        // [REJECT] The proof type is supported.
-        if !is_supported_proof_type(proof_type) {
-            return Err(Error::UnsupportedProofType { proof_type });
-        }
 
         // [IGNORE] The referenced beacon block is known. Its slot determines the fork for the
         // signing domain.
@@ -159,14 +154,12 @@ impl GossipVerifiedExecutionProof {
             .signed_execution_payload_bid()
             .map_err(BeaconChainError::from)?
             .message;
-        let versioned_hashes = VariableList::new(
+        let versioned_hashes = ProgressiveVariableList::new(
             bid.blob_kzg_commitments
                 .iter()
                 .map(kzg_commitment_to_versioned_hash)
                 .collect(),
-        )
-        .map_err(BeaconStateError::from)
-        .map_err(BeaconChainError::from)?;
+        );
         // [IGNORE] The payload has been received and executed locally. Without an engine the
         // store only gains the envelope after an import that waits on proofs, so reading the
         // store alone would deadlock. Try the pending cache first, then the store for blocks
@@ -278,6 +271,7 @@ mod tests {
     use bls::Signature;
     use fork_choice::PayloadVerificationStatus;
     use proof_engine::{ProofEngine, test_utils::MockProofEngine};
+    use types::execution::ProofType;
     use types::{
         ForkName, MinimalEthSpec, SignedExecutionPayloadBid, SignedExecutionPayloadEnvelope,
         execution::{ExecutionPayloadEnvelope, ExecutionProofEnvelope, ProofData},
@@ -286,7 +280,7 @@ mod tests {
     type E = MinimalEthSpec;
     fn execution_proof(
         beacon_block_root: Hash256,
-        proof_type: u8,
+        proof_type: ProofType,
         proof_data: Vec<u8>,
         validator_index: u64,
     ) -> SignedExecutionProofEnvelope {
@@ -319,7 +313,7 @@ mod tests {
 
         let mock_proof = ExecutionProof::new(
             ProofData::new(valid_proof_data).expect("valid proof data"),
-            1,
+            ProofType::RethOpenvm,
             Hash256::default(),
             chain.spec.deposit_chain_id,
         );
@@ -343,7 +337,7 @@ mod tests {
         );
 
         let unknown_root = Hash256::repeat_byte(0xaa);
-        let empty_proof = execution_proof(unknown_root, 1, vec![], 0);
+        let empty_proof = execution_proof(unknown_root, ProofType::RethOpenvm, vec![], 0);
         assert!(matches!(
             chain
                 .verify_execution_proof_for_gossip(Arc::new(empty_proof))
@@ -351,15 +345,7 @@ mod tests {
             Err(Error::EmptyProofData)
         ));
 
-        let unsupported_proof = execution_proof(unknown_root, 0, vec![1], 0);
-        assert!(matches!(
-            chain
-                .verify_execution_proof_for_gossip(Arc::new(unsupported_proof))
-                .await,
-            Err(Error::UnsupportedProofType { proof_type: 0 })
-        ));
-
-        let proof_type = 1;
+        let proof_type = ProofType::RethOpenvm;
         let exact_proof = execution_proof(genesis_root, proof_type, vec![1], 0);
         assert!(
             chain
@@ -407,7 +393,7 @@ mod tests {
             Err(Error::ValidProofAlreadyKnown)
         ));
 
-        let second_proof_type = 2;
+        let second_proof_type = ProofType::RethSp1;
         let prior_proof = execution_proof(genesis_root, second_proof_type, vec![3], 0);
         assert!(
             chain
@@ -502,7 +488,7 @@ mod tests {
             "the envelope must still be absent from the store"
         );
 
-        let mut proof = execution_proof(genesis_root, 1, valid_proof_data, 1);
+        let mut proof = execution_proof(genesis_root, ProofType::RethOpenvm, valid_proof_data, 1);
         let fork_name = chain.spec.fork_name_at_slot::<E>(Slot::new(0));
         let domain = chain.spec.compute_domain(
             Domain::ExecutionProof,

@@ -38,7 +38,10 @@ impl ProofEngineT for MockProofEngine {
 mod tests {
     use super::*;
     use crate::ProofEngine;
-    use types::{Hash256, execution::ProofData};
+    use types::{
+        Hash256,
+        execution::{ProofData, ProofType},
+    };
 
     #[test]
     fn matches_configured_proof_data() {
@@ -47,7 +50,7 @@ mod tests {
         let proof = |proof_data| {
             ExecutionProof::new(
                 ProofData::new(proof_data).expect("proof data within bound"),
-                2,
+                ProofType::RethSp1,
                 Hash256::default(),
                 1,
             )

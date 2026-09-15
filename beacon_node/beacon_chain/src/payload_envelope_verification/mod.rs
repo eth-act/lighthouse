@@ -22,7 +22,7 @@ use crate::{
     BeaconChainError, BeaconChainTypes, BeaconStore, BlockError, CustodyContext,
     ExecutionPayloadError, PayloadVerificationError, PayloadVerificationOutcome,
 };
-use ssz_types::VariableList;
+use ssz_types::ProgressiveVariableList;
 use state_processing::envelope_processing::EnvelopeProcessingError;
 use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
 use std::collections::HashSet;
@@ -416,13 +416,12 @@ pub fn build_new_payload_request<'a, E: EthSpec>(
         .map_err(|e| EnvelopeError::BeaconChainError(Box::new(BeaconChainError::from(e))))?
         .message;
 
-    let versioned_hashes = VariableList::new(
+    let versioned_hashes = ProgressiveVariableList::new(
         bid.blob_kzg_commitments
             .iter()
             .map(kzg_commitment_to_versioned_hash)
             .collect(),
-    )
-    .map_err(BeaconStateError::from)?;
+    );
 
     Ok(execution_layer::NewPayloadRequest::Gloas(
         execution_layer::NewPayloadRequestGloas {

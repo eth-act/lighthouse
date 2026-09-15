@@ -232,7 +232,7 @@ async fn publish_execution_proof<T: BeaconChainTypes>(
         Err(ProofError::ProofAlreadySeen | ProofError::ValidProofAlreadyKnown) => {
             debug!(
                 %beacon_block_root,
-                proof_type,
+                %proof_type,
                 validator_index,
                 "Execution proof already known"
             );
@@ -245,7 +245,7 @@ async fn publish_execution_proof<T: BeaconChainTypes>(
         ) => {
             warn!(
                 %beacon_block_root,
-                proof_type,
+                %proof_type,
                 validator_index,
                 ?error,
                 "Could not verify execution proof"
@@ -257,7 +257,7 @@ async fn publish_execution_proof<T: BeaconChainTypes>(
         Err(error) => {
             debug!(
                 %beacon_block_root,
-                proof_type,
+                %proof_type,
                 validator_index,
                 ?error,
                 "Rejecting execution proof"
@@ -270,7 +270,7 @@ async fn publish_execution_proof<T: BeaconChainTypes>(
         .map_err(|_| ProofFailure::Internal("unable to publish to network channel".to_string()))?;
     info!(
         %beacon_block_root,
-        proof_type,
+        %proof_type,
         validator_index,
         "Published execution proof"
     );
@@ -294,7 +294,7 @@ async fn publish_execution_proof<T: BeaconChainTypes>(
         Err(error) => {
             debug!(
                 %beacon_block_root,
-                proof_type,
+                %proof_type,
                 ?error,
                 "Could not cache execution proof"
             );

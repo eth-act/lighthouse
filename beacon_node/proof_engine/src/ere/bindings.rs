@@ -1,7 +1,12 @@
 //! Safe ownership wrapper around the minimal ERE verifier C API.
+//!
+//! The declarations below mirror `ere_verifier.h` as published in ERE v0.17.0, the release
+//! pinned by `build/ere_verifier.rs`. `ere_verifier_zkvm_kind` is the only other function the
+//! library exports and is deliberately left undeclared: it echoes back the `zkvm_kind`
+//! argument the handle was constructed with, which the caller derives from the proof type.
 
-use crate::ZkvmKind;
 use std::{ptr::NonNull, slice};
+use types::execution::ZkvmKind;
 
 const ERE_OK: i32 = 0;
 

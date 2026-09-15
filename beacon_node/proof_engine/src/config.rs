@@ -2,11 +2,11 @@
 
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::{collections::HashSet, str::FromStr};
-use types::execution::{ProofType, is_supported_proof_type};
+use types::execution::ProofType;
 
-// Program verification keys from reth stateless-validator guest v0.1.0-rc.2.
+// Program verification keys from reth stateless-validator guest v0.1.0-rc.3.
 const DEFAULT_RETH_OPENVM_PROGRAM_VK: &str = concat!(
-    "001242647100d986f257006692793600fac3cc7600dd1f982800d7efb7340086f7837100fb65952b06030619068000a2",
+    "0025e8d0440012375702004a22c350005a7cef2700f3654950004ba3266800e754e517007b9ca23d06030619068000a2",
     "c21b53000a2fee4f0036169c2800aaaa8d6c0087fbce5b00328dc26f009fe7de5a004686562400e77e894500a128f20f",
     "00674f7c2400b38df01800309c530900a487cf0400725bac510051af497500e4abff6e00a58ac939000775b41a001a76",
     "e84100c5e8944400c94e8e1600330e6b39001cacbc5a00ca47cd51001b418e02000fe02a480009a32070002554164500",
@@ -16,9 +16,9 @@ const DEFAULT_RETH_OPENVM_PROGRAM_VK: &str = concat!(
     "003de28a5f008584cc2a00033ab1020025f59e4a00c3a9f64a00b8ef166500",
 );
 const DEFAULT_RETH_SP1_PROGRAM_VK: &str =
-    "00cf96ecee478c118cba3ac169054a25d7cb2d06df2d2dcb4bd9ab62dd47ef56";
+    "00a03cbfa95559cfee3b45ef925f3f7a631181e35e774e92b040277d893511dd";
 const DEFAULT_RETH_ZISK_PROGRAM_VK: &str =
-    "271ffd2449e1ca3ad8b63f18e0786a9d8267ae478bb5fb7a2dc55ef00cdfb968";
+    "7b0f7b082966c8155b496c2e1a371b3824b461ad2e1c2931f222c63a10004a14";
 
 /// Configuration for the in-process EIP-8025 proof engine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -36,9 +36,6 @@ impl ProofEngineConfig {
         let mut proof_types = HashSet::with_capacity(execution_proofs.len());
 
         for config in &execution_proofs {
-            if !is_supported_proof_type(config.proof_type) {
-                return Err(format!("unsupported proof type `{}`", config.proof_type));
-            }
             if !proof_types.insert(config.proof_type) {
                 return Err(format!(
                     "duplicate configuration for proof type `{}`",
@@ -63,32 +60,34 @@ impl ProofEngineConfig {
 }
 
 impl Default for ProofEngineConfig {
-    /// Built-in verifier configuration for the reth stateless-validator guest v0.1.0-rc.2 in
-    /// `eth-act/ere-guests` at commit `dd6ac1a43fc14a34e0dc764937ba64f4b0237885`.
+    /// Built-in verifier configuration for the reth stateless-validator guest v0.1.0-rc.3,
+    /// as published by `eth-act/ere-guests` at tag `v0.17.0`, the tag this crate's verifier is
+    /// built from.
     /// The proof-type assignments are provisional while EIP-8025 is under development.
     fn default() -> Self {
-        Self::new(vec![
-            ExecutionProofConfig {
-                proof_type: 1,
-                zkvm_kind: ZkvmKind::Openvm,
-                program_vk: hex::decode(DEFAULT_RETH_OPENVM_PROGRAM_VK)
-                    .expect("embedded OpenVM program verification key is valid hex"),
-            },
-            ExecutionProofConfig {
-                proof_type: 2,
-                zkvm_kind: ZkvmKind::Sp1,
-                program_vk: hex::decode(DEFAULT_RETH_SP1_PROGRAM_VK)
-                    .expect("embedded SP1 program verification key is valid hex"),
-            },
-            ExecutionProofConfig {
-                proof_type: 3,
-                zkvm_kind: ZkvmKind::Zisk,
-                program_vk: hex::decode(DEFAULT_RETH_ZISK_PROGRAM_VK)
-                    .expect("embedded Zisk program verification key is valid hex"),
-            },
-        ])
+        Self::new(
+            ProofType::all()
+                .iter()
+                .map(|proof_type| ExecutionProofConfig {
+                    proof_type: *proof_type,
+                    program_vk: default_program_vk(*proof_type),
+                })
+                .collect(),
+        )
         .expect("built-in proof engine configuration is valid")
     }
+}
+
+/// The embedded program verification key for `proof_type`.
+///
+/// Exhaustive by construction, so a newly assigned proof type cannot be added without one.
+fn default_program_vk(proof_type: ProofType) -> Vec<u8> {
+    let encoded = match proof_type {
+        ProofType::RethOpenvm => DEFAULT_RETH_OPENVM_PROGRAM_VK,
+        ProofType::RethSp1 => DEFAULT_RETH_SP1_PROGRAM_VK,
+        ProofType::RethZisk => DEFAULT_RETH_ZISK_PROGRAM_VK,
+    };
+    hex::decode(encoded).expect("embedded program verification key is valid hex")
 }
 
 impl<'de> Deserialize<'de> for ProofEngineConfig {
@@ -115,45 +114,37 @@ impl FromStr for ProofEngineConfig {
 }
 
 /// Configuration for the verifier assigned to an EIP-8025 proof type.
+///
+/// The zkVM is not configured: it is named by the proof type, via [`ProofType::zkvm`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionProofConfig {
     /// EIP-8025 proof type handled by this verifier.
     pub proof_type: ProofType,
-    /// zkVM used to decode and verify proofs of this type.
-    #[serde(rename = "zkvm")]
-    pub zkvm_kind: ZkvmKind,
     /// ERE-encoded program verification key.
     #[serde(with = "serde_utils::hex_vec")]
     pub program_vk: Vec<u8>,
 }
 
-/// zkVM verifier supported by the ERE v0.18.0 C API.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ZkvmKind {
-    /// OpenVM.
-    Openvm,
-    /// SP1.
-    Sp1,
-    /// Zisk.
-    Zisk,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use types::execution::ZkvmKind;
 
     #[test]
     fn parses_and_serializes_json_config() {
         let json = format!(
-            r#"{{"execution_proofs":[{{"proof_type":2,"zkvm":"sp1","program_vk":"0x{}"}}]}}"#,
+            r#"{{"execution_proofs":[{{"proof_type":2,"program_vk":"0x{}"}}]}}"#,
             DEFAULT_RETH_SP1_PROGRAM_VK
         );
         let config: ProofEngineConfig = json.parse().expect("valid JSON configuration");
 
         assert_eq!(config.execution_proofs().len(), 1);
-        assert_eq!(config.execution_proofs()[0].proof_type, 2);
-        assert_eq!(config.execution_proofs()[0].zkvm_kind, ZkvmKind::Sp1);
+        assert_eq!(config.execution_proofs()[0].proof_type, ProofType::RethSp1);
+        // The zkVM is named by the proof type, not carried in the JSON.
+        assert_eq!(
+            config.execution_proofs()[0].proof_type.zkvm(),
+            ZkvmKind::Sp1
+        );
         assert_eq!(
             config.execution_proofs()[0].program_vk,
             hex::decode(DEFAULT_RETH_SP1_PROGRAM_VK).expect("valid embedded key")
@@ -170,10 +161,12 @@ mod tests {
     #[test]
     fn rejects_invalid_json_fields() {
         for json in [
-            r#"{"execution_proofs":[{"proof_type":2,"zkvm":"unknown","program_vk":"0x00"}]}"#,
-            r#"{"execution_proofs":[{"proof_type":2,"zkvm":"sp1","program_vk":"00"}]}"#,
-            r#"{"execution_proofs":[{"proof_type":2,"zkvm":"sp1","program_vk":"0x0g"}]}"#,
-            r#"{"execution_proofs":[{"proof_type":2,"zkvm":"sp1","program_vk":"0x"}]}"#,
+            // Unassigned proof types are rejected by the codec.
+            r#"{"execution_proofs":[{"proof_type":0,"program_vk":"0x00"}]}"#,
+            r#"{"execution_proofs":[{"proof_type":4,"program_vk":"0x00"}]}"#,
+            r#"{"execution_proofs":[{"proof_type":2,"program_vk":"00"}]}"#,
+            r#"{"execution_proofs":[{"proof_type":2,"program_vk":"0x0g"}]}"#,
+            r#"{"execution_proofs":[{"proof_type":2,"program_vk":"0x"}]}"#,
         ] {
             assert!(
                 json.parse::<ProofEngineConfig>().is_err(),
@@ -183,19 +176,12 @@ mod tests {
     }
 
     #[test]
-    fn proof_engine_config_rejects_unsupported_and_duplicate_proof_types() {
+    fn proof_engine_config_rejects_empty_and_duplicate_proof_types() {
         let empty = ProofEngineConfig::new(vec![]);
         assert_eq!(
             empty.unwrap_err(),
             "`execution_proofs` must contain at least one entry"
         );
-
-        let unsupported = ProofEngineConfig::new(vec![ExecutionProofConfig {
-            proof_type: 0,
-            zkvm_kind: ZkvmKind::Sp1,
-            program_vk: vec![0],
-        }]);
-        assert_eq!(unsupported.unwrap_err(), "unsupported proof type `0`");
 
         let execution_proof = ProofEngineConfig::default().execution_proofs()[0].clone();
         let duplicate = ProofEngineConfig::new(vec![execution_proof.clone(), execution_proof]);
@@ -206,12 +192,24 @@ mod tests {
     }
 
     #[test]
-    fn default_config_matches_all_ere_guests_reth_v0_1_0_rc_2_verifiers() {
+    fn default_config_matches_all_ere_guests_reth_v0_1_0_rc_3_verifiers() {
         let config = ProofEngineConfig::default();
         let expected = [
-            (1, ZkvmKind::Openvm, DEFAULT_RETH_OPENVM_PROGRAM_VK),
-            (2, ZkvmKind::Sp1, DEFAULT_RETH_SP1_PROGRAM_VK),
-            (3, ZkvmKind::Zisk, DEFAULT_RETH_ZISK_PROGRAM_VK),
+            (
+                ProofType::RethOpenvm,
+                ZkvmKind::Openvm,
+                DEFAULT_RETH_OPENVM_PROGRAM_VK,
+            ),
+            (
+                ProofType::RethSp1,
+                ZkvmKind::Sp1,
+                DEFAULT_RETH_SP1_PROGRAM_VK,
+            ),
+            (
+                ProofType::RethZisk,
+                ZkvmKind::Zisk,
+                DEFAULT_RETH_ZISK_PROGRAM_VK,
+            ),
         ];
 
         assert_eq!(config.execution_proofs().len(), expected.len());
@@ -219,10 +217,25 @@ mod tests {
             config.execution_proofs().iter().zip(expected)
         {
             assert_eq!(
-                (config.proof_type, config.zkvm_kind),
+                (config.proof_type, config.proof_type.zkvm()),
                 (proof_type, zkvm_kind)
             );
             assert_eq!(hex::encode(&config.program_vk), program_vk);
+        }
+    }
+
+    #[test]
+    fn default_config_covers_every_assigned_proof_type() {
+        let config = ProofEngineConfig::default();
+
+        for proof_type in ProofType::all() {
+            assert!(
+                config
+                    .execution_proofs()
+                    .iter()
+                    .any(|config| config.proof_type == *proof_type),
+                "no verifier configured for {proof_type:?}"
+            );
         }
     }
 }

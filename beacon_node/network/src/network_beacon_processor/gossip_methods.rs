@@ -4162,7 +4162,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
             Ok(verified) => {
                 debug!(
                     %beacon_block_root,
-                    proof_type,
+                    %proof_type,
                     block_slot = %verified.block_slot,
                     "Verified execution proof from gossip"
                 );
@@ -4189,7 +4189,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     Err(error) => {
                         debug!(
                             %beacon_block_root,
-                            proof_type,
+                            %proof_type,
                             ?error,
                             "Could not cache execution proof"
                         );
@@ -4197,7 +4197,7 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                 }
             }
             Err(error) => {
-                debug!(%beacon_block_root, proof_type, ?error, "Could not verify execution proof");
+                debug!(%beacon_block_root, %proof_type, ?error, "Could not verify execution proof");
                 let (acceptance, peer_action) = match &error {
                     // IGNORE: duplicates, unknown or finalized blocks.
                     ExecutionProofError::ProofAlreadySeen
@@ -4210,7 +4210,6 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
                     }
                     // REJECT: the proof is invalid.
                     ExecutionProofError::EmptyProofData
-                    | ExecutionProofError::UnsupportedProofType { .. }
                     | ExecutionProofError::UnknownValidatorIndex(_)
                     | ExecutionProofError::ValidatorNotActive { .. }
                     | ExecutionProofError::InvalidSignature

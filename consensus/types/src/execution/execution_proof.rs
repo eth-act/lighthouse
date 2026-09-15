@@ -2,8 +2,11 @@ use crate::{ForkName, Hash256, SignedRoot};
 use bls::Signature;
 use context_deserialize::context_deserialize;
 use serde::{Deserialize, Serialize};
+use ssz::{Decode as SszDecode, DecodeError, Encode as SszEncode};
 use ssz_derive::{Decode, Encode};
 use ssz_types::VariableList;
+use strum::VariantArray;
+use tree_hash::{PackedEncoding, TreeHash as TreeHashTrait, TreeHashType};
 use tree_hash_derive::TreeHash;
 
 /// SSZ bound for `proof_data`: 4 MiB (4,194,304 bytes).
@@ -18,15 +21,165 @@ const STATELESS_INPUT_SCHEMA_ID: u16 = 0x1501;
 /// Opaque proof bytes, bounded by EIP-8025 `MAX_PROOF_SIZE`.
 pub type ProofData = VariableList<u8, MaxProofSize>;
 
+/// Proof system that verifies an execution proof.
+///
+/// Each assigned [`ProofType`] names exactly one of these.
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ZkvmKind {
+    /// OpenVM.
+    Openvm,
+    /// SP1.
+    Sp1,
+    /// Zisk.
+    Zisk,
+}
+
 /// Identifier for an immutable proof-system, guest-program, and version tuple.
-pub type ProofType = u8;
+///
+/// The discriminants are the assigned EIP-8025 wire encodings and are serialized as a `u8`. The
+/// assignments are provisional while EIP-8025 is under development.
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, VariantArray, Serialize, Deserialize,
+)]
+#[serde(try_from = "u8", into = "u8")]
+#[repr(u8)]
+pub enum ProofType {
+    /// reth stateless validator proven on OpenVM.
+    RethOpenvm = 1,
+    /// reth stateless validator proven on SP1.
+    RethSp1 = 2,
+    /// reth stateless validator proven on Zisk.
+    RethZisk = 3,
+}
 
-/// Proof types supported by the current EIP-8025 specification.
-const SUPPORTED_PROOF_TYPES: [ProofType; 3] = [1, 2, 3];
+impl ProofType {
+    /// Every proof type assigned by the current EIP-8025 specification.
+    pub const fn all() -> &'static [Self] {
+        Self::VARIANTS
+    }
 
-/// Return whether `proof_type` is assigned by the current EIP-8025 specification.
-pub fn is_supported_proof_type(proof_type: ProofType) -> bool {
-    SUPPORTED_PROOF_TYPES.contains(&proof_type)
+    /// The proof system this proof type is verified with.
+    pub const fn zkvm(self) -> ZkvmKind {
+        match self {
+            Self::RethOpenvm => ZkvmKind::Openvm,
+            Self::RethSp1 => ZkvmKind::Sp1,
+            Self::RethZisk => ZkvmKind::Zisk,
+        }
+    }
+
+    /// The assigned EIP-8025 wire encoding.
+    pub const fn to_u8(self) -> u8 {
+        self as u8
+    }
+}
+
+/// A `u8` encoding that no EIP-8025 proof type is assigned to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnassignedProofType(pub u8);
+
+impl std::fmt::Display for UnassignedProofType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unassigned EIP-8025 proof type: {}", self.0)
+    }
+}
+
+impl std::error::Error for UnassignedProofType {}
+
+impl TryFrom<u8> for ProofType {
+    type Error = UnassignedProofType;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::RethOpenvm),
+            2 => Ok(Self::RethSp1),
+            3 => Ok(Self::RethZisk),
+            unassigned => Err(UnassignedProofType(unassigned)),
+        }
+    }
+}
+
+impl From<ProofType> for u8 {
+    fn from(value: ProofType) -> Self {
+        value.to_u8()
+    }
+}
+
+impl std::fmt::Display for ProofType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_u8())
+    }
+}
+
+// `ssz(enum_behaviour = "tag")` cannot be used here: it encodes the variant *index*, not the
+// assigned discriminant, and rejects explicit selectors, so proof types would go on the wire as
+// 0, 1, 2 instead of 1, 2, 3.
+impl SszEncode for ProofType {
+    fn is_ssz_fixed_len() -> bool {
+        true
+    }
+
+    fn ssz_fixed_len() -> usize {
+        1
+    }
+
+    fn ssz_bytes_len(&self) -> usize {
+        1
+    }
+
+    fn ssz_append(&self, buf: &mut Vec<u8>) {
+        self.to_u8().ssz_append(buf);
+    }
+}
+
+impl SszDecode for ProofType {
+    fn is_ssz_fixed_len() -> bool {
+        true
+    }
+
+    fn ssz_fixed_len() -> usize {
+        1
+    }
+
+    fn from_ssz_bytes(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::try_from(u8::from_ssz_bytes(bytes)?)
+            .map_err(|error| DecodeError::BytesInvalid(error.to_string()))
+    }
+}
+
+impl TreeHashTrait for ProofType {
+    fn tree_hash_type() -> TreeHashType {
+        u8::tree_hash_type()
+    }
+
+    fn tree_hash_packed_encoding(&self) -> PackedEncoding {
+        self.to_u8().tree_hash_packed_encoding()
+    }
+
+    fn tree_hash_packing_factor() -> usize {
+        u8::tree_hash_packing_factor()
+    }
+
+    fn tree_hash_root(&self) -> Hash256 {
+        self.to_u8().tree_hash_root()
+    }
+}
+
+/// Serialize a [`ProofType`] as a quoted decimal string, as the Beacon API requires.
+pub mod quoted_proof_type {
+    use super::ProofType;
+    use serde::{Deserializer, Serializer, de::Error as _};
+
+    pub fn serialize<S: Serializer>(value: &ProofType, serializer: S) -> Result<S::Ok, S::Error> {
+        serde_utils::quoted_u8::serialize(&value.to_u8(), serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<ProofType, D::Error> {
+        let value: u8 = serde_utils::quoted_u8::deserialize(deserializer)?;
+        ProofType::try_from(value).map_err(D::Error::custom)
+    }
 }
 
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -78,7 +231,7 @@ impl ExecutionProof {
 #[context_deserialize(ForkName)]
 pub struct ExecutionProofEnvelope {
     pub proof_data: ProofData,
-    #[serde(with = "serde_utils::quoted_u8")]
+    #[serde(with = "quoted_proof_type")]
     pub proof_type: ProofType,
     pub beacon_block_root: Hash256,
 }
@@ -113,7 +266,7 @@ pub type SignedExecutionProofEnvelopes =
 mod tests {
     use super::*;
     use fixed_bytes::FixedBytesExtended;
-    use ssz::{Decode as _, Encode as _};
+    use ssz::BYTES_PER_LENGTH_OFFSET;
     use typenum::Unsigned;
 
     ssz_and_tree_hash_tests!(SignedExecutionProofEnvelope);
@@ -132,7 +285,7 @@ mod tests {
 
     #[test]
     fn signed_envelope_json_quotes_integers() {
-        let envelope = signed_envelope(2);
+        let envelope = signed_envelope(ProofType::RethSp1);
 
         let json = serde_json::to_value(&envelope).expect("serializes");
         assert_eq!(json["message"]["proof_type"], "2");
@@ -146,20 +299,99 @@ mod tests {
     #[test]
     fn signed_envelopes_enforce_per_payload_bound() {
         let max = MaxExecutionProofsPerPayload::USIZE;
-        assert!(SignedExecutionProofEnvelopes::new(vec![signed_envelope(1); max]).is_ok());
-        assert!(SignedExecutionProofEnvelopes::new(vec![signed_envelope(1); max + 1]).is_err());
+        let envelope = signed_envelope(ProofType::RethOpenvm);
+        assert!(SignedExecutionProofEnvelopes::new(vec![envelope.clone(); max]).is_ok());
+        assert!(SignedExecutionProofEnvelopes::new(vec![envelope; max + 1]).is_err());
     }
 
     #[test]
-    fn supported_proof_types_match_spec() {
-        assert_eq!(SUPPORTED_PROOF_TYPES, [1, 2, 3]);
-        assert!(
-            SUPPORTED_PROOF_TYPES
-                .iter()
-                .all(|proof_type| is_supported_proof_type(*proof_type))
+    fn assigned_proof_types_match_spec() {
+        assert_eq!(
+            ProofType::all(),
+            [
+                ProofType::RethOpenvm,
+                ProofType::RethSp1,
+                ProofType::RethZisk
+            ]
         );
-        assert!(!is_supported_proof_type(0));
-        assert!(!is_supported_proof_type(4));
+
+        // The discriminants are the wire encoding, so `all()` and the assignments must agree.
+        for (index, proof_type) in ProofType::all().iter().enumerate() {
+            let encoding = u8::try_from(index + 1).expect("index within bound");
+            assert_eq!(proof_type.to_u8(), encoding);
+            assert_eq!(ProofType::try_from(encoding), Ok(*proof_type));
+        }
+
+        for unassigned in [0, 4, u8::MAX] {
+            assert_eq!(
+                ProofType::try_from(unassigned),
+                Err(UnassignedProofType(unassigned))
+            );
+        }
+    }
+
+    #[test]
+    fn envelope_with_unassigned_proof_type_does_not_decode() {
+        // EIP-8025 gossip validation says "[REJECT] The proof type is supported". That rule is
+        // enforced here, by the codec, so an unassigned proof type never reaches validation.
+        let envelope = signed_envelope(ProofType::RethSp1);
+        let encoded = envelope.as_ssz_bytes();
+        // The message is the only variable-size field, so its offset leads the encoding, and the
+        // proof data offset leads the message.
+        let message_offset = u32::from_le_bytes(
+            encoded[..BYTES_PER_LENGTH_OFFSET]
+                .try_into()
+                .expect("the message offset is four bytes"),
+        ) as usize;
+        let offset = message_offset + BYTES_PER_LENGTH_OFFSET;
+        assert_eq!(
+            encoded[offset],
+            ProofType::RethSp1.to_u8(),
+            "located the proof type byte"
+        );
+
+        for unassigned in [0u8, 4, u8::MAX] {
+            let mut corrupted = encoded.clone();
+            corrupted[offset] = unassigned;
+            assert!(
+                SignedExecutionProofEnvelope::from_ssz_bytes(&corrupted).is_err(),
+                "decoded an envelope carrying unassigned proof type {unassigned}"
+            );
+        }
+
+        // The untouched encoding still decodes, so the corruption above is the only difference.
+        assert_eq!(
+            SignedExecutionProofEnvelope::from_ssz_bytes(&encoded).expect("valid envelope decodes"),
+            envelope
+        );
+    }
+
+    #[test]
+    fn every_proof_type_names_its_proof_system() {
+        assert_eq!(ProofType::RethOpenvm.zkvm(), ZkvmKind::Openvm);
+        assert_eq!(ProofType::RethSp1.zkvm(), ZkvmKind::Sp1);
+        assert_eq!(ProofType::RethZisk.zkvm(), ZkvmKind::Zisk);
+    }
+
+    #[test]
+    fn proof_type_ssz_round_trips_as_its_assigned_encoding() {
+        for proof_type in ProofType::all() {
+            let bytes = proof_type.as_ssz_bytes();
+            assert_eq!(bytes, [proof_type.to_u8()]);
+            assert_eq!(
+                ProofType::from_ssz_bytes(&bytes).expect("assigned encoding decodes"),
+                *proof_type
+            );
+        }
+
+        // Unassigned encodings are rejected by the codec, and the tree hash matches the `u8`.
+        for unassigned in [0u8, 4, u8::MAX] {
+            assert!(ProofType::from_ssz_bytes(&[unassigned]).is_err());
+        }
+        assert_eq!(
+            ProofType::RethSp1.tree_hash_root(),
+            ProofType::RethSp1.to_u8().tree_hash_root()
+        );
     }
 
     #[test]
@@ -172,7 +404,7 @@ mod tests {
         let envelope = SignedExecutionProofEnvelope {
             message: ExecutionProofEnvelope {
                 proof_data,
-                proof_type: SUPPORTED_PROOF_TYPES[0],
+                proof_type: ProofType::RethOpenvm,
                 beacon_block_root: Hash256::zero(),
             },
             validator_index: 0,
@@ -188,7 +420,7 @@ mod tests {
     #[test]
     fn execution_proof_constructor_uses_proof_and_public_input_context() {
         let proof_data = ProofData::new(vec![1, 2, 3]).expect("valid proof data");
-        let proof_type = SUPPORTED_PROOF_TYPES[0];
+        let proof_type = ProofType::RethOpenvm;
         let new_payload_request_root = Hash256::repeat_byte(0x22);
 
         let proof =

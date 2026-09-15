@@ -8,7 +8,7 @@ pub mod test_utils;
 use std::sync::Arc;
 use types::execution::{ExecutionProof, ProofType};
 
-pub use config::{ExecutionProofConfig, ProofEngineConfig, ZkvmKind};
+pub use config::{ExecutionProofConfig, ProofEngineConfig};
 
 /// Errors raised while initializing or running a proof verifier.
 #[derive(Debug)]
