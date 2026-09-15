@@ -148,6 +148,39 @@ fn known_valid_proofs_reject_a_foreign_proof_type() {
     }
 }
 
+/// A real SP1 proof with corrupted nested length data is rejected, not aborted.
+///
+/// The SP1 fixture is a `Compressed` proof, the one shape the verifier accepts, so it passes the
+/// engine's outer proof-shape check and reaches the decoder. Inflating length prefixes inside it
+/// is the selector-1 case an outer discriminant check cannot screen: the bytes are handed to the
+/// decoder, and the decoder must reject them without an allocation that would end the process.
+#[test]
+fn corrupted_sp1_nested_lengths_are_rejected() {
+    let engine = EreProofEngine::new(ProofEngineConfig::default()).expect("engine initializes");
+    let valid = fixture("stateless-validator-reth-sp1-v6.4.0.proof");
+
+    // Offsets inside the decoded structure, past the outer enum selector, set to lengths far
+    // larger than the input. A bounded decoder answers `Invalid`; an unbounded one aborts.
+    for offset in [8usize, 64, 256, 1024, 4096] {
+        let mut data = valid.clone();
+        if offset + 8 <= data.len() {
+            data[offset..offset + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+        }
+        let proof = ExecutionProof {
+            proof_data: ProofData::new(data).expect("within the bound"),
+            proof_type: ProofType::RethSp1,
+            public_input: public_input(),
+        };
+        assert_eq!(
+            engine
+                .verify_execution_proof(&proof)
+                .expect("verifier runs"),
+            ProofVerificationOutcome::Invalid,
+            "corrupted SP1 proof at offset {offset} was not rejected cleanly"
+        );
+    }
+}
+
 /// Arbitrary and truncated proof data is rejected rather than crashing the verifier.
 #[test]
 fn malformed_proof_data_is_rejected() {
