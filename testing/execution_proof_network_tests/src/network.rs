@@ -307,9 +307,9 @@ impl ProofNetwork {
         Ok(net)
     }
 
-    /// Start another beacon node once the network is running, for late-joining scenarios. It
-    /// connects through the boot node and syncs like any other late node. Validators cannot be
-    /// attached this way: the genesis validator set is fixed when the network is built.
+    /// Start another beacon node once the network is running. It connects through the boot node
+    /// and syncs like any other added node. Validators cannot be attached this way: the genesis
+    /// validator set is fixed when the network is built.
     pub async fn add_node(&mut self, node: NodeSpec) -> Result<usize, String> {
         if node.validators {
             return Err("validators can only be attached to nodes started with the network".into());
