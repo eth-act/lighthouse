@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 use types::{Hash256, Slot, execution::ProofType};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// A concrete type for status snapshots whose predicate is unrelated to one proof type.
+const STATUS_PROOF_TYPE: ProofType = ProofType::RethOpenvm;
 
 /// What one node knows about a block and the proofs of one type for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -281,7 +283,7 @@ impl ProofNetwork {
             timeout,
             |net| {
                 let head_root = net.head_block_root(node)?;
-                let status = net.proof_status(node, head_root, 0)?;
+                let status = net.proof_status(node, head_root, STATUS_PROOF_TYPE)?;
                 Ok(status.envelope_pending && !status.payload_received)
             },
         )
@@ -327,7 +329,7 @@ impl ProofNetwork {
             &format!("nodes {nodes:?} to know block {block_root:?}"),
             nodes,
             block_root,
-            0,
+            STATUS_PROOF_TYPE,
             timeout,
             |status| status.block_known,
         )
@@ -367,7 +369,7 @@ impl ProofNetwork {
             &format!("nodes {nodes:?} to cache proof types {proof_types:?} for {block_root:?}"),
             nodes,
             block_root,
-            0,
+            STATUS_PROOF_TYPE,
             timeout,
             |status| status.cached_proof_types == proof_types,
         )
@@ -385,7 +387,7 @@ impl ProofNetwork {
             &format!("nodes {nodes:?} to receive the payload of {block_root:?}"),
             nodes,
             block_root,
-            0,
+            STATUS_PROOF_TYPE,
             timeout,
             |status| status.payload_received,
         )

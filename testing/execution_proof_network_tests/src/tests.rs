@@ -4,8 +4,10 @@
 use crate::{NodeSpec, ProofNetwork, ProofNetworkConfig, ProverSpec};
 use std::time::Duration;
 use tracing::info;
-use types::{Hash256, Slot};
+use types::{Hash256, Slot, execution::ProofType};
 
+const RETH_OPENVM: ProofType = ProofType::RethOpenvm;
+const RETH_SP1: ProofType = ProofType::RethSp1;
 const VALID_TYPE_1: &[u8] = b"execution_proof_network_tests: valid proof, type 1";
 const VALID_TYPE_2: &[u8] = b"execution_proof_network_tests: valid proof, type 2";
 const INVALID: &[u8] = b"execution_proof_network_tests: proof no engine accepts";
@@ -28,8 +30,11 @@ fn accepts_both() -> Vec<Vec<u8>> {
     vec![VALID_TYPE_1.to_vec(), VALID_TYPE_2.to_vec()]
 }
 
-fn both_types() -> Vec<(u8, Vec<u8>)> {
-    vec![(1, VALID_TYPE_1.to_vec()), (2, VALID_TYPE_2.to_vec())]
+fn both_types() -> Vec<(ProofType, Vec<u8>)> {
+    vec![
+        (RETH_OPENVM, VALID_TYPE_1.to_vec()),
+        (RETH_SP1, VALID_TYPE_2.to_vec()),
+    ]
 }
 
 /// Four nodes: a verifier (execution layer plus proof engine) that submits proofs, two
@@ -86,13 +91,13 @@ fn two_provers() -> ProofNetworkConfig {
         NodeSpec::verifier(accepts_both())
             .with_validators()
             .proving(ProverSpec {
-                proofs: vec![(1, VALID_TYPE_1.to_vec())],
+                proofs: vec![(RETH_OPENVM, VALID_TYPE_1.to_vec())],
                 validator_index: PROVER,
             }),
         NodeSpec::verifier(accepts_both())
             .with_validators()
             .proving(ProverSpec {
-                proofs: vec![(2, VALID_TYPE_2.to_vec())],
+                proofs: vec![(RETH_SP1, VALID_TYPE_2.to_vec())],
                 validator_index: SECOND_PROVER,
             }),
         NodeSpec::proof_only(accepts_both()),
@@ -123,7 +128,7 @@ async fn wait_for_proven_payloads(
                 .iter()
                 .map(|payload| payload.block_root)
                 .filter(|root| {
-                    net.proof_status(proof_only, *root, 0)
+                    net.proof_status(proof_only, *root, RETH_OPENVM)
                         .map(|status| status.payload_received)
                         .unwrap_or(false)
                 })
@@ -167,12 +172,12 @@ fn execution_layer_nodes_import_payloads_while_proof_only_nodes_wait() {
         let block_root = ready(&net, 3).await?;
 
         for node in [0, 1, 2] {
-            let status = net.proof_status(node, block_root, 1)?;
+            let status = net.proof_status(node, block_root, RETH_OPENVM)?;
             assert_eq!(status.required_proofs, 0, "{status:?}");
             assert!(status.payload_received, "{status:?}");
             assert!(status.envelope_stored, "{status:?}");
         }
-        let status = net.proof_status(3, block_root, 1)?;
+        let status = net.proof_status(3, block_root, RETH_OPENVM)?;
         assert_eq!(status.required_proofs, 2, "{status:?}");
         assert!(status.block_known, "{status:?}");
         assert!(status.envelope_pending, "{status:?}");
@@ -184,7 +189,7 @@ fn execution_layer_nodes_import_payloads_while_proof_only_nodes_wait() {
         let stalled_slot = status.head_slot;
         net.wait_for_head_slot(1, stalled_slot + 2, PROPAGATION_TIMEOUT)
             .await?;
-        let status = net.proof_status(3, block_root, 1)?;
+        let status = net.proof_status(3, block_root, RETH_OPENVM)?;
         assert_eq!(status.head_slot, stalled_slot, "{status:?}");
         Ok(())
     })
@@ -200,39 +205,46 @@ fn proofs_posted_to_the_beacon_api_reach_every_verifier_and_unlock_proof_only_im
     ProofNetwork::run(standard(accepts_both()), |net| async move {
         let block_root = ready(&net, 3).await?;
 
-        let first = net.signed_execution_proof(0, block_root, 1, VALID_TYPE_1.to_vec(), PROVER)?;
+        let first =
+            net.signed_execution_proof(0, block_root, RETH_OPENVM, VALID_TYPE_1.to_vec(), PROVER)?;
         net.submit_execution_proof(0, first).await?;
-        net.wait_for_valid_proof(&[0, 3], block_root, 1, PROPAGATION_TIMEOUT)
+        net.wait_for_valid_proof(&[0, 3], block_root, RETH_OPENVM, PROPAGATION_TIMEOUT)
             .await?;
-        net.wait_for_cached_proof_types(&[0, 3], block_root, &[1], PROPAGATION_TIMEOUT)
+        net.wait_for_cached_proof_types(&[0, 3], block_root, &[RETH_OPENVM], PROPAGATION_TIMEOUT)
             .await?;
-        let status = net.proof_status(3, block_root, 1)?;
+        let status = net.proof_status(3, block_root, RETH_OPENVM)?;
         assert!(
             !status.payload_received,
             "one proof type must not unlock: {status:?}"
         );
 
-        let second = net.signed_execution_proof(0, block_root, 2, VALID_TYPE_2.to_vec(), PROVER)?;
+        let second =
+            net.signed_execution_proof(0, block_root, RETH_SP1, VALID_TYPE_2.to_vec(), PROVER)?;
         net.submit_execution_proof(0, second).await?;
-        net.wait_for_valid_proof(&[0, 3], block_root, 2, PROPAGATION_TIMEOUT)
+        net.wait_for_valid_proof(&[0, 3], block_root, RETH_SP1, PROPAGATION_TIMEOUT)
             .await?;
-        net.wait_for_cached_proof_types(&[0, 3], block_root, &[1, 2], PROPAGATION_TIMEOUT)
-            .await?;
+        net.wait_for_cached_proof_types(
+            &[0, 3],
+            block_root,
+            &[RETH_OPENVM, RETH_SP1],
+            PROPAGATION_TIMEOUT,
+        )
+        .await?;
         net.wait_for_payload_received(&[3], block_root, PROPAGATION_TIMEOUT)
             .await?;
-        let status = net.proof_status(3, block_root, 1)?;
+        let status = net.proof_status(3, block_root, RETH_OPENVM)?;
         assert!(status.envelope_stored, "{status:?}");
 
         // Retrieval through the Beacon API serves the cached proofs on every proof engine.
         for node in [0, 3] {
             assert_eq!(
                 net.retrieved_proof_types(node, block_root).await?,
-                vec![1, 2]
+                vec![RETH_OPENVM, RETH_SP1]
             );
         }
         // Nodes without a proof engine neither see the topic nor serve the endpoint.
         for node in [1, 2] {
-            for proof_type in [1, 2] {
+            for proof_type in [RETH_OPENVM, RETH_SP1] {
                 let status = net.proof_status(node, block_root, proof_type)?;
                 assert!(!status.valid_proof_verified, "{status:?}");
                 assert!(status.cached_proof_types.is_empty(), "{status:?}");
@@ -257,18 +269,23 @@ fn proving_execution_layer_keeps_a_proof_only_node_in_sync() {
         assert!(
             proven
                 .iter()
-                .all(|payload| payload.proof_types == vec![1, 2]),
+                .all(|payload| payload.proof_types == vec![RETH_OPENVM, RETH_SP1]),
             "{proven:?}"
         );
         for node in [0, 2] {
-            net.wait_for_cached_proof_types(&[node], block_root, &[1, 2], PROPAGATION_TIMEOUT)
-                .await?;
+            net.wait_for_cached_proof_types(
+                &[node],
+                block_root,
+                &[RETH_OPENVM, RETH_SP1],
+                PROPAGATION_TIMEOUT,
+            )
+            .await?;
             assert_eq!(
                 net.retrieved_proof_types(node, block_root).await?,
-                vec![1, 2]
+                vec![RETH_OPENVM, RETH_SP1]
             );
         }
-        let status = net.proof_status(2, block_root, 1)?;
+        let status = net.proof_status(2, block_root, RETH_OPENVM)?;
         assert!(status.payload_received, "{status:?}");
         assert!(status.envelope_stored, "{status:?}");
         info!(
@@ -288,7 +305,7 @@ fn proofs_from_two_provers_combine_to_unlock_import() {
     ProofNetwork::run(two_provers(), |net| async move {
         let block_root = wait_for_proven_payloads(&net, &[0, 1], 2, 3).await?;
 
-        for (node, proof_type) in [(0, 1), (1, 2)] {
+        for (node, proof_type) in [(0, RETH_OPENVM), (1, RETH_SP1)] {
             let proven = net.proven_payloads(node)?;
             assert!(
                 proven
@@ -302,11 +319,19 @@ fn proofs_from_two_provers_combine_to_unlock_import() {
                     .any(|payload| payload.block_root == block_root)
             );
         }
-        net.wait_for_cached_proof_types(&[0, 1, 2], block_root, &[1, 2], PROPAGATION_TIMEOUT)
-            .await?;
-        let status = net.proof_status(2, block_root, 1)?;
+        net.wait_for_cached_proof_types(
+            &[0, 1, 2],
+            block_root,
+            &[RETH_OPENVM, RETH_SP1],
+            PROPAGATION_TIMEOUT,
+        )
+        .await?;
+        let status = net.proof_status(2, block_root, RETH_OPENVM)?;
         assert!(status.payload_received, "{status:?}");
-        assert_eq!(net.retrieved_proof_types(2, block_root).await?, vec![1, 2]);
+        assert_eq!(
+            net.retrieved_proof_types(2, block_root).await?,
+            vec![RETH_OPENVM, RETH_SP1]
+        );
         Ok(())
     })
     .unwrap()
@@ -350,14 +375,14 @@ fn late_joining_proof_only_node_stalls_on_proofs_it_missed() {
             .wait_for_pending_payload(joiner, STARTUP_TIMEOUT)
             .await?;
         assert_eq!(stalled_root, first_proven, "{}", net.describe());
-        let stalled = net.proof_status(joiner, stalled_root, 1)?;
+        let stalled = net.proof_status(joiner, stalled_root, RETH_OPENVM)?;
         assert!(stalled.head_slot < join_slot, "{stalled:?}");
         assert!(stalled.cached_proof_types.is_empty(), "{stalled:?}");
 
         // The prover keeps proving; the joiner does not move.
         net.wait_for_head_slot(0, join_slot + 4, STARTUP_TIMEOUT)
             .await?;
-        let later = net.proof_status(joiner, stalled_root, 1)?;
+        let later = net.proof_status(joiner, stalled_root, RETH_OPENVM)?;
         assert_eq!(later.head_slot, stalled.head_slot, "{later:?}");
         assert!(!later.payload_received, "{later:?}");
         assert!(later.cached_proof_types.is_empty(), "{later:?}");
@@ -367,21 +392,20 @@ fn late_joining_proof_only_node_stalls_on_proofs_it_missed() {
         let recent = net
             .proven_payloads(0)?
             .into_iter()
-            .filter(|payload| payload.slot > join_slot)
-            .next_back()
+            .rfind(|payload| payload.slot > join_slot)
             .ok_or("no payload proven after the join")?;
-        let dropped = net.proof_status(joiner, recent.block_root, 1)?;
+        let dropped = net.proof_status(joiner, recent.block_root, RETH_OPENVM)?;
         assert!(!dropped.block_known, "{dropped:?}");
         assert!(!dropped.valid_proof_verified, "{dropped:?}");
 
         // The missed proofs still exist on the prover's node; the joiner has no way to ask.
         assert_eq!(
             net.retrieved_proof_types(0, stalled_root).await?,
-            vec![1, 2]
+            vec![RETH_OPENVM, RETH_SP1]
         );
         assert_eq!(
             net.retrieved_proof_types(joiner, stalled_root).await?,
-            Vec::<u8>::new()
+            Vec::<ProofType>::new()
         );
         info!(
             ?stalled_root,
@@ -421,21 +445,21 @@ fn syncing_execution_layer_stalls_a_node_at_the_head_until_it_recovers() {
             STARTUP_TIMEOUT,
             |net| {
                 let head = net.head_block_root(2)?;
-                let status = net.proof_status(2, head, 0)?;
+                let status = net.proof_status(2, head, RETH_OPENVM)?;
                 stalled_root = (!status.payload_received).then_some(head);
                 Ok(stalled_root.is_some())
             },
         )
         .await?;
         let stalled_root = stalled_root.ok_or("no stalled block")?;
-        let stalled = net.proof_status(2, stalled_root, 0)?;
+        let stalled = net.proof_status(2, stalled_root, RETH_OPENVM)?;
         assert!(!stalled.envelope_pending, "{stalled:?}");
         assert!(!stalled.envelope_stored, "{stalled:?}");
 
         // The chain moves on without node 2.
         net.wait_for_head_slot(0, stalled.head_slot + 4, STARTUP_TIMEOUT)
             .await?;
-        let later = net.proof_status(2, stalled_root, 0)?;
+        let later = net.proof_status(2, stalled_root, RETH_OPENVM)?;
         assert_eq!(later.head_slot, stalled.head_slot, "{later:?}");
         assert!(!later.payload_received, "{later:?}");
 
@@ -445,7 +469,7 @@ fn syncing_execution_layer_stalls_a_node_at_the_head_until_it_recovers() {
             Ok(net.head_slot(2)? + 1 >= net.head_slot(0)?)
         })
         .await?;
-        let recovered = net.proof_status(2, stalled_root, 0)?;
+        let recovered = net.proof_status(2, stalled_root, RETH_OPENVM)?;
         assert!(recovered.payload_received, "{recovered:?}");
         info!(
             ?stalled_root,
@@ -490,10 +514,10 @@ fn range_sync_imports_payloads_a_syncing_execution_layer_never_verified() {
         // paths reject the optimistic status its execution layer produces. The historical
         // block may be finalized and pruned from fork choice by now, so check the store for
         // it and fork choice for the head's parent, which is still unfinalized.
-        let historical_status = net.proof_status(joiner, historical, 0)?;
+        let historical_status = net.proof_status(joiner, historical, RETH_OPENVM)?;
         assert!(historical_status.envelope_stored, "{historical_status:?}");
         let recent = net.head_parent_block_root(joiner)?;
-        let recent_status = net.proof_status(joiner, recent, 0)?;
+        let recent_status = net.proof_status(joiner, recent, RETH_OPENVM)?;
         assert!(recent_status.payload_received, "{recent_status:?}");
         assert!(recent_status.envelope_stored, "{recent_status:?}");
         // Both are reported as settled even though the execution layer never validated them.
@@ -522,7 +546,11 @@ fn larger_network_delivers_proofs_to_every_verifier() {
         net.wait_for(
             "the second proof-only node to hold the same payload",
             PROPAGATION_TIMEOUT,
-            |net| Ok(net.proof_status(5, block_root, 1)?.envelope_pending),
+            |net| {
+                Ok(net
+                    .proof_status(5, block_root, RETH_OPENVM)?
+                    .envelope_pending)
+            },
         )
         .await?;
 
@@ -533,12 +561,17 @@ fn larger_network_delivers_proofs_to_every_verifier() {
             net.wait_for_valid_proof(&[0, 3, 4, 5], block_root, proof_type, PROPAGATION_TIMEOUT)
                 .await?;
         }
-        net.wait_for_cached_proof_types(&[0, 3, 4, 5], block_root, &[1, 2], PROPAGATION_TIMEOUT)
-            .await?;
+        net.wait_for_cached_proof_types(
+            &[0, 3, 4, 5],
+            block_root,
+            &[RETH_OPENVM, RETH_SP1],
+            PROPAGATION_TIMEOUT,
+        )
+        .await?;
         net.wait_for_payload_received(&[4, 5], block_root, PROPAGATION_TIMEOUT)
             .await?;
         for node in [1, 2] {
-            let status = net.proof_status(node, block_root, 1)?;
+            let status = net.proof_status(node, block_root, RETH_OPENVM)?;
             assert!(!status.valid_proof_verified, "{status:?}");
             assert!(status.cached_proof_types.is_empty(), "{status:?}");
         }
@@ -557,7 +590,8 @@ fn invalid_proof_data_is_rejected_by_verifiers_that_do_not_accept_it() {
     ProofNetwork::run(standard(vec![VALID_TYPE_1.to_vec()]), |net| async move {
         let block_root = ready(&net, 3).await?;
 
-        let bogus = net.signed_execution_proof(0, block_root, 1, INVALID.to_vec(), PROVER)?;
+        let bogus =
+            net.signed_execution_proof(0, block_root, RETH_OPENVM, INVALID.to_vec(), PROVER)?;
         let error = net
             .submit_execution_proof(0, bogus.clone())
             .await
@@ -572,29 +606,39 @@ fn invalid_proof_data_is_rejected_by_verifiers_that_do_not_accept_it() {
         })
         .await?;
         for node in [0, 3] {
-            let status = net.proof_status(node, block_root, 1)?;
+            let status = net.proof_status(node, block_root, RETH_OPENVM)?;
             assert!(!status.valid_proof_verified, "{status:?}");
             assert!(status.cached_proof_types.is_empty(), "{status:?}");
         }
 
         // A rejected proof does not suppress an honest prover of the same type.
-        let honest =
-            net.signed_execution_proof(0, block_root, 1, VALID_TYPE_1.to_vec(), SECOND_PROVER)?;
+        let honest = net.signed_execution_proof(
+            0,
+            block_root,
+            RETH_OPENVM,
+            VALID_TYPE_1.to_vec(),
+            SECOND_PROVER,
+        )?;
         net.submit_execution_proof(0, honest).await?;
-        net.wait_for_valid_proof(&[0, 3], block_root, 1, PROPAGATION_TIMEOUT)
+        net.wait_for_valid_proof(&[0, 3], block_root, RETH_OPENVM, PROPAGATION_TIMEOUT)
             .await?;
-        net.wait_for_cached_proof_types(&[0, 3], block_root, &[1], PROPAGATION_TIMEOUT)
+        net.wait_for_cached_proof_types(&[0, 3], block_root, &[RETH_OPENVM], PROPAGATION_TIMEOUT)
             .await?;
 
         // Node 0 accepts the type 2 bytes, node 3 does not.
         let score_before = net.peer_score(3, 0)?.ok_or("node 3 lost node 0")?;
         let disputed =
-            net.signed_execution_proof(0, block_root, 2, VALID_TYPE_2.to_vec(), PROVER)?;
+            net.signed_execution_proof(0, block_root, RETH_SP1, VALID_TYPE_2.to_vec(), PROVER)?;
         net.submit_execution_proof(0, disputed).await?;
-        net.wait_for_valid_proof(&[0], block_root, 2, PROPAGATION_TIMEOUT)
+        net.wait_for_valid_proof(&[0], block_root, RETH_SP1, PROPAGATION_TIMEOUT)
             .await?;
-        net.wait_for_cached_proof_types(&[0], block_root, &[1, 2], PROPAGATION_TIMEOUT)
-            .await?;
+        net.wait_for_cached_proof_types(
+            &[0],
+            block_root,
+            &[RETH_OPENVM, RETH_SP1],
+            PROPAGATION_TIMEOUT,
+        )
+        .await?;
         net.wait_for(
             "node 3 to penalise node 0 again",
             PROPAGATION_TIMEOUT,
@@ -605,43 +649,14 @@ fn invalid_proof_data_is_rejected_by_verifiers_that_do_not_accept_it() {
             },
         )
         .await?;
-        let status = net.proof_status(3, block_root, 2)?;
+        let status = net.proof_status(3, block_root, RETH_SP1)?;
         assert!(!status.valid_proof_verified, "{status:?}");
-        assert_eq!(status.cached_proof_types, vec![1], "{status:?}");
+        assert_eq!(status.cached_proof_types, vec![RETH_OPENVM], "{status:?}");
         assert!(!status.payload_received, "{status:?}");
-        assert_eq!(net.retrieved_proof_types(3, block_root).await?, vec![1]);
-        Ok(())
-    })
-    .unwrap()
-}
-
-/// A proof type outside the specification is rejected before any verification work, by the
-/// Beacon API and by gossip peers, which penalise the sender.
-#[test]
-#[cfg_attr(debug_assertions, ignore = "too slow in debug mode")]
-fn unsupported_proof_type_is_rejected_before_verification() {
-    ProofNetwork::run(standard(accepts_both()), |net| async move {
-        let block_root = ready(&net, 3).await?;
-
-        let proof = net.signed_execution_proof(0, block_root, 4, VALID_TYPE_1.to_vec(), PROVER)?;
-        let error = net
-            .submit_execution_proof(0, proof.clone())
-            .await
-            .expect_err("proof type 4 is unsupported");
-        assert!(error.contains("UnsupportedProofType"), "{error}");
-
-        net.publish_execution_proof(0, proof)?;
-        net.wait_for("node 3 to penalise node 0", PROPAGATION_TIMEOUT, |net| {
-            Ok(net
-                .peer_score(3, 0)?
-                .is_some_and(|score| score < PENALISED_SCORE))
-        })
-        .await?;
-        for node in [0, 3] {
-            let status = net.proof_status(node, block_root, 4)?;
-            assert!(!status.valid_proof_verified, "{status:?}");
-            assert!(status.cached_proof_types.is_empty(), "{status:?}");
-        }
+        assert_eq!(
+            net.retrieved_proof_types(3, block_root).await?,
+            vec![RETH_OPENVM]
+        );
         Ok(())
     })
     .unwrap()
@@ -663,13 +678,21 @@ fn proof_only_node_can_submit_its_own_proofs() {
             net.wait_for_valid_proof(&[1], block_root, proof_type, PROPAGATION_TIMEOUT)
                 .await?;
         }
-        net.wait_for_cached_proof_types(&[1], block_root, &[1, 2], PROPAGATION_TIMEOUT)
-            .await?;
+        net.wait_for_cached_proof_types(
+            &[1],
+            block_root,
+            &[RETH_OPENVM, RETH_SP1],
+            PROPAGATION_TIMEOUT,
+        )
+        .await?;
         net.wait_for_payload_received(&[1], block_root, PROPAGATION_TIMEOUT)
             .await?;
-        assert_eq!(net.retrieved_proof_types(1, block_root).await?, vec![1, 2]);
+        assert_eq!(
+            net.retrieved_proof_types(1, block_root).await?,
+            vec![RETH_OPENVM, RETH_SP1]
+        );
 
-        let status = net.proof_status(0, block_root, 1)?;
+        let status = net.proof_status(0, block_root, RETH_OPENVM)?;
         assert!(status.payload_received, "{status:?}");
         assert!(!status.valid_proof_verified, "{status:?}");
         Ok(())
