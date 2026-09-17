@@ -141,13 +141,12 @@ async fn wait_for_proven_payloads(
     last.ok_or("no proved payload imported".to_string())
 }
 
-/// Wait for genesis and full connectivity, then return the first full block: nodes with an
-/// execution layer have imported its payload, every proof engine knows it, and the proof-only
-/// node `proof_only` holds its envelope pending proofs.
+/// Wait for genesis and for every node to connect to the boot node, then return the first full
+/// block: nodes with an execution layer have imported its payload, every proof engine knows it,
+/// and the proof-only node `proof_only` holds its envelope pending proofs.
 async fn ready(net: &ProofNetwork, proof_only: usize) -> Result<Hash256, String> {
     net.wait_for_genesis().await?;
-    let all: Vec<usize> = (0..net.node_count()).collect();
-    net.wait_for_peers(&all, net.node_count() - 1, STARTUP_TIMEOUT)
+    net.wait_for_peers(&[0], net.node_count() - 1, STARTUP_TIMEOUT)
         .await?;
     let block_root = net
         .wait_for_pending_payload(proof_only, STARTUP_TIMEOUT)
