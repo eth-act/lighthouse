@@ -16,7 +16,7 @@ use state_processing::builder_deposits_cache::OnboardBuildersCache;
 use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
 use std::sync::Arc;
 use tree_hash::TreeHash;
-use types::execution::{ExecutionProof, SignedExecutionProofEnvelope};
+use types::execution::{ExecutionProof, ExecutionProofEnvelope, SignedExecutionProofEnvelope};
 use types::{ChainSpec, Domain, EthSpec, Hash256, SignedRoot, Slot};
 
 pub struct GossipVerificationContext<'a, T: BeaconChainTypes> {
@@ -75,9 +75,8 @@ impl GossipVerifiedExecutionProof {
             return Err(Error::ValidProofAlreadyKnown);
         }
 
+        // [IGNORE] Deduplication rules, checked before signature verification.
         let proof_root = proof.message.tree_hash_root();
-
-        // [IGNORE] Deduplication rules, checked before cryptographic work.
         match ctx
             .observed_execution_proofs
             .read()
@@ -141,58 +140,17 @@ impl GossipVerifiedExecutionProof {
             }
         }
 
-        let block = ctx
-            .store
-            .get_blinded_block(&block_root)
-            .map_err(BeaconChainError::from)?
-            .ok_or_else(|| {
-                Error::BeaconChainError(Box::new(BeaconChainError::MissingBeaconBlock(block_root)))
-            })?;
-        let bid = &block
-            .message()
-            .body()
-            .signed_execution_payload_bid()
-            .map_err(BeaconChainError::from)?
-            .message;
-        let versioned_hashes = ProgressiveVariableList::new(
-            bid.blob_kzg_commitments
-                .iter()
-                .map(kzg_commitment_to_versioned_hash)
-                .collect(),
-        );
-        // [IGNORE] The payload has been received and executed locally. Without an engine the
-        // store only gains the envelope after an import that waits on proofs, so reading the
-        // store alone would deadlock. Try the pending cache first, then the store for blocks
-        // already imported and evicted from it.
-        let payload_envelope = ctx
-            .pending_payload_cache
-            .get_executed_payload_envelope(&block_root)
-            .map(Ok)
-            .unwrap_or_else(|| -> Result<_, Error> {
-                ctx.store
-                    .get_payload_envelope(&block_root)
-                    .map_err(BeaconChainError::from)?
-                    .map(Arc::new)
-                    .ok_or(Error::PayloadUnavailable {
-                        beacon_block_root: block_root,
-                    })
-            })?;
-        let new_payload_request = NewPayloadRequestGloas {
-            execution_payload: &payload_envelope.message.payload,
-            versioned_hashes,
-            parent_beacon_block_root: payload_envelope.message.parent_beacon_block_root,
-            execution_requests: &payload_envelope.message.execution_requests,
-        };
-        let execution_proof = ExecutionProof::new(
-            proof.message.proof_data.clone(),
-            proof_type,
-            new_payload_request.tree_hash_root(),
+        // [IGNORE] The execution proof can be reconstructed. If the execution payload has not yet
+        // been received, ignore the envelope.
+        let execution_proof = reconstruct_execution_proof::<T>(
+            &proof.message,
+            ctx.store,
+            ctx.pending_payload_cache,
             ctx.spec.deposit_chain_id,
-        );
+        )?;
 
-        // Only record the validator's attempt after the signature binds `validator_index` and the
-        // execution proof can be reconstructed; recording earlier would let unauthenticated or
-        // incomplete messages suppress honest provers.
+        // Only record the validator's attempt after the signature binds `validator_index`;
+        // recording earlier would let unauthenticated messages suppress honest provers.
         if !ctx
             .observed_execution_proofs
             .write()
@@ -224,6 +182,62 @@ impl GossipVerifiedExecutionProof {
             .observe_valid_proof(block_root, proof_type);
         Ok(Self { proof, block_slot })
     }
+}
+
+fn reconstruct_execution_proof<T: BeaconChainTypes>(
+    proof_envelope: &ExecutionProofEnvelope,
+    store: &BeaconStore<T>,
+    pending_payload_cache: &PendingPayloadCache<T>,
+    chain_id: u64,
+) -> Result<ExecutionProof, Error> {
+    let block_root = proof_envelope.beacon_block_root;
+    let block = store
+        .get_blinded_block(&block_root)
+        .map_err(BeaconChainError::from)?
+        .ok_or_else(|| {
+            Error::BeaconChainError(Box::new(BeaconChainError::MissingBeaconBlock(block_root)))
+        })?;
+    let bid = &block
+        .message()
+        .body()
+        .signed_execution_payload_bid()
+        .map_err(BeaconChainError::from)?
+        .message;
+    let versioned_hashes = ProgressiveVariableList::new(
+        bid.blob_kzg_commitments
+            .iter()
+            .map(kzg_commitment_to_versioned_hash)
+            .collect(),
+    );
+
+    // Without an execution engine, the store only gains the envelope after an import that waits
+    // on proofs. Try the pending cache first, then the store for blocks already imported and
+    // evicted from it.
+    let payload_envelope = pending_payload_cache
+        .get_executed_payload_envelope(&block_root)
+        .map(Ok)
+        .unwrap_or_else(|| -> Result<_, Error> {
+            store
+                .get_payload_envelope(&block_root)
+                .map_err(BeaconChainError::from)?
+                .map(Arc::new)
+                .ok_or(Error::PayloadUnavailable {
+                    beacon_block_root: block_root,
+                })
+        })?;
+    let new_payload_request = NewPayloadRequestGloas {
+        execution_payload: &payload_envelope.message.payload,
+        versioned_hashes,
+        parent_beacon_block_root: payload_envelope.message.parent_beacon_block_root,
+        execution_requests: &payload_envelope.message.execution_requests,
+    };
+
+    Ok(ExecutionProof::new(
+        proof_envelope.proof_data.clone(),
+        proof_envelope.proof_type,
+        new_payload_request.tree_hash_root(),
+        chain_id,
+    ))
 }
 
 impl<T: BeaconChainTypes> BeaconChain<T> {

@@ -187,7 +187,7 @@ mod tests {
         let duplicate = ProofEngineConfig::new(vec![execution_proof.clone(), execution_proof]);
         assert_eq!(
             duplicate.unwrap_err(),
-            "duplicate configuration for proof type `1`"
+            "duplicate configuration for proof type `RethOpenvm`"
         );
     }
 
