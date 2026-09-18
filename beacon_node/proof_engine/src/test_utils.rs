@@ -50,7 +50,7 @@ mod tests {
         let proof = |proof_data| {
             ExecutionProof::new(
                 ProofData::new(proof_data).expect("proof data within bound"),
-                ProofType::RethSp1,
+                ProofType::RethSP1,
                 Hash256::default(),
                 1,
             )

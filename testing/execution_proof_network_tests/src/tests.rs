@@ -6,8 +6,8 @@ use std::time::Duration;
 use tracing::info;
 use types::{Hash256, Slot, execution::ProofType};
 
-const RETH_OPENVM: ProofType = ProofType::RethOpenvm;
-const RETH_SP1: ProofType = ProofType::RethSp1;
+const RETH_OPENVM: ProofType = ProofType::RethOpenVM;
+const RETH_SP1: ProofType = ProofType::RethSP1;
 const VALID_TYPE_1: &[u8] = b"execution_proof_network_tests: valid proof, type 1";
 const VALID_TYPE_2: &[u8] = b"execution_proof_network_tests: valid proof, type 2";
 const INVALID: &[u8] = b"execution_proof_network_tests: proof no engine accepts";
