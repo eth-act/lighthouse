@@ -2,9 +2,10 @@
 //!
 //! The fixtures are Ethrex v26.0.0 and reth v0.1.0-rc.3 guest artifacts copied from
 //! `eth-act/zkboost` at commit `7f99d70a679bd0c0e8951f9d2797183340f80262`. Their program
-//! verification keys are registered by `eth-act/ere-guests` v0.17.0, the verifier version used
-//! by this crate. zkBoost does not publish a Zesu proof fixture at that commit, so Zesu is covered
-//! by configuration tests but not by this known-valid proof suite.
+//! verification keys are registered by `eth-act/ere-guests` v0.17.0 and verified here with ERE
+//! v0.17.1, the verifier release pinned by this crate. zkBoost does not publish a Zesu proof
+//! fixture at that commit, so Zesu is covered by configuration tests but not by this known-valid
+//! proof suite.
 #![cfg(feature = "ere-verifier")]
 
 use proof_engine::ere::EreProofEngine;

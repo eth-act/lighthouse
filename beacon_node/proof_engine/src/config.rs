@@ -5,8 +5,9 @@ use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::{collections::HashSet, str::FromStr};
 use types::execution::ProofType;
 
-// Program verification keys registered by eth-act/ere-guests v0.17.0. The client and release
-// versions identify the guest binaries that produced the keys, not the ERE verifier version.
+// Program verification keys registered by eth-act/ere-guests v0.17.0 for use with the ERE
+// v0.17.1 verifier pinned by build/ere_verifier.rs. The client and release versions below
+// identify the guest binaries that produced the keys.
 // Ethrex stateless-validator guests from ethrex v26.0.0.
 const DEFAULT_ETHREX_OPENVM_PROGRAM_VK: &str = concat!(
     "005793a02300aef9526800ee5a881400a80e7d2600ba7f8b4500f002973500b2c72d61005e74577006030619068000a2",
@@ -131,7 +132,7 @@ impl ProofEngineConfig {
 
 impl Default for ProofEngineConfig {
     /// Built-in verifier configuration for every guest registered by `eth-act/ere-guests` at tag
-    /// `v0.17.0`, the tag this crate's verifier is built from.
+    /// `v0.17.0`, for use with the ERE v0.17.1 verifier pinned by `build/ere_verifier.rs`.
     /// The proof-type assignments are provisional while EIP-8025 is under development.
     fn default() -> Self {
         Self::new(
@@ -265,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn default_config_matches_all_ere_guests_v0_17_0_verifiers() {
+    fn default_config_matches_all_ere_guests_v0_17_0_program_keys() {
         let config = ProofEngineConfig::default();
         let expected = [
             (
