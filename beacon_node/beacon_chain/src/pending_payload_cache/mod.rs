@@ -1067,7 +1067,7 @@ mod data_availability_checker_tests {
         assert!(s.cache.get_execution_proofs(&Hash256::default()).is_empty());
 
         assert_missing(s.put_proof(ProofType::RethZisk));
-        assert_missing(s.put_proof(ProofType::RethSp1));
+        assert_missing(s.put_proof(ProofType::RethSP1));
         assert_missing(s.put_proof(ProofType::RethZisk));
 
         let proof_types = s
@@ -1076,7 +1076,7 @@ mod data_availability_checker_tests {
             .iter()
             .map(|proof| proof.proof_type())
             .collect::<Vec<_>>();
-        assert_eq!(proof_types, vec![ProofType::RethSp1, ProofType::RethZisk]);
+        assert_eq!(proof_types, vec![ProofType::RethSP1, ProofType::RethZisk]);
         assert!(s.cache.get_execution_proofs(&Hash256::default()).is_empty());
     }
 

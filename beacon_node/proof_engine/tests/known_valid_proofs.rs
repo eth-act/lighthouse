@@ -1,9 +1,10 @@
 //! End-to-end verification of known-valid execution proofs.
 //!
-//! The fixtures are the reth stateless-validator guest v0.1.0-rc.3 artifacts published by
-//! `eth-act/ere-guests` at tag `v0.17.0`, the tag this crate's verifier is built from. They are
-//! checked in so that the built-in program verification keys cannot drift away from the guest
-//! they are meant to verify without a test failing.
+//! The fixtures are Ethrex v26.0.0 and reth v0.1.0-rc.3 guest artifacts copied from
+//! `eth-act/zkboost` at commit `7f99d70a679bd0c0e8951f9d2797183340f80262`. Their program
+//! verification keys are registered by `eth-act/ere-guests` v0.17.0, the verifier version used
+//! by this crate. zkBoost does not publish a Zesu proof fixture at that commit, so Zesu is covered
+//! by configuration tests but not by this known-valid proof suite.
 #![cfg(feature = "ere-verifier")]
 
 use proof_engine::ere::EreProofEngine;
@@ -14,13 +15,25 @@ use types::Hash256;
 use types::execution::{ExecutionProof, ProofData, ProofType, PublicInput};
 
 /// The proof fixture for each proof type, alongside the guest that produced it.
-const PROOFS: [(ProofType, &str); 3] = [
+const PROOFS: [(ProofType, &str); 6] = [
     (
-        ProofType::RethOpenvm,
+        ProofType::EthrexOpenVM,
+        "stateless-validator-ethrex-openvm-v2.1.0-preview.proof",
+    ),
+    (
+        ProofType::EthrexSP1,
+        "stateless-validator-ethrex-sp1-v6.4.0.proof",
+    ),
+    (
+        ProofType::EthrexZisk,
+        "stateless-validator-ethrex-zisk-v1.1.0-alpha.proof",
+    ),
+    (
+        ProofType::RethOpenVM,
         "stateless-validator-reth-openvm-v2.1.0-preview.proof",
     ),
     (
-        ProofType::RethSp1,
+        ProofType::RethSP1,
         "stateless-validator-reth-sp1-v6.4.0.proof",
     ),
     (
@@ -165,7 +178,7 @@ fn corrupted_sp1_nested_lengths_are_rejected() {
         }
         let proof = ExecutionProof {
             proof_data: ProofData::new(data).expect("within the bound"),
-            proof_type: ProofType::RethSp1,
+            proof_type: ProofType::RethSP1,
             public_input: public_input(),
         };
         assert_eq!(

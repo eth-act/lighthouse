@@ -180,7 +180,7 @@ async fn execution_proofs_require_proof_engine() {
         .unwrap_err();
     assert_eq!(err.status(), Some(StatusCode::NOT_IMPLEMENTED));
 
-    let proof = tester.proof(ProofType::RethOpenvm, &VALID_PROOF_DATA, 0);
+    let proof = tester.proof(ProofType::RethOpenVM, &VALID_PROOF_DATA, 0);
     let err = client
         .post_beacon_execution_proofs(&list(vec![proof]))
         .await
@@ -221,8 +221,8 @@ async fn submit_and_get_execution_proofs() {
             .is_none()
     );
 
-    let proof_1 = tester.proof(ProofType::RethOpenvm, &VALID_PROOF_DATA, 0);
-    let proof_2 = tester.proof(ProofType::RethSp1, &VALID_PROOF_DATA, 1);
+    let proof_1 = tester.proof(ProofType::RethOpenVM, &VALID_PROOF_DATA, 0);
+    let proof_2 = tester.proof(ProofType::RethSP1, &VALID_PROOF_DATA, 1);
     tester.published_proofs();
 
     client
@@ -245,7 +245,7 @@ async fn submit_and_get_execution_proofs() {
     // So does another prover's proof for a type that is already proven.
     client
         .post_beacon_execution_proofs(&list(vec![tester.proof(
-            ProofType::RethOpenvm,
+            ProofType::RethOpenVM,
             &VALID_PROOF_DATA,
             2,
         )]))
@@ -380,7 +380,7 @@ async fn submit_execution_proofs_rejections() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     let too_many = (0..5)
-        .map(|i| tester.proof(ProofType::RethOpenvm, &VALID_PROOF_DATA, 10 + i))
+        .map(|i| tester.proof(ProofType::RethOpenVM, &VALID_PROOF_DATA, 10 + i))
         .collect::<Vec<_>>();
     let response = reqwest::Client::new()
         .post(url)

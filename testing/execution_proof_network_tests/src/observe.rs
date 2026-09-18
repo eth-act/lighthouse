@@ -7,7 +7,7 @@ use types::{Hash256, Slot, execution::ProofType};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 /// A concrete type for status snapshots whose predicate is unrelated to one proof type.
-const STATUS_PROOF_TYPE: ProofType = ProofType::RethOpenvm;
+const STATUS_PROOF_TYPE: ProofType = ProofType::RethOpenVM;
 
 /// What one node knows about a block and the proofs of one type for it.
 #[derive(Debug, Clone, PartialEq, Eq)]

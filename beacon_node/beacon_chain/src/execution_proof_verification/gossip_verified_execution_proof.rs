@@ -327,7 +327,7 @@ mod tests {
 
         let mock_proof = ExecutionProof::new(
             ProofData::new(valid_proof_data).expect("valid proof data"),
-            ProofType::RethOpenvm,
+            ProofType::RethOpenVM,
             Hash256::default(),
             chain.spec.deposit_chain_id,
         );
@@ -351,7 +351,7 @@ mod tests {
         );
 
         let unknown_root = Hash256::repeat_byte(0xaa);
-        let empty_proof = execution_proof(unknown_root, ProofType::RethOpenvm, vec![], 0);
+        let empty_proof = execution_proof(unknown_root, ProofType::RethOpenVM, vec![], 0);
         assert!(matches!(
             chain
                 .verify_execution_proof_for_gossip(Arc::new(empty_proof))
@@ -359,7 +359,7 @@ mod tests {
             Err(Error::EmptyProofData)
         ));
 
-        let proof_type = ProofType::RethOpenvm;
+        let proof_type = ProofType::RethOpenVM;
         let exact_proof = execution_proof(genesis_root, proof_type, vec![1], 0);
         assert!(
             chain
@@ -407,7 +407,7 @@ mod tests {
             Err(Error::ValidProofAlreadyKnown)
         ));
 
-        let second_proof_type = ProofType::RethSp1;
+        let second_proof_type = ProofType::RethSP1;
         let prior_proof = execution_proof(genesis_root, second_proof_type, vec![3], 0);
         assert!(
             chain
@@ -502,7 +502,7 @@ mod tests {
             "the envelope must still be absent from the store"
         );
 
-        let mut proof = execution_proof(genesis_root, ProofType::RethOpenvm, valid_proof_data, 1);
+        let mut proof = execution_proof(genesis_root, ProofType::RethOpenVM, valid_proof_data, 1);
         let fork_name = chain.spec.fork_name_at_slot::<E>(Slot::new(0));
         let domain = chain.spec.compute_domain(
             Domain::ExecutionProof,
