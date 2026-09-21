@@ -5,7 +5,6 @@ mod config;
 pub mod ere;
 pub mod test_utils;
 
-use std::fmt;
 use std::sync::Arc;
 use types::execution::{ExecutionProof, ProofType};
 
@@ -15,17 +14,20 @@ pub use config::{ExecutionProofConfig, ProofEngineConfig};
 #[derive(Debug)]
 pub enum ProofEngineError {
     /// The configured proof verifier could not initialize or complete verification.
-    ProofVerifierError(String),
+    ProofVerifierError {
+        message: String,
+        error_type: &'static str,
+    },
     /// No verifier is configured for the proof's EIP-8025 proof type.
     UnconfiguredProofType(ProofType),
 }
 
-impl fmt::Display for ProofEngineError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::ProofVerifierError(_) => "proof_verifier_error",
+impl ProofEngineError {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::ProofVerifierError { error_type, .. } => error_type,
             Self::UnconfiguredProofType(_) => "unconfigured_proof_type",
-        })
+        }
     }
 }
 
@@ -39,12 +41,12 @@ pub enum ProofVerificationOutcome {
     Invalid,
 }
 
-impl fmt::Display for ProofVerificationOutcome {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
+impl ProofVerificationOutcome {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
             Self::Valid => "valid",
             Self::Invalid => "invalid",
-        })
+        }
     }
 }
 
@@ -92,14 +94,18 @@ mod tests {
 
     #[test]
     fn proof_verification_labels_are_stable() {
-        assert_eq!(ProofVerificationOutcome::Valid.to_string(), "valid");
-        assert_eq!(ProofVerificationOutcome::Invalid.to_string(), "invalid");
+        assert_eq!(ProofVerificationOutcome::Valid.as_str(), "valid");
+        assert_eq!(ProofVerificationOutcome::Invalid.as_str(), "invalid");
         assert_eq!(
-            ProofEngineError::ProofVerifierError("failed".to_string()).to_string(),
-            "proof_verifier_error"
+            ProofEngineError::ProofVerifierError {
+                message: "failed".to_string(),
+                error_type: "internal",
+            }
+            .as_str(),
+            "internal"
         );
         assert_eq!(
-            ProofEngineError::UnconfiguredProofType(ProofType::RethSP1).to_string(),
+            ProofEngineError::UnconfiguredProofType(ProofType::RethSP1).as_str(),
             "unconfigured_proof_type"
         );
     }

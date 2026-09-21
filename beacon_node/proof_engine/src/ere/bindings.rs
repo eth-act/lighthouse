@@ -23,6 +23,18 @@ pub(super) enum EreVerifierError {
 }
 
 impl EreVerifierError {
+    pub(super) const fn as_str(&self) -> &'static str {
+        match self {
+            Self::NullPointer => "null_pointer",
+            Self::BadZkvmKind => "bad_zkvm_kind",
+            Self::DecodeProgramVk => "decode_program_vk",
+            Self::DecodeProof => "decode_proof",
+            Self::Verify => "verify",
+            Self::Internal => "internal",
+            Self::Unknown(_) => "unknown",
+        }
+    }
+
     fn from_code(code: i32) -> Self {
         match code {
             1 => Self::NullPointer,
@@ -142,17 +154,19 @@ mod tests {
     #[test]
     fn decodes_ere_status_codes() {
         let statuses = [
-            (1, EreVerifierError::NullPointer),
-            (2, EreVerifierError::BadZkvmKind),
-            (3, EreVerifierError::DecodeProgramVk),
-            (4, EreVerifierError::DecodeProof),
-            (5, EreVerifierError::Verify),
-            (6, EreVerifierError::Internal),
-            (99, EreVerifierError::Unknown(99)),
+            (1, EreVerifierError::NullPointer, "null_pointer"),
+            (2, EreVerifierError::BadZkvmKind, "bad_zkvm_kind"),
+            (3, EreVerifierError::DecodeProgramVk, "decode_program_vk"),
+            (4, EreVerifierError::DecodeProof, "decode_proof"),
+            (5, EreVerifierError::Verify, "verify"),
+            (6, EreVerifierError::Internal, "internal"),
+            (99, EreVerifierError::Unknown(99), "unknown"),
         ];
 
-        for (code, expected) in statuses {
-            assert_eq!(EreVerifierError::from_code(code), expected);
+        for (code, expected, expected_label) in statuses {
+            let error = EreVerifierError::from_code(code);
+            assert_eq!(error, expected);
+            assert_eq!(error.as_str(), expected_label);
         }
     }
 }

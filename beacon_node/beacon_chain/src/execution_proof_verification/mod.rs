@@ -120,8 +120,11 @@ mod tests {
             ("rejected", "invalid_signature")
         );
         assert_eq!(
-            Error::ProofEngine(ProofEngineError::ProofVerifierError("failed".to_string()))
-                .metric_labels(),
+            Error::ProofEngine(ProofEngineError::ProofVerifierError {
+                message: "failed".to_string(),
+                error_type: "internal",
+            })
+            .metric_labels(),
             ("error", "proof_engine")
         );
         assert_eq!(

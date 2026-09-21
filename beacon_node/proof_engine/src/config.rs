@@ -123,9 +123,10 @@ impl ProofEngineConfig {
 
         #[cfg(not(feature = "ere-verifier"))]
         {
-            Err(ProofEngineError::ProofVerifierError(
-                "Lighthouse was built without `ere-verifier`".to_string(),
-            ))
+            Err(ProofEngineError::ProofVerifierError {
+                message: "Lighthouse was built without `ere-verifier`".to_string(),
+                error_type: "proof_verifier_error",
+            })
         }
     }
 }

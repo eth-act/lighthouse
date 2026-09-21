@@ -174,15 +174,15 @@ impl GossipVerifiedExecutionProof {
         let proof_engine_started = Instant::now();
         let proof_engine_result = proof_engine.verify_execution_proof(&execution_proof);
         let (proof_engine_outcome, proof_engine_error_type) = match &proof_engine_result {
-            Ok(outcome) => (outcome.to_string(), "none".to_string()),
-            Err(error) => ("error".to_string(), error.to_string()),
+            Ok(outcome) => (outcome.as_str(), "none"),
+            Err(error) => ("error", error.as_str()),
         };
         metrics::observe_timer_vec(
             &metrics::EXECUTION_PROOF_ENGINE_VERIFICATION_SECONDS,
             &[
                 metrics::execution_proof_type_label(proof_type),
-                &proof_engine_outcome,
-                &proof_engine_error_type,
+                proof_engine_outcome,
+                proof_engine_error_type,
             ],
             proof_engine_started.elapsed(),
         );
