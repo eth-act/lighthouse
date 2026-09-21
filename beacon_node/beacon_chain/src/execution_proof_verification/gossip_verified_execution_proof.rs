@@ -280,25 +280,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         .await;
         let (outcome, reason) = match &result {
             Ok(_) => ("accepted", "valid"),
-            Err(error) => {
-                let outcome = match error {
-                    Error::ProofAlreadySeen
-                    | Error::ValidProofAlreadyKnown
-                    | Error::DuplicateFromValidator { .. }
-                    | Error::UnknownBlockRoot { .. }
-                    | Error::PastFinalizedSlot { .. }
-                    | Error::PayloadUnavailable { .. } => "ignored",
-                    Error::EmptyProofData
-                    | Error::UnknownValidatorIndex(_)
-                    | Error::ValidatorNotActive { .. }
-                    | Error::InvalidSignature
-                    | Error::InvalidProof => "rejected",
-                    Error::ProofEngineMissing
-                    | Error::ProofEngine(_)
-                    | Error::BeaconChainError(_) => "error",
-                };
-                (outcome, error.as_str())
-            }
+            Err(error) => (error.outcome(), error.as_str()),
         };
         metrics::inc_counter_vec(
             &metrics::EXECUTION_PROOF_VERIFICATION_TOTAL,

@@ -57,6 +57,24 @@ pub enum Error {
 }
 
 impl Error {
+    /// A stable classification of this gossip verification error.
+    pub const fn outcome(&self) -> &'static str {
+        match self {
+            Self::ProofAlreadySeen
+            | Self::ValidProofAlreadyKnown
+            | Self::DuplicateFromValidator { .. }
+            | Self::UnknownBlockRoot { .. }
+            | Self::PastFinalizedSlot { .. }
+            | Self::PayloadUnavailable { .. } => "ignored",
+            Self::EmptyProofData
+            | Self::UnknownValidatorIndex(_)
+            | Self::ValidatorNotActive { .. }
+            | Self::InvalidSignature
+            | Self::InvalidProof => "rejected",
+            Self::ProofEngineMissing | Self::ProofEngine(_) | Self::BeaconChainError(_) => "error",
+        }
+    }
+
     /// A stable, bounded description of this gossip verification error.
     pub const fn as_str(&self) -> &'static str {
         match self {
@@ -103,7 +121,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn error_labels_are_stable() {
+    fn error_metric_values_are_stable() {
+        assert_eq!(Error::ProofAlreadySeen.outcome(), "ignored");
+        assert_eq!(Error::InvalidSignature.outcome(), "rejected");
+        assert_eq!(Error::ProofEngineMissing.outcome(), "error");
+
         assert_eq!(Error::ProofAlreadySeen.as_str(), "proof_already_seen");
         assert_eq!(
             Error::PayloadUnavailable {
