@@ -2110,6 +2110,55 @@ pub static PENDING_PAYLOAD_CACHE_SIZE: LazyLock<Result<IntGauge>> = LazyLock::ne
         "Number of entries in the pending payload availability cache.",
     )
 });
+pub static PENDING_PAYLOAD_CACHE_EXECUTION_PROOFS: LazyLock<Result<IntGauge>> =
+    LazyLock::new(|| {
+        try_create_int_gauge(
+            "pending_payload_cache_execution_proofs",
+            "Number of distinct execution proofs stored in the pending payload cache.",
+        )
+    });
+pub static PENDING_PAYLOAD_CACHE_PAYLOADS_AWAITING_EXECUTION_PROOFS: LazyLock<Result<IntGauge>> =
+    LazyLock::new(|| {
+        try_create_int_gauge(
+            "pending_payload_cache_payloads_awaiting_execution_proofs",
+            "Number of executed payload envelopes waiting for more distinct execution proofs.",
+        )
+    });
+pub static PENDING_PAYLOAD_CACHE_REQUIRED_EXECUTION_PROOFS: LazyLock<Result<IntGauge>> =
+    LazyLock::new(|| {
+        try_create_int_gauge(
+            "pending_payload_cache_required_execution_proofs",
+            "Configured number of distinct execution proofs required before payload import.",
+        )
+    });
+
+/*
+ * Execution proof metrics
+ */
+pub static EXECUTION_PROOF_RECEIVED_TOTAL: LazyLock<Result<IntCounterVec>> = LazyLock::new(|| {
+    try_create_int_counter_vec(
+        "beacon_execution_proof_received_total",
+        "Count of execution proof envelopes received by source and proof type.",
+        &["source", "proof_type"],
+    )
+});
+pub static EXECUTION_PROOF_VERIFICATION_TOTAL: LazyLock<Result<IntCounterVec>> =
+    LazyLock::new(|| {
+        try_create_int_counter_vec(
+            "beacon_execution_proof_verification_total",
+            "Count of execution proof verification outcomes by proof type, outcome, and reason.",
+            &["proof_type", "outcome", "reason"],
+        )
+    });
+pub static EXECUTION_PROOF_GOSSIP_PROCESSING_SECONDS: LazyLock<Result<HistogramVec>> =
+    LazyLock::new(|| {
+        try_create_histogram_vec_with_buckets(
+            "beacon_execution_proof_gossip_processing_seconds",
+            "Time spent processing execution proofs received over gossip by proof type.",
+            decimal_buckets(-3, 1),
+            &["proof_type"],
+        )
+    });
 pub static DATA_AVAILABILITY_RECONSTRUCTION_TIME: LazyLock<Result<Histogram>> =
     LazyLock::new(|| {
         try_create_histogram(
@@ -2220,6 +2269,24 @@ pub fn scrape_for_metrics<T: BeaconChainTypes>(beacon_chain: &BeaconChain<T>) {
     set_gauge_by_usize(
         &PENDING_PAYLOAD_CACHE_SIZE,
         beacon_chain.pending_payload_cache.cache_size(),
+    );
+    set_gauge_by_usize(
+        &PENDING_PAYLOAD_CACHE_EXECUTION_PROOFS,
+        beacon_chain
+            .pending_payload_cache
+            .cached_execution_proof_count(),
+    );
+    set_gauge_by_usize(
+        &PENDING_PAYLOAD_CACHE_PAYLOADS_AWAITING_EXECUTION_PROOFS,
+        beacon_chain
+            .pending_payload_cache
+            .payloads_awaiting_execution_proofs(),
+    );
+    set_gauge_by_usize(
+        &PENDING_PAYLOAD_CACHE_REQUIRED_EXECUTION_PROOFS,
+        beacon_chain
+            .pending_payload_cache
+            .required_execution_proofs(),
     );
 
     if let Some((size, num_lookups)) = beacon_chain.pre_finalization_block_cache.metrics() {

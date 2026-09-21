@@ -21,10 +21,13 @@ impl EreProofEngine {
         for config in config.execution_proofs() {
             let verifier =
                 Verifier::new(config.proof_type.zkvm(), &config.program_vk).map_err(|error| {
-                    ProofEngineError::ProofVerifierError(format!(
-                        "failed to initialize ERE verifier for proof type {:?}: {error:?}",
-                        config.proof_type
-                    ))
+                    ProofEngineError::ProofVerifierError {
+                        message: format!(
+                            "failed to initialize ERE verifier for proof type {:?}: {error:?}",
+                            config.proof_type
+                        ),
+                        error_type: error.as_str(),
+                    }
                 })?;
             verifiers.insert(config.proof_type, verifier);
         }
@@ -52,10 +55,13 @@ impl ProofEngineT for EreProofEngine {
                 return Ok(ProofVerificationOutcome::Invalid);
             }
             Err(error) => {
-                return Err(ProofEngineError::ProofVerifierError(format!(
-                    "ERE verifier failed for proof type {:?}: {error:?}",
-                    proof.proof_type
-                )));
+                return Err(ProofEngineError::ProofVerifierError {
+                    message: format!(
+                        "ERE verifier failed for proof type {:?}: {error:?}",
+                        proof.proof_type
+                    ),
+                    error_type: error.as_str(),
+                });
             }
         };
 

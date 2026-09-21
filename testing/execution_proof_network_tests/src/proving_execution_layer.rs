@@ -48,6 +48,9 @@ pub struct ProvenPayload {
 /// How long the prover waits for the beacon node to expose the block carrying a payload.
 const BLOCK_LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
 const BLOCK_LOOKUP_INTERVAL: Duration = Duration::from_millis(250);
+/// Approximate mock proof-generation time. Without a delay, proof gossip can reach peers before
+/// the block it references and be rejected as unknown.
+const PROOF_GENERATION_DELAY: Duration = Duration::from_millis(500);
 
 struct Inner {
     upstream: String,
@@ -202,6 +205,7 @@ impl Inner {
             .ok_or("no beacon node attached to the proving execution layer yet")?;
 
         let (block_root, slot) = self.find_block(&target, payload).await?;
+        tokio::time::sleep(PROOF_GENERATION_DELAY).await;
         let genesis_validators_root = target
             .get_beacon_genesis()
             .await

@@ -12,6 +12,7 @@ use tree_hash_derive::TreeHash;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Encode, Decode, TreeHash)]
 #[context_deserialize(ForkName)]
 pub struct ExecutionProofEnvelope {
+    #[serde(with = "ssz_types::serde_utils::hex_var_list")]
     pub proof_data: ProofData,
     #[serde(with = "quoted_proof_type")]
     pub proof_type: ProofType,
@@ -67,10 +68,11 @@ mod tests {
     }
 
     #[test]
-    fn signed_envelope_json_quotes_integers() {
+    fn signed_envelope_json_uses_beacon_api_encoding() {
         let envelope = signed_envelope(ProofType::RethSP1);
 
         let json = serde_json::to_value(&envelope).expect("serializes");
+        assert_eq!(json["message"]["proof_data"], "0x01");
         assert_eq!(json["message"]["proof_type"], "5");
         assert_eq!(json["validator_index"], "7");
 

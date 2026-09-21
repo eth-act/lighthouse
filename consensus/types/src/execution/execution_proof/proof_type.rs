@@ -1,7 +1,7 @@
 use crate::Hash256;
 use serde::{Deserialize, Serialize};
 use ssz::{Decode as SszDecode, DecodeError, Encode as SszEncode};
-use strum::{Display, FromRepr, VariantArray};
+use strum::{Display, FromRepr, IntoStaticStr, VariantArray};
 use tree_hash::{PackedEncoding, TreeHash as TreeHashTrait, TreeHashType};
 
 /// Proof system that verifies an execution proof.
@@ -35,6 +35,7 @@ pub enum ZkvmKind {
     Hash,
     Display,
     FromRepr,
+    IntoStaticStr,
     VariantArray,
     Serialize,
     Deserialize,

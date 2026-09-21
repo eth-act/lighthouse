@@ -12,6 +12,7 @@ use beacon_chain::data_column_verification::{
 };
 use beacon_chain::execution_proof_verification::Error as ExecutionProofError;
 use beacon_chain::fetch_blobs::PartialHeaderOrBid;
+use beacon_chain::metrics as beacon_chain_metrics;
 use beacon_chain::partial_data_column_assembler::UpdatedPartials;
 use beacon_chain::payload_bid_verification::PayloadBidError;
 use beacon_chain::payload_envelope_verification::{
@@ -4167,6 +4168,25 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
     ) {
         let beacon_block_root = execution_proof.beacon_block_root();
         let proof_type = execution_proof.proof_type();
+        let _timer = beacon_chain_metrics::start_timer_vec(
+            &beacon_chain_metrics::EXECUTION_PROOF_GOSSIP_PROCESSING_SECONDS,
+            &[proof_type.into()],
+        );
+        let validator_index = execution_proof.validator_index;
+        let proof_bytes = execution_proof.message.proof_data.len();
+
+        beacon_chain_metrics::inc_counter_vec(
+            &beacon_chain_metrics::EXECUTION_PROOF_RECEIVED_TOTAL,
+            &["gossip", proof_type.into()],
+        );
+        debug!(
+            %peer_id,
+            %beacon_block_root,
+            %proof_type,
+            validator_index,
+            proof_bytes,
+            "Received execution proof from gossip"
+        );
 
         match self
             .chain

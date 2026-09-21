@@ -579,6 +579,31 @@ impl<T: BeaconChainTypes> PendingPayloadCache<T> {
         self.availability_cache.read().len()
     }
 
+    /// Number of distinct execution proofs held across all pending payloads.
+    pub fn cached_execution_proof_count(&self) -> usize {
+        self.availability_cache
+            .read()
+            .iter()
+            .map(|(_, components)| components.execution_proofs.len())
+            .sum()
+    }
+
+    /// Number of executed payload envelopes that remain gated on execution proofs.
+    pub fn payloads_awaiting_execution_proofs(&self) -> usize {
+        if self.required_execution_proofs == 0 {
+            return 0;
+        }
+
+        self.availability_cache
+            .read()
+            .iter()
+            .filter(|(_, components)| {
+                components.envelope.is_some()
+                    && components.execution_proofs.len() < self.required_execution_proofs
+            })
+            .count()
+    }
+
     // ── Internal helpers ──
 
     fn check_availability(
@@ -1038,7 +1063,10 @@ mod data_availability_checker_tests {
     #[tokio::test]
     async fn execution_proof_gates_availability() {
         let s = setup_gated(NodeCustodyType::Fullnode);
+        assert_eq!(s.cache.cached_execution_proof_count(), 0);
+        assert_eq!(s.cache.payloads_awaiting_execution_proofs(), 0);
         s.put_envelope();
+        assert_eq!(s.cache.payloads_awaiting_execution_proofs(), 1);
         assert_missing(s.put_columns(s.custody.clone()));
 
         let assigned = ProofType::all();
@@ -1047,6 +1075,8 @@ mod data_availability_checker_tests {
         for _ in 0..=REQUIRED_EXECUTION_PROOFS {
             assert_missing(s.put_proof(assigned[0]));
         }
+        assert_eq!(s.cache.cached_execution_proof_count(), 1);
+        assert_eq!(s.cache.payloads_awaiting_execution_proofs(), 1);
 
         // Distinct provers up to the requirement flip it to available.
         let mut availability = None;
@@ -1055,6 +1085,11 @@ mod data_availability_checker_tests {
         }
         let envelope = assert_available(availability.expect("gate needs two provers or more"));
         assert_eq!(envelope.block_root, s.block_root);
+        assert_eq!(
+            s.cache.cached_execution_proof_count(),
+            REQUIRED_EXECUTION_PROOFS
+        );
+        assert_eq!(s.cache.payloads_awaiting_execution_proofs(), 0);
 
         assert_missing(s.put_proof(assigned[REQUIRED_EXECUTION_PROOFS]));
     }

@@ -4,6 +4,7 @@ use crate::canonical_head::CanonicalHead;
 use crate::execution_proof_verification::observed_execution_proofs::{
     ObservedExecutionProofs, ProofObservation,
 };
+use crate::metrics;
 use crate::pending_payload_cache::PendingPayloadCache;
 use crate::shuffling_cache::{ShufflingCache, with_cached_shuffling};
 use crate::validator_pubkey_cache::ValidatorPubkeyCache;
@@ -260,19 +261,32 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         self: &Arc<Self>,
         proof: Arc<SignedExecutionProofEnvelope>,
     ) -> Result<GossipVerifiedExecutionProof, Error> {
+        let proof_type = proof.proof_type();
         let chain = self.clone();
-        self.task_executor
-            .clone()
-            .spawn_blocking_handle(
-                move || {
-                    let ctx = chain.execution_proof_gossip_verification_context();
-                    GossipVerifiedExecutionProof::new(proof, &ctx)
-                },
-                "gossip_execution_proof_verification_handle",
-            )
-            .ok_or(BeaconChainError::RuntimeShutdown)?
-            .await
-            .map_err(BeaconChainError::TokioJoin)?
+        let result: Result<_, Error> = async {
+            self.task_executor
+                .clone()
+                .spawn_blocking_handle(
+                    move || {
+                        let ctx = chain.execution_proof_gossip_verification_context();
+                        GossipVerifiedExecutionProof::new(proof, &ctx)
+                    },
+                    "gossip_execution_proof_verification_handle",
+                )
+                .ok_or(BeaconChainError::RuntimeShutdown)?
+                .await
+                .map_err(BeaconChainError::TokioJoin)?
+        }
+        .await;
+        let (outcome, reason) = match &result {
+            Ok(_) => ("accepted", "valid"),
+            Err(error) => (error.outcome(), error.as_str()),
+        };
+        metrics::inc_counter_vec(
+            &metrics::EXECUTION_PROOF_VERIFICATION_TOTAL,
+            &[proof_type.into(), outcome, reason],
+        );
+        result
     }
 }
 
