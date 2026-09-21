@@ -57,23 +57,23 @@ pub enum Error {
 }
 
 impl Error {
-    /// Stable, bounded labels describing how gossip verification classified this error.
-    pub const fn metric_labels(&self) -> (&'static str, &'static str) {
+    /// A stable, bounded description of this gossip verification error.
+    pub const fn as_str(&self) -> &'static str {
         match self {
-            Self::ProofAlreadySeen => ("ignored", "proof_already_seen"),
-            Self::ValidProofAlreadyKnown => ("ignored", "valid_proof_already_known"),
-            Self::DuplicateFromValidator { .. } => ("ignored", "duplicate_from_validator"),
-            Self::UnknownBlockRoot { .. } => ("ignored", "unknown_block_root"),
-            Self::PastFinalizedSlot { .. } => ("ignored", "past_finalized_slot"),
-            Self::PayloadUnavailable { .. } => ("ignored", "payload_unavailable"),
-            Self::EmptyProofData => ("rejected", "empty_proof_data"),
-            Self::UnknownValidatorIndex(_) => ("rejected", "unknown_validator_index"),
-            Self::ValidatorNotActive { .. } => ("rejected", "validator_not_active"),
-            Self::InvalidSignature => ("rejected", "invalid_signature"),
-            Self::InvalidProof => ("rejected", "invalid_proof"),
-            Self::ProofEngineMissing => ("error", "proof_engine_missing"),
-            Self::ProofEngine(_) => ("error", "proof_engine"),
-            Self::BeaconChainError(_) => ("error", "beacon_chain"),
+            Self::ProofAlreadySeen => "proof_already_seen",
+            Self::ValidProofAlreadyKnown => "valid_proof_already_known",
+            Self::DuplicateFromValidator { .. } => "duplicate_from_validator",
+            Self::UnknownBlockRoot { .. } => "unknown_block_root",
+            Self::PastFinalizedSlot { .. } => "past_finalized_slot",
+            Self::PayloadUnavailable { .. } => "payload_unavailable",
+            Self::EmptyProofData => "empty_proof_data",
+            Self::UnknownValidatorIndex(_) => "unknown_validator_index",
+            Self::ValidatorNotActive { .. } => "validator_not_active",
+            Self::InvalidSignature => "invalid_signature",
+            Self::InvalidProof => "invalid_proof",
+            Self::ProofEngineMissing => "proof_engine_missing",
+            Self::ProofEngine(_) => "proof_engine",
+            Self::BeaconChainError(_) => "beacon_chain",
         }
     }
 }
@@ -103,33 +103,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn metric_labels_follow_gossip_classification() {
-        assert_eq!(
-            Error::ProofAlreadySeen.metric_labels(),
-            ("ignored", "proof_already_seen")
-        );
+    fn error_labels_are_stable() {
+        assert_eq!(Error::ProofAlreadySeen.as_str(), "proof_already_seen");
         assert_eq!(
             Error::PayloadUnavailable {
                 beacon_block_root: Hash256::default(),
             }
-            .metric_labels(),
-            ("ignored", "payload_unavailable")
+            .as_str(),
+            "payload_unavailable"
         );
-        assert_eq!(
-            Error::InvalidSignature.metric_labels(),
-            ("rejected", "invalid_signature")
-        );
+        assert_eq!(Error::InvalidSignature.as_str(), "invalid_signature");
         assert_eq!(
             Error::ProofEngine(ProofEngineError::ProofVerifierError {
                 message: "failed".to_string(),
                 error_type: "internal",
             })
-            .metric_labels(),
-            ("error", "proof_engine")
+            .as_str(),
+            "proof_engine"
         );
         assert_eq!(
-            Error::BeaconChainError(Box::new(BeaconChainError::RuntimeShutdown)).metric_labels(),
-            ("error", "beacon_chain")
+            Error::BeaconChainError(Box::new(BeaconChainError::RuntimeShutdown)).as_str(),
+            "beacon_chain"
         );
     }
 }

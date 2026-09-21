@@ -88,14 +88,13 @@ impl ProofEngine {
     ) -> Result<ProofVerificationOutcome, ProofEngineError> {
         let started = Instant::now();
         let result = self.inner.verify_execution_proof(proof);
-        let proof_type: &'static str = proof.proof_type.into();
         let (outcome, error_type) = match &result {
             Ok(outcome) => (outcome.as_str(), "none"),
             Err(error) => ("error", error.as_str()),
         };
         metrics::observe_timer_vec(
             &metrics::EXECUTION_PROOF_ENGINE_VERIFICATION_SECONDS,
-            &[proof_type, outcome, error_type],
+            &[proof.proof_type.into(), outcome, error_type],
             started.elapsed(),
         );
         result

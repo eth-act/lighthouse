@@ -4168,17 +4168,16 @@ impl<T: BeaconChainTypes> NetworkBeaconProcessor<T> {
     ) {
         let beacon_block_root = execution_proof.beacon_block_root();
         let proof_type = execution_proof.proof_type();
-        let proof_type_label: &'static str = proof_type.into();
         let _timer = beacon_chain_metrics::start_timer_vec(
             &beacon_chain_metrics::EXECUTION_PROOF_GOSSIP_PROCESSING_SECONDS,
-            &[proof_type_label],
+            &[proof_type.into()],
         );
         let validator_index = execution_proof.validator_index;
         let proof_bytes = execution_proof.message.proof_data.len();
 
         beacon_chain_metrics::inc_counter_vec(
             &beacon_chain_metrics::EXECUTION_PROOF_RECEIVED_TOTAL,
-            &["gossip", proof_type_label],
+            &["gossip", proof_type.into()],
         );
         debug!(
             %peer_id,

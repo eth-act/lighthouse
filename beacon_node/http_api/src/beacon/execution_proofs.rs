@@ -224,13 +224,12 @@ async fn publish_execution_proof<T: BeaconChainTypes>(
 ) -> Result<(), ProofFailure> {
     let beacon_block_root = proof.beacon_block_root();
     let proof_type = proof.proof_type();
-    let proof_type_label: &'static str = proof_type.into();
     let validator_index = proof.validator_index;
     let proof_bytes = proof.message.proof_data.len();
 
     beacon_chain_metrics::inc_counter_vec(
         &beacon_chain_metrics::EXECUTION_PROOF_RECEIVED_TOTAL,
-        &["http_api", proof_type_label],
+        &["http_api", proof_type.into()],
     );
     debug!(
         %beacon_block_root,

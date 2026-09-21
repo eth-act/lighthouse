@@ -262,29 +262,47 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         proof: Arc<SignedExecutionProofEnvelope>,
     ) -> Result<GossipVerifiedExecutionProof, Error> {
         let proof_type = proof.proof_type();
-        let proof_type_label: &'static str = proof_type.into();
         let chain = self.clone();
-        let verification_handle = self.task_executor.clone().spawn_blocking_handle(
-            move || {
-                let ctx = chain.execution_proof_gossip_verification_context();
-                GossipVerifiedExecutionProof::new(proof, &ctx)
-            },
-            "gossip_execution_proof_verification_handle",
-        );
-        let result = match verification_handle {
-            Some(handle) => match handle.await {
-                Ok(result) => result,
-                Err(error) => Err(BeaconChainError::TokioJoin(error).into()),
-            },
-            None => Err(BeaconChainError::RuntimeShutdown.into()),
+        let result: Result<_, Error> = async {
+            self.task_executor
+                .clone()
+                .spawn_blocking_handle(
+                    move || {
+                        let ctx = chain.execution_proof_gossip_verification_context();
+                        GossipVerifiedExecutionProof::new(proof, &ctx)
+                    },
+                    "gossip_execution_proof_verification_handle",
+                )
+                .ok_or(BeaconChainError::RuntimeShutdown)?
+                .await
+                .map_err(BeaconChainError::TokioJoin)?
+        }
+        .await;
+        let (outcome, reason) = match &result {
+            Ok(_) => ("accepted", "valid"),
+            Err(error) => {
+                let outcome = match error {
+                    Error::ProofAlreadySeen
+                    | Error::ValidProofAlreadyKnown
+                    | Error::DuplicateFromValidator { .. }
+                    | Error::UnknownBlockRoot { .. }
+                    | Error::PastFinalizedSlot { .. }
+                    | Error::PayloadUnavailable { .. } => "ignored",
+                    Error::EmptyProofData
+                    | Error::UnknownValidatorIndex(_)
+                    | Error::ValidatorNotActive { .. }
+                    | Error::InvalidSignature
+                    | Error::InvalidProof => "rejected",
+                    Error::ProofEngineMissing
+                    | Error::ProofEngine(_)
+                    | Error::BeaconChainError(_) => "error",
+                };
+                (outcome, error.as_str())
+            }
         };
-        let (outcome, reason) = result
-            .as_ref()
-            .map(|_| ("accepted", "valid"))
-            .unwrap_or_else(|error| error.metric_labels());
         metrics::inc_counter_vec(
             &metrics::EXECUTION_PROOF_VERIFICATION_TOTAL,
-            &[proof_type_label, outcome, reason],
+            &[proof_type.into(), outcome, reason],
         );
         result
     }
