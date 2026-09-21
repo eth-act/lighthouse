@@ -7242,6 +7242,7 @@ dependencies = [
  "execution_layer",
  "flate2",
  "hex",
+ "metrics",
  "reqwest",
  "serde",
  "serde_json",

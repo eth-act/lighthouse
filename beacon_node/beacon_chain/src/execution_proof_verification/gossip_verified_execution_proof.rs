@@ -16,7 +16,6 @@ use ssz_types::ProgressiveVariableList;
 use state_processing::builder_deposits_cache::OnboardBuildersCache;
 use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
 use std::sync::Arc;
-use std::time::Instant;
 use tree_hash::TreeHash;
 use types::execution::{ExecutionProof, ExecutionProofEnvelope, SignedExecutionProofEnvelope};
 use types::{ChainSpec, Domain, EthSpec, Hash256, SignedRoot, Slot};
@@ -171,22 +170,10 @@ impl GossipVerifiedExecutionProof {
 
         // [REJECT] The proof verifies via the proof engine.
         let proof_engine = ctx.proof_engine.as_ref().ok_or(Error::ProofEngineMissing)?;
-        let proof_engine_started = Instant::now();
-        let proof_engine_result = proof_engine.verify_execution_proof(&execution_proof);
-        let (proof_engine_outcome, proof_engine_error_type) = match &proof_engine_result {
-            Ok(outcome) => (outcome.as_str(), "none"),
-            Err(error) => ("error", error.as_str()),
-        };
-        metrics::observe_timer_vec(
-            &metrics::EXECUTION_PROOF_ENGINE_VERIFICATION_SECONDS,
-            &[
-                metrics::execution_proof_type_label(proof_type),
-                proof_engine_outcome,
-                proof_engine_error_type,
-            ],
-            proof_engine_started.elapsed(),
-        );
-        match proof_engine_result.map_err(Error::ProofEngine)? {
+        match proof_engine
+            .verify_execution_proof(&execution_proof)
+            .map_err(Error::ProofEngine)?
+        {
             ProofVerificationOutcome::Invalid => return Err(Error::InvalidProof),
             ProofVerificationOutcome::Valid => {}
         }
@@ -275,6 +262,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         proof: Arc<SignedExecutionProofEnvelope>,
     ) -> Result<GossipVerifiedExecutionProof, Error> {
         let proof_type = proof.proof_type();
+        let proof_type_label: &'static str = proof_type.into();
         let chain = self.clone();
         let verification_handle = self.task_executor.clone().spawn_blocking_handle(
             move || {
@@ -296,11 +284,7 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             .unwrap_or_else(|error| error.metric_labels());
         metrics::inc_counter_vec(
             &metrics::EXECUTION_PROOF_VERIFICATION_TOTAL,
-            &[
-                metrics::execution_proof_type_label(proof_type),
-                outcome,
-                reason,
-            ],
+            &[proof_type_label, outcome, reason],
         );
         result
     }

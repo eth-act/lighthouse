@@ -3,9 +3,11 @@
 mod config;
 #[cfg(feature = "ere-verifier")]
 pub mod ere;
+mod metrics;
 pub mod test_utils;
 
 use std::sync::Arc;
+use std::time::Instant;
 use types::execution::{ExecutionProof, ProofType};
 
 pub use config::{ExecutionProofConfig, ProofEngineConfig};
@@ -84,7 +86,19 @@ impl ProofEngine {
         &self,
         proof: &ExecutionProof,
     ) -> Result<ProofVerificationOutcome, ProofEngineError> {
-        self.inner.verify_execution_proof(proof)
+        let started = Instant::now();
+        let result = self.inner.verify_execution_proof(proof);
+        let proof_type: &'static str = proof.proof_type.into();
+        let (outcome, error_type) = match &result {
+            Ok(outcome) => (outcome.as_str(), "none"),
+            Err(error) => ("error", error.as_str()),
+        };
+        metrics::observe_timer_vec(
+            &metrics::EXECUTION_PROOF_ENGINE_VERIFICATION_SECONDS,
+            &[proof_type, outcome, error_type],
+            started.elapsed(),
+        );
+        result
     }
 }
 

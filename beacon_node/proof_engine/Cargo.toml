@@ -13,6 +13,7 @@ test-utils = []
 ethereum_serde_utils = { workspace = true }
 ethereum_ssz = { workspace = true }
 hex = { workspace = true }
+metrics = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 types = { workspace = true }

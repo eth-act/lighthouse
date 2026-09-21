@@ -5,7 +5,7 @@ use bls::FixedBytesExtended;
 pub use metrics::*;
 use slot_clock::SlotClock;
 use std::sync::LazyLock;
-use types::{BeaconState, Epoch, EthSpec, Hash256, Slot, execution::ProofType};
+use types::{BeaconState, Epoch, EthSpec, Hash256, Slot};
 
 // Attestation simulator metrics
 pub const VALIDATOR_MONITOR_ATTESTATION_SIMULATOR_HEAD_ATTESTER_HIT_TOTAL: &str =
@@ -2150,13 +2150,13 @@ pub static EXECUTION_PROOF_VERIFICATION_TOTAL: LazyLock<Result<IntCounterVec>> =
             &["proof_type", "outcome", "reason"],
         )
     });
-pub static EXECUTION_PROOF_ENGINE_VERIFICATION_SECONDS: LazyLock<Result<HistogramVec>> =
+pub static EXECUTION_PROOF_GOSSIP_PROCESSING_SECONDS: LazyLock<Result<HistogramVec>> =
     LazyLock::new(|| {
         try_create_histogram_vec_with_buckets(
-            "beacon_execution_proof_engine_verification_seconds",
-            "Time spent verifying execution proofs in the proof engine by proof type, outcome, and error type.",
+            "beacon_execution_proof_gossip_processing_seconds",
+            "Time spent processing execution proofs received over gossip by proof type.",
             decimal_buckets(-3, 1),
-            &["proof_type", "outcome", "error_type"],
+            &["proof_type"],
         )
     });
 pub static EXECUTION_PROOF_AVAILABILITY_TOTAL: LazyLock<Result<IntCounterVec>> =
@@ -2168,18 +2168,6 @@ pub static EXECUTION_PROOF_AVAILABILITY_TOTAL: LazyLock<Result<IntCounterVec>> =
         )
     });
 
-/// Stable, bounded Prometheus label for an assigned EIP-8025 proof type.
-pub const fn execution_proof_type_label(proof_type: ProofType) -> &'static str {
-    match proof_type {
-        ProofType::EthrexOpenVM => "ethrex_openvm",
-        ProofType::EthrexSP1 => "ethrex_sp1",
-        ProofType::EthrexZisk => "ethrex_zisk",
-        ProofType::RethOpenVM => "reth_openvm",
-        ProofType::RethSP1 => "reth_sp1",
-        ProofType::RethZisk => "reth_zisk",
-        ProofType::ZesuZisk => "zesu_zisk",
-    }
-}
 pub static DATA_AVAILABILITY_RECONSTRUCTION_TIME: LazyLock<Result<Histogram>> =
     LazyLock::new(|| {
         try_create_histogram(
