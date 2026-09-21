@@ -166,7 +166,7 @@ impl ProofNetworkConfig {
             nodes,
             validator_count: 16,
             slot_duration_ms: 2000,
-            genesis_delay_secs: 30,
+            genesis_delay_secs: 60,
             gloas_fork_epoch: 0,
             log_filter: DEFAULT_LOG_FILTER.to_string(),
         }
