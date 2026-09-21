@@ -16,6 +16,7 @@ use crate::utils::{
 };
 use crate::version::add_ssz_content_type_header;
 use beacon_chain::execution_proof_verification::Error as ProofError;
+use beacon_chain::metrics as beacon_chain_metrics;
 use beacon_chain::{AvailabilityProcessingStatus, BeaconChain, BeaconChainTypes};
 use bytes::Bytes;
 use eth2::types::{self as api_types, Failure};
@@ -224,6 +225,22 @@ async fn publish_execution_proof<T: BeaconChainTypes>(
     let beacon_block_root = proof.beacon_block_root();
     let proof_type = proof.proof_type();
     let validator_index = proof.validator_index;
+    let proof_bytes = proof.message.proof_data.len();
+
+    beacon_chain_metrics::inc_counter_vec(
+        &beacon_chain_metrics::EXECUTION_PROOF_RECEIVED_TOTAL,
+        &[
+            "http_api",
+            beacon_chain_metrics::execution_proof_type_label(proof_type),
+        ],
+    );
+    debug!(
+        %beacon_block_root,
+        %proof_type,
+        validator_index,
+        proof_bytes,
+        "Received execution proof from HTTP API"
+    );
 
     let verified = match chain.verify_execution_proof_for_gossip(proof.clone()).await {
         Ok(verified) => verified,

@@ -56,6 +56,28 @@ pub enum Error {
     BeaconChainError(Box<BeaconChainError>),
 }
 
+impl Error {
+    /// Stable, bounded labels describing how gossip verification classified this error.
+    pub const fn metric_labels(&self) -> (&'static str, &'static str) {
+        match self {
+            Self::ProofAlreadySeen => ("ignored", "proof_already_seen"),
+            Self::ValidProofAlreadyKnown => ("ignored", "valid_proof_already_known"),
+            Self::DuplicateFromValidator { .. } => ("ignored", "duplicate_from_validator"),
+            Self::UnknownBlockRoot { .. } => ("ignored", "unknown_block_root"),
+            Self::PastFinalizedSlot { .. } => ("ignored", "past_finalized_slot"),
+            Self::PayloadUnavailable { .. } => ("ignored", "payload_unavailable"),
+            Self::EmptyProofData => ("rejected", "empty_proof_data"),
+            Self::UnknownValidatorIndex(_) => ("rejected", "unknown_validator_index"),
+            Self::ValidatorNotActive { .. } => ("rejected", "validator_not_active"),
+            Self::InvalidSignature => ("rejected", "invalid_signature"),
+            Self::InvalidProof => ("rejected", "invalid_proof"),
+            Self::ProofEngineMissing => ("error", "proof_engine_missing"),
+            Self::ProofEngine(_) => ("error", "proof_engine"),
+            Self::BeaconChainError(_) => ("error", "beacon_chain"),
+        }
+    }
+}
+
 impl From<BeaconChainError> for Error {
     fn from(e: BeaconChainError) -> Self {
         Error::BeaconChainError(Box::new(e))
@@ -73,5 +95,38 @@ impl From<ObservationError> for Error {
                 finalized_slot,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metric_labels_follow_gossip_classification() {
+        assert_eq!(
+            Error::ProofAlreadySeen.metric_labels(),
+            ("ignored", "proof_already_seen")
+        );
+        assert_eq!(
+            Error::PayloadUnavailable {
+                beacon_block_root: Hash256::default(),
+            }
+            .metric_labels(),
+            ("ignored", "payload_unavailable")
+        );
+        assert_eq!(
+            Error::InvalidSignature.metric_labels(),
+            ("rejected", "invalid_signature")
+        );
+        assert_eq!(
+            Error::ProofEngine(ProofEngineError::ProofVerifierError("failed".to_string()))
+                .metric_labels(),
+            ("error", "proof_engine")
+        );
+        assert_eq!(
+            Error::BeaconChainError(Box::new(BeaconChainError::RuntimeShutdown)).metric_labels(),
+            ("error", "beacon_chain")
+        );
     }
 }

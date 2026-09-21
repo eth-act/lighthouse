@@ -4,6 +4,7 @@ use crate::canonical_head::CanonicalHead;
 use crate::execution_proof_verification::observed_execution_proofs::{
     ObservedExecutionProofs, ProofObservation,
 };
+use crate::metrics;
 use crate::pending_payload_cache::PendingPayloadCache;
 use crate::shuffling_cache::{ShufflingCache, with_cached_shuffling};
 use crate::validator_pubkey_cache::ValidatorPubkeyCache;
@@ -15,6 +16,7 @@ use ssz_types::ProgressiveVariableList;
 use state_processing::builder_deposits_cache::OnboardBuildersCache;
 use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
 use std::sync::Arc;
+use std::time::Instant;
 use tree_hash::TreeHash;
 use types::execution::{ExecutionProof, ExecutionProofEnvelope, SignedExecutionProofEnvelope};
 use types::{ChainSpec, Domain, EthSpec, Hash256, SignedRoot, Slot};
@@ -169,10 +171,22 @@ impl GossipVerifiedExecutionProof {
 
         // [REJECT] The proof verifies via the proof engine.
         let proof_engine = ctx.proof_engine.as_ref().ok_or(Error::ProofEngineMissing)?;
-        match proof_engine
-            .verify_execution_proof(&execution_proof)
-            .map_err(Error::ProofEngine)?
-        {
+        let proof_engine_started = Instant::now();
+        let proof_engine_result = proof_engine.verify_execution_proof(&execution_proof);
+        let proof_engine_outcome = match &proof_engine_result {
+            Ok(ProofVerificationOutcome::Valid) => "valid",
+            Ok(ProofVerificationOutcome::Invalid) => "invalid",
+            Err(_) => "error",
+        };
+        metrics::observe_timer_vec(
+            &metrics::EXECUTION_PROOF_ENGINE_VERIFICATION_SECONDS,
+            &[
+                metrics::execution_proof_type_label(proof_type),
+                proof_engine_outcome,
+            ],
+            proof_engine_started.elapsed(),
+        );
+        match proof_engine_result.map_err(Error::ProofEngine)? {
             ProofVerificationOutcome::Invalid => return Err(Error::InvalidProof),
             ProofVerificationOutcome::Valid => {}
         }
@@ -260,19 +274,35 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         self: &Arc<Self>,
         proof: Arc<SignedExecutionProofEnvelope>,
     ) -> Result<GossipVerifiedExecutionProof, Error> {
+        let proof_type = proof.proof_type();
         let chain = self.clone();
-        self.task_executor
-            .clone()
-            .spawn_blocking_handle(
-                move || {
-                    let ctx = chain.execution_proof_gossip_verification_context();
-                    GossipVerifiedExecutionProof::new(proof, &ctx)
-                },
-                "gossip_execution_proof_verification_handle",
-            )
-            .ok_or(BeaconChainError::RuntimeShutdown)?
-            .await
-            .map_err(BeaconChainError::TokioJoin)?
+        let verification_handle = self.task_executor.clone().spawn_blocking_handle(
+            move || {
+                let ctx = chain.execution_proof_gossip_verification_context();
+                GossipVerifiedExecutionProof::new(proof, &ctx)
+            },
+            "gossip_execution_proof_verification_handle",
+        );
+        let result = match verification_handle {
+            Some(handle) => match handle.await {
+                Ok(result) => result,
+                Err(error) => Err(BeaconChainError::TokioJoin(error).into()),
+            },
+            None => Err(BeaconChainError::RuntimeShutdown.into()),
+        };
+        let (outcome, reason) = result
+            .as_ref()
+            .map(|_| ("accepted", "valid"))
+            .unwrap_or_else(|error| error.metric_labels());
+        metrics::inc_counter_vec(
+            &metrics::EXECUTION_PROOF_VERIFICATION_TOTAL,
+            &[
+                metrics::execution_proof_type_label(proof_type),
+                outcome,
+                reason,
+            ],
+        );
+        result
     }
 }
 

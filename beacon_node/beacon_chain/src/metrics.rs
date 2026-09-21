@@ -5,7 +5,7 @@ use bls::FixedBytesExtended;
 pub use metrics::*;
 use slot_clock::SlotClock;
 use std::sync::LazyLock;
-use types::{BeaconState, Epoch, EthSpec, Hash256, Slot};
+use types::{BeaconState, Epoch, EthSpec, Hash256, Slot, execution::ProofType};
 
 // Attestation simulator metrics
 pub const VALIDATOR_MONITOR_ATTESTATION_SIMULATOR_HEAD_ATTESTER_HIT_TOTAL: &str =
@@ -2110,6 +2110,76 @@ pub static PENDING_PAYLOAD_CACHE_SIZE: LazyLock<Result<IntGauge>> = LazyLock::ne
         "Number of entries in the pending payload availability cache.",
     )
 });
+pub static PENDING_PAYLOAD_CACHE_EXECUTION_PROOFS: LazyLock<Result<IntGauge>> =
+    LazyLock::new(|| {
+        try_create_int_gauge(
+            "pending_payload_cache_execution_proofs",
+            "Number of distinct execution proofs stored in the pending payload cache.",
+        )
+    });
+pub static PENDING_PAYLOAD_CACHE_PAYLOADS_AWAITING_EXECUTION_PROOFS: LazyLock<Result<IntGauge>> =
+    LazyLock::new(|| {
+        try_create_int_gauge(
+            "pending_payload_cache_payloads_awaiting_execution_proofs",
+            "Number of executed payload envelopes waiting for more distinct execution proofs.",
+        )
+    });
+pub static PENDING_PAYLOAD_CACHE_REQUIRED_EXECUTION_PROOFS: LazyLock<Result<IntGauge>> =
+    LazyLock::new(|| {
+        try_create_int_gauge(
+            "pending_payload_cache_required_execution_proofs",
+            "Configured number of distinct execution proofs required before payload import.",
+        )
+    });
+
+/*
+ * Execution proof metrics
+ */
+pub static EXECUTION_PROOF_RECEIVED_TOTAL: LazyLock<Result<IntCounterVec>> = LazyLock::new(|| {
+    try_create_int_counter_vec(
+        "beacon_execution_proof_received_total",
+        "Count of execution proof envelopes received by source and proof type.",
+        &["source", "proof_type"],
+    )
+});
+pub static EXECUTION_PROOF_VERIFICATION_TOTAL: LazyLock<Result<IntCounterVec>> =
+    LazyLock::new(|| {
+        try_create_int_counter_vec(
+            "beacon_execution_proof_verification_total",
+            "Count of execution proof verification outcomes by proof type, outcome, and reason.",
+            &["proof_type", "outcome", "reason"],
+        )
+    });
+pub static EXECUTION_PROOF_ENGINE_VERIFICATION_SECONDS: LazyLock<Result<HistogramVec>> =
+    LazyLock::new(|| {
+        try_create_histogram_vec_with_buckets(
+            "beacon_execution_proof_engine_verification_seconds",
+            "Time spent verifying execution proofs in the proof engine by proof type and outcome.",
+            decimal_buckets(-3, 1),
+            &["proof_type", "outcome"],
+        )
+    });
+pub static EXECUTION_PROOF_AVAILABILITY_TOTAL: LazyLock<Result<IntCounterVec>> =
+    LazyLock::new(|| {
+        try_create_int_counter_vec(
+            "beacon_execution_proof_availability_total",
+            "Count of payload availability outcomes triggered by accepted execution proofs.",
+            &["outcome"],
+        )
+    });
+
+/// Stable, bounded Prometheus label for an assigned EIP-8025 proof type.
+pub const fn execution_proof_type_label(proof_type: ProofType) -> &'static str {
+    match proof_type {
+        ProofType::EthrexOpenVM => "ethrex_openvm",
+        ProofType::EthrexSP1 => "ethrex_sp1",
+        ProofType::EthrexZisk => "ethrex_zisk",
+        ProofType::RethOpenVM => "reth_openvm",
+        ProofType::RethSP1 => "reth_sp1",
+        ProofType::RethZisk => "reth_zisk",
+        ProofType::ZesuZisk => "zesu_zisk",
+    }
+}
 pub static DATA_AVAILABILITY_RECONSTRUCTION_TIME: LazyLock<Result<Histogram>> =
     LazyLock::new(|| {
         try_create_histogram(
@@ -2220,6 +2290,24 @@ pub fn scrape_for_metrics<T: BeaconChainTypes>(beacon_chain: &BeaconChain<T>) {
     set_gauge_by_usize(
         &PENDING_PAYLOAD_CACHE_SIZE,
         beacon_chain.pending_payload_cache.cache_size(),
+    );
+    set_gauge_by_usize(
+        &PENDING_PAYLOAD_CACHE_EXECUTION_PROOFS,
+        beacon_chain
+            .pending_payload_cache
+            .cached_execution_proof_count(),
+    );
+    set_gauge_by_usize(
+        &PENDING_PAYLOAD_CACHE_PAYLOADS_AWAITING_EXECUTION_PROOFS,
+        beacon_chain
+            .pending_payload_cache
+            .payloads_awaiting_execution_proofs(),
+    );
+    set_gauge_by_usize(
+        &PENDING_PAYLOAD_CACHE_REQUIRED_EXECUTION_PROOFS,
+        beacon_chain
+            .pending_payload_cache
+            .required_execution_proofs(),
     );
 
     if let Some((size, num_lookups)) = beacon_chain.pre_finalization_block_cache.metrics() {

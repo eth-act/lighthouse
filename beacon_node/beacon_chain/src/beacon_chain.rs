@@ -4247,12 +4247,47 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         verified_proof: GossipVerifiedExecutionProof,
     ) -> Result<AvailabilityProcessingStatus, BlockError> {
         let GossipVerifiedExecutionProof { proof, block_slot } = verified_proof;
-        let availability = self
-            .pending_payload_cache
-            .put_execution_proof(proof)
-            .map_err(BlockError::from)?;
-        self.process_payload_envelope_availability(block_slot, availability, || Ok(()))
-            .await
+        let block_root = proof.beacon_block_root();
+        let proof_type = proof.proof_type();
+        let availability = match self.pending_payload_cache.put_execution_proof(proof) {
+            Ok(availability) => availability,
+            Err(error) => {
+                metrics::inc_counter_vec(
+                    &metrics::EXECUTION_PROOF_AVAILABILITY_TOTAL,
+                    &["cache_error"],
+                );
+                debug!(
+                    %block_root,
+                    %proof_type,
+                    ?error,
+                    "Could not cache verified execution proof"
+                );
+                return Err(BlockError::from(error));
+            }
+        };
+        let result = self
+            .process_payload_envelope_availability(block_slot, availability, || Ok(()))
+            .await;
+        let outcome = match &result {
+            Ok(AvailabilityProcessingStatus::Imported(..)) => "imported",
+            Ok(AvailabilityProcessingStatus::MissingComponents(..)) => "missing_components",
+            Err(_) => "import_error",
+        };
+        metrics::inc_counter_vec(&metrics::EXECUTION_PROOF_AVAILABILITY_TOTAL, &[outcome]);
+        debug!(
+            %block_root,
+            %proof_type,
+            outcome,
+            cached_execution_proofs = self
+                .pending_payload_cache
+                .get_execution_proofs(&block_root)
+                .len(),
+            required_execution_proofs = self
+                .pending_payload_cache
+                .required_execution_proofs(),
+            "Processed execution proof availability"
+        );
+        result
     }
 
     fn check_data_column_sidecar_header_signature_and_slashability<'a>(
