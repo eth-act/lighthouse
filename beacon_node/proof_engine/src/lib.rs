@@ -20,13 +20,12 @@ pub enum ProofEngineError {
     UnconfiguredProofType(ProofType),
 }
 
-impl ProofEngineError {
-    /// Stable, bounded label identifying the error variant.
-    pub const fn kind(&self) -> &'static str {
-        match self {
+impl fmt::Display for ProofEngineError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
             Self::ProofVerifierError(_) => "proof_verifier_error",
             Self::UnconfiguredProofType(_) => "unconfigured_proof_type",
-        }
+        })
     }
 }
 
@@ -92,19 +91,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn proof_verification_outcome_display_is_stable() {
+    fn proof_verification_labels_are_stable() {
         assert_eq!(ProofVerificationOutcome::Valid.to_string(), "valid");
         assert_eq!(ProofVerificationOutcome::Invalid.to_string(), "invalid");
-    }
-
-    #[test]
-    fn proof_engine_error_kinds_are_stable() {
         assert_eq!(
-            ProofEngineError::ProofVerifierError("failed".to_string()).kind(),
+            ProofEngineError::ProofVerifierError("failed".to_string()).to_string(),
             "proof_verifier_error"
         );
         assert_eq!(
-            ProofEngineError::UnconfiguredProofType(ProofType::RethSP1).kind(),
+            ProofEngineError::UnconfiguredProofType(ProofType::RethSP1).to_string(),
             "unconfigured_proof_type"
         );
     }
