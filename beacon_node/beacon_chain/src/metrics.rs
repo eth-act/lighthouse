@@ -2159,15 +2159,6 @@ pub static EXECUTION_PROOF_GOSSIP_PROCESSING_SECONDS: LazyLock<Result<HistogramV
             &["proof_type"],
         )
     });
-pub static EXECUTION_PROOF_AVAILABILITY_TOTAL: LazyLock<Result<IntCounterVec>> =
-    LazyLock::new(|| {
-        try_create_int_counter_vec(
-            "beacon_execution_proof_availability_total",
-            "Count of payload availability outcomes triggered by accepted execution proofs.",
-            &["outcome"],
-        )
-    });
-
 pub static DATA_AVAILABILITY_RECONSTRUCTION_TIME: LazyLock<Result<Histogram>> =
     LazyLock::new(|| {
         try_create_histogram(
