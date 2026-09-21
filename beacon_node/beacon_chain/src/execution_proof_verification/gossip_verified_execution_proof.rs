@@ -173,12 +173,10 @@ impl GossipVerifiedExecutionProof {
         let proof_engine = ctx.proof_engine.as_ref().ok_or(Error::ProofEngineMissing)?;
         let proof_engine_started = Instant::now();
         let proof_engine_result = proof_engine.verify_execution_proof(&execution_proof);
-        let proof_engine_outcome = proof_engine_result
-            .as_ref()
-            .map_or_else(|_| "error".to_string(), ToString::to_string);
-        let proof_engine_error_type = proof_engine_result
-            .as_ref()
-            .map_or_else(ToString::to_string, |_| "none".to_string());
+        let (proof_engine_outcome, proof_engine_error_type) = match &proof_engine_result {
+            Ok(outcome) => (outcome.to_string(), "none".to_string()),
+            Err(error) => ("error".to_string(), error.to_string()),
+        };
         metrics::observe_timer_vec(
             &metrics::EXECUTION_PROOF_ENGINE_VERIFICATION_SECONDS,
             &[
