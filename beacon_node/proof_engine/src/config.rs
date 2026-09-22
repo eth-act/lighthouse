@@ -6,7 +6,7 @@ use std::{collections::HashSet, str::FromStr};
 use types::execution::ProofType;
 
 // Program verification keys registered by eth-act/ere-guests v0.17.0 for use with the ERE
-// v0.17.1 verifier pinned by build/ere_verifier.rs. The client and release versions below
+// v0.17.2 verifier pinned by build/ere_verifier.rs. The client and release versions below
 // identify the guest binaries that produced the keys.
 // Ethrex stateless-validator guests from ethrex v26.0.0.
 const DEFAULT_ETHREX_OPENVM_PROGRAM_VK: &str = concat!(
@@ -133,7 +133,7 @@ impl ProofEngineConfig {
 
 impl Default for ProofEngineConfig {
     /// Built-in verifier configuration for every guest registered by `eth-act/ere-guests` at tag
-    /// `v0.17.0`, for use with the ERE v0.17.1 verifier pinned by `build/ere_verifier.rs`.
+    /// `v0.17.0`, for use with the ERE v0.17.2 verifier pinned by `build/ere_verifier.rs`.
     /// The proof-type assignments are provisional while EIP-8025 is under development.
     fn default() -> Self {
         Self::new(
