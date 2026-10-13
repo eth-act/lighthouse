@@ -1,7 +1,8 @@
 //! Mock proof engines, for tests and for devnets without a prover.
 
 use crate::{ProofEngineError, ProofEngineT, ProofVerificationOutcome};
-use ssz::{Encode, SszDecoderBuilder};
+use ssz::{Decode, Encode};
+use ssz_derive::{Decode, Encode};
 use std::collections::HashSet;
 use types::execution::{ExecutionProof, ProofType};
 
@@ -37,15 +38,14 @@ impl MockProofEngine {
     }
 }
 
-/// Return the public values of `proof_data` if it decodes as a zkboost `MockProof`.
-fn mock_proof_public_values(proof_data: &[u8]) -> Option<Vec<u8>> {
-    let mut builder = SszDecoderBuilder::new(proof_data);
-    builder.register_type::<Vec<u8>>().ok()?;
-    builder.register_type::<Vec<u8>>().ok()?;
-    let mut decoder = builder.build().ok()?;
-    let public_values = decoder.decode_next::<Vec<u8>>().ok()?;
-    decoder.decode_next::<Vec<u8>>().ok()?;
-    Some(public_values)
+/// The `proof_data` of a zkboost mock proof, as `MockProof` in eth-act/zkboost
+/// (`crates/types/src/execution_proof.rs`). The `proof_data` list bounds both lists.
+#[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
+pub struct MockProof {
+    /// The public values that the guest commits, as a verifier of a real proof returns them.
+    pub public_values: Vec<u8>,
+    /// Random bytes in place of a real proof.
+    pub proof: Vec<u8>,
 }
 
 impl ProofEngineT for MockProofEngine {
@@ -57,9 +57,9 @@ impl ProofEngineT for MockProofEngine {
             if !mock_proof_types.contains(&proof.proof_type) {
                 return Err(ProofEngineError::UnconfiguredProofType(proof.proof_type));
             }
-            if mock_proof_public_values(proof.proof_data.as_ref())
-                .is_some_and(|public_values| public_values == proof.public_input.as_ssz_bytes())
-            {
+            if MockProof::from_ssz_bytes(proof.proof_data.as_ref()).is_ok_and(|mock_proof| {
+                mock_proof.public_values == proof.public_input.as_ssz_bytes()
+            }) {
                 return Ok(ProofVerificationOutcome::Valid);
             }
         }
@@ -110,15 +110,31 @@ mod tests {
         );
     }
 
-    /// The SSZ `MockProof` of zkboost: the offsets of both lists, then the public values and the
-    /// proof.
     fn zkboost_mock_proof(public_values: &[u8], proof: &[u8]) -> Vec<u8> {
-        let mut encoded = Vec::new();
-        encoded.extend_from_slice(&8u32.to_le_bytes());
-        encoded.extend_from_slice(&(8 + public_values.len() as u32).to_le_bytes());
-        encoded.extend_from_slice(public_values);
-        encoded.extend_from_slice(proof);
-        encoded
+        MockProof {
+            public_values: public_values.to_vec(),
+            proof: proof.to_vec(),
+        }
+        .as_ssz_bytes()
+    }
+
+    /// The encoding matches the layout zkboost tests: the offsets of both lists, then the public
+    /// values and the proof.
+    #[test]
+    fn mock_proof_layout_matches_zkboost() {
+        let mock_proof = MockProof {
+            public_values: vec![0xaa; 3],
+            proof: vec![0xbb; 2],
+        };
+        let encoded = mock_proof.as_ssz_bytes();
+        assert_eq!(
+            encoded,
+            [8, 0, 0, 0, 11, 0, 0, 0, 0xaa, 0xaa, 0xaa, 0xbb, 0xbb]
+        );
+        assert_eq!(
+            MockProof::from_ssz_bytes(&encoded).expect("valid mock proof"),
+            mock_proof
+        );
     }
 
     #[test]
