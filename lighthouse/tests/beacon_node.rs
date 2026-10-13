@@ -510,6 +510,35 @@ fn run_execution_jwt_secret_key_is_persisted() {
             assert_eq!(file_jwt_secret_key, jwt_secret_key);
         });
 }
+#[test]
+fn proof_engine_mock_proofs_flag() {
+    CommandLineTest::new()
+        .flag("proof-engine", None)
+        .flag("proof-engine-mock-proofs", None)
+        .run_with_zero_port()
+        .with_config(|config| {
+            assert!(
+                config
+                    .proof_engine
+                    .as_ref()
+                    .is_some_and(|proof_engine| proof_engine.mock_proofs())
+            );
+        });
+}
+#[test]
+fn proof_engine_without_mock_proofs_flag() {
+    CommandLineTest::new()
+        .flag("proof-engine", None)
+        .run_with_zero_port()
+        .with_config(|config| {
+            assert!(
+                config
+                    .proof_engine
+                    .as_ref()
+                    .is_some_and(|proof_engine| !proof_engine.mock_proofs())
+            );
+        });
+}
 /// A proof-only node verifies execution in-process instead of driving an engine.
 #[test]
 fn proof_only_node_builds_without_execution_layer() {

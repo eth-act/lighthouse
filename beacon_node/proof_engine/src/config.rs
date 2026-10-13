@@ -1,6 +1,6 @@
 //! Configuration for mapping EIP-8025 proof types to ERE zkVM verifiers.
 
-use crate::{ProofEngine, ProofEngineError};
+use crate::{ProofEngine, ProofEngineError, test_utils::MockProofEngine};
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use std::{collections::HashSet, str::FromStr};
 use types::execution::ProofType;
@@ -48,6 +48,10 @@ const DEFAULT_ZESU_ZISK_PROGRAM_VK: &str =
 #[derive(Debug, Clone, Serialize)]
 pub struct ProofEngineConfig {
     execution_proofs: Vec<ExecutionProofConfig>,
+    /// Accept zkboost mock proofs of the configured proof types in place of the ERE verifiers.
+    /// Devnets only.
+    #[serde(skip)]
+    mock_proofs: bool,
     /// Ready-built engine returned by [`Self::build_engine`] instead of the configured
     /// verifiers. Never serialized and only present with the `test-utils` feature, so tests can
     /// inject a mock without an `ere-verifier` build.
@@ -59,7 +63,7 @@ pub struct ProofEngineConfig {
 /// Equality covers the configured verifiers only; an injected test engine is not compared.
 impl PartialEq for ProofEngineConfig {
     fn eq(&self, other: &Self) -> bool {
-        self.execution_proofs == other.execution_proofs
+        self.execution_proofs == other.execution_proofs && self.mock_proofs == other.mock_proofs
     }
 }
 
@@ -91,6 +95,7 @@ impl ProofEngineConfig {
 
         Ok(Self {
             execution_proofs,
+            mock_proofs: false,
             #[cfg(feature = "test-utils")]
             engine: None,
         })
@@ -101,6 +106,18 @@ impl ProofEngineConfig {
         &self.execution_proofs
     }
 
+    /// Accept the mock proofs of zkboost's mock zkVMs, for devnets without a prover. See
+    /// [`MockProofEngine::zkboost`].
+    pub fn with_mock_proofs(mut self) -> Self {
+        self.mock_proofs = true;
+        self
+    }
+
+    /// Whether zkboost mock proofs are accepted in place of the ERE verifiers.
+    pub fn mock_proofs(&self) -> bool {
+        self.mock_proofs
+    }
+
     /// Yield `engine` from [`Self::build_engine`] instead of building the configured verifiers.
     #[cfg(feature = "test-utils")]
     pub fn with_engine(mut self, engine: ProofEngine) -> Self {
@@ -109,11 +126,18 @@ impl ProofEngineConfig {
     }
 
     /// Build the proof engine this configuration describes: an injected test engine if one was
-    /// supplied, otherwise the ERE verifiers, which need the `ere-verifier` feature.
+    /// supplied, the zkboost mock-proof engine in mock mode, otherwise the ERE verifiers, which
+    /// need the `ere-verifier` feature.
     pub fn build_engine(&self) -> Result<ProofEngine, ProofEngineError> {
         #[cfg(feature = "test-utils")]
         if let Some(engine) = &self.engine {
             return Ok(engine.clone());
+        }
+
+        if self.mock_proofs {
+            return Ok(ProofEngine::new(MockProofEngine::zkboost(
+                self.execution_proofs.iter().map(|config| config.proof_type),
+            )));
         }
 
         #[cfg(feature = "ere-verifier")]
