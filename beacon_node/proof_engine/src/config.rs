@@ -50,7 +50,6 @@ pub struct ProofEngineConfig {
     execution_proofs: Vec<ExecutionProofConfig>,
     /// Accept zkboost mock proofs of the configured proof types in place of the ERE verifiers.
     /// Devnets only.
-    #[serde(skip)]
     mock_proofs: bool,
     /// Ready-built engine returned by [`Self::build_engine`] instead of the configured
     /// verifiers. Never serialized and only present with the `test-utils` feature, so tests can
@@ -197,10 +196,17 @@ impl<'de> Deserialize<'de> for ProofEngineConfig {
         #[derive(Deserialize)]
         struct Config {
             execution_proofs: Vec<ExecutionProofConfig>,
+            #[serde(default)]
+            mock_proofs: bool,
         }
 
         let config = Config::deserialize(deserializer)?;
-        Self::new(config.execution_proofs).map_err(D::Error::custom)
+        let proof_engine = Self::new(config.execution_proofs).map_err(D::Error::custom)?;
+        Ok(if config.mock_proofs {
+            proof_engine.with_mock_proofs()
+        } else {
+            proof_engine
+        })
     }
 }
 
@@ -254,6 +260,24 @@ mod tests {
             )
             .expect("deserialize configuration"),
             config
+        );
+    }
+
+    #[test]
+    fn mock_proofs_survive_a_json_round_trip() {
+        let config = ProofEngineConfig::default().with_mock_proofs();
+        let json = serde_json::to_string(&config).expect("serialize configuration");
+
+        assert_eq!(
+            json.parse::<ProofEngineConfig>()
+                .expect("deserialize configuration"),
+            config
+        );
+        assert!(
+            !format!(r#"{{"execution_proofs":[{{"proof_type":5,"program_vk":"0x{DEFAULT_RETH_SP1_PROGRAM_VK}"}}]}}"#)
+                .parse::<ProofEngineConfig>()
+                .expect("mock_proofs defaults to false")
+                .mock_proofs()
         );
     }
 
