@@ -1,4 +1,3 @@
-use context_deserialize::context_deserialize;
 use educe::Educe;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -15,9 +14,9 @@ use crate::{
     execution::{
         ExecutionPayload, ExecutionPayloadBellatrix, ExecutionPayloadCapella,
         ExecutionPayloadDeneb, ExecutionPayloadElectra, ExecutionPayloadFulu,
-        ExecutionPayloadGloas, ExecutionPayloadHeader, ExecutionPayloadHeaderBellatrix,
-        ExecutionPayloadHeaderCapella, ExecutionPayloadHeaderDeneb, ExecutionPayloadHeaderElectra,
-        ExecutionPayloadHeaderFulu, ExecutionPayloadRef, ExecutionRequestsGloas, Transactions,
+        ExecutionPayloadHeader, ExecutionPayloadHeaderBellatrix, ExecutionPayloadHeaderCapella,
+        ExecutionPayloadHeaderDeneb, ExecutionPayloadHeaderElectra, ExecutionPayloadHeaderFulu,
+        ExecutionPayloadRef, Transactions,
     },
     fork::ForkName,
     map_execution_payload_into_blinded_payload, map_execution_payload_into_full_payload,
@@ -1110,19 +1109,4 @@ pub enum BlockProductionVersion {
     V3,
     BlindedV2,
     FullV2,
-}
-
-/// Spec type `VersionedHashes`.
-pub type VersionedHashes<E> = VariableList<Hash256, <E as EthSpec>::MaxBlobCommitmentsPerBlock>;
-
-/// Spec type `NewPayloadRequest`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Encode, Decode, TreeHash)]
-#[serde(bound = "E: EthSpec")]
-#[context_deserialize(ForkName)]
-#[tree_hash(struct_behaviour = "progressive_container", active_fields(1, 1, 1, 1))]
-pub struct NewPayloadRequest<E: EthSpec> {
-    pub execution_payload: ExecutionPayloadGloas<E>,
-    pub versioned_hashes: VersionedHashes<E>,
-    pub parent_beacon_block_root: Hash256,
-    pub execution_requests: ExecutionRequestsGloas<E>,
 }
