@@ -61,12 +61,10 @@ impl ObservedExecutionProofs {
         let Some(entry) = self.items.get(&block_root) else {
             return Ok(ProofObservation::New);
         };
-        // Validity first: the same bytes are in `seen_proof_roots` whether or not the engine
-        // accepted them, so testing that first would hide a proof that is already valid.
-        let observation = if entry.valid_proof_types.contains(&proof_type) {
-            ProofObservation::ValidProofAlreadyKnown
-        } else if entry.seen_proof_roots.contains(&proof_root) {
+        let observation = if entry.seen_proof_roots.contains(&proof_root) {
             ProofObservation::ProofAlreadySeen
+        } else if entry.valid_proof_types.contains(&proof_type) {
+            ProofObservation::ValidProofAlreadyKnown
         } else if entry
             .seen_validators
             .contains(&(proof_type, validator_index))

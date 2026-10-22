@@ -1,4 +1,4 @@
-use super::{Error, ProofSource};
+use super::Error;
 use crate::beacon_chain::BeaconStore;
 use crate::canonical_head::CanonicalHead;
 use crate::data_column_verification::load_gloas_payload_bid;
@@ -31,7 +31,6 @@ pub struct GossipVerificationContext<'a, T: BeaconChainTypes> {
     pub builder_onboarding_cache: Option<&'a OnboardBuildersCache>,
     pub spec: &'a ChainSpec,
     pub genesis_validators_root: Hash256,
-    pub source: ProofSource,
 }
 
 /// A `SignedExecutionProofEnvelope` that has been verified for propagation on the gossip network.
@@ -82,12 +81,7 @@ impl GossipVerifiedExecutionProof {
             )
             .map_err(Error::from)?
         {
-            // These bytes were seen but their type is not valid yet, so the engine never accepted
-            // them. An HTTP resubmission is a retry and has to reach the engine again.
-            ProofObservation::ProofAlreadySeen => match ctx.source {
-                ProofSource::Gossip => return Err(Error::ProofAlreadySeen),
-                ProofSource::Http => {}
-            },
+            ProofObservation::ProofAlreadySeen => return Err(Error::ProofAlreadySeen),
             ProofObservation::ValidProofAlreadyKnown => return Err(Error::ValidProofAlreadyKnown),
             ProofObservation::DuplicateFromValidator => {
                 return Err(Error::DuplicateFromValidator { validator_index });
@@ -166,10 +160,7 @@ impl GossipVerifiedExecutionProof {
             .map_err(Error::from)?
         {
             // Lost a race against a concurrent copy of the same proof.
-            match ctx.source {
-                ProofSource::Gossip => return Err(Error::ProofAlreadySeen),
-                ProofSource::Http => {}
-            }
+            return Err(Error::ProofAlreadySeen);
         }
 
         // [REJECT] The proof verifies via the proof engine.
@@ -197,7 +188,6 @@ impl GossipVerifiedExecutionProof {
 impl<T: BeaconChainTypes> BeaconChain<T> {
     pub fn execution_proof_gossip_verification_context(
         self: &Arc<Self>,
-        source: ProofSource,
     ) -> GossipVerificationContext<'_, T> {
         GossipVerificationContext {
             chain: self,
@@ -210,18 +200,16 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             builder_onboarding_cache: self.builder_onboarding_cache.as_deref(),
             spec: &self.spec,
             genesis_validators_root: self.genesis_validators_root,
-            source,
         }
     }
 
     pub async fn verify_execution_proof_for_gossip(
         self: &Arc<Self>,
         proof: Arc<SignedExecutionProofEnvelope>,
-        source: ProofSource,
     ) -> Result<GossipVerifiedExecutionProof, Error> {
         GossipVerifiedExecutionProof::new(
             proof,
-            &self.execution_proof_gossip_verification_context(source),
+            &self.execution_proof_gossip_verification_context(),
         )
         .await
     }
