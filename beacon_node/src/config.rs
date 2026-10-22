@@ -309,7 +309,7 @@ pub fn get_config<E: EthSpec>(
                 .map_err(|e| format!("Invalid --proof-engine `{path}`: {e}"))?
         });
         if cli_args.get_flag("proof-engine-mock-proofs") {
-            warn!("Accepting zkboost mock execution proofs without verifying them. Devnets only");
+            warn!("Accepting mock execution proofs without verifying them. Devnets only");
             client_config.proof_engine = client_config
                 .proof_engine
                 .take()

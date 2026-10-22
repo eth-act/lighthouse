@@ -11,7 +11,7 @@ use types::execution::{ExecutionProof, ProofType};
 #[derive(Debug, Default)]
 pub struct MockProofEngine {
     valid_proof_data: HashSet<Vec<u8>>,
-    /// Proof types whose zkboost mock proofs are accepted. `None` accepts no mock proof.
+    /// Proof types whose mock proofs are accepted. `None` accepts no mock proof.
     mock_proof_types: Option<HashSet<ProofType>>,
 }
 
@@ -24,13 +24,11 @@ impl MockProofEngine {
         }
     }
 
-    /// Construct a mock that accepts the mock proofs of zkboost's mock zkVMs for `proof_types`.
+    /// Construct a mock that accepts mock proofs, as [`MockProof`], for `proof_types`.
     ///
-    /// A zkboost mock proof is the SSZ container
-    /// `MockProof { public_values: List[byte], proof: List[byte] }` whose `proof` is random bytes.
-    /// It is valid when its public values are the serialized public input of the proof, the bytes
-    /// a real guest commits; `proof` is not checked.
-    pub fn zkboost(proof_types: impl IntoIterator<Item = ProofType>) -> Self {
+    /// A mock proof is valid when its public values are the serialized public input of the proof,
+    /// the bytes a real guest commits; `proof` is not checked.
+    pub fn accepting_mock_proofs(proof_types: impl IntoIterator<Item = ProofType>) -> Self {
         Self {
             valid_proof_data: HashSet::new(),
             mock_proof_types: Some(proof_types.into_iter().collect()),
@@ -38,8 +36,9 @@ impl MockProofEngine {
     }
 }
 
-/// The `proof_data` of a zkboost mock proof, as `MockProof` in eth-act/zkboost
-/// (`crates/types/src/execution_proof.rs`). The `proof_data` list bounds both lists.
+/// The `proof_data` of a mock proof, sent by provers without a zkVM in place of a real proof.
+/// The layout is that of `MockProof` in eth-act/zkboost (`crates/types/src/execution_proof.rs`).
+/// The `proof_data` list bounds both lists.
 #[derive(Debug, Clone, PartialEq, Eq, Encode, Decode)]
 pub struct MockProof {
     /// The public values that the guest commits, as a verifier of a real proof returns them.
@@ -110,7 +109,7 @@ mod tests {
         );
     }
 
-    fn zkboost_mock_proof(public_values: &[u8], proof: &[u8]) -> Vec<u8> {
+    fn mock_proof(public_values: &[u8], proof: &[u8]) -> Vec<u8> {
         MockProof {
             public_values: public_values.to_vec(),
             proof: proof.to_vec(),
@@ -121,7 +120,7 @@ mod tests {
     /// The encoding matches the layout zkboost tests: the offsets of both lists, then the public
     /// values and the proof.
     #[test]
-    fn mock_proof_layout_matches_zkboost() {
+    fn mock_proof_layout() {
         let mock_proof = MockProof {
             public_values: vec![0xaa; 3],
             proof: vec![0xbb; 2],
@@ -138,8 +137,10 @@ mod tests {
     }
 
     #[test]
-    fn zkboost_mock_proofs_verify_their_public_values() {
-        let proof_engine = ProofEngine::new(MockProofEngine::zkboost([ProofType::EthrexSP1]));
+    fn mock_proofs_verify_their_public_values() {
+        let proof_engine = ProofEngine::new(MockProofEngine::accepting_mock_proofs([
+            ProofType::EthrexSP1,
+        ]));
         let proof = |proof_type, proof_data| {
             ExecutionProof::new(
                 ProofData::new(proof_data).expect("proof data within bound"),
@@ -158,7 +159,7 @@ mod tests {
         assert_eq!(
             verify(
                 ProofType::EthrexSP1,
-                zkboost_mock_proof(&public_values, &[0xbb; 64])
+                mock_proof(&public_values, &[0xbb; 64])
             )
             .expect("mock verification succeeds"),
             ProofVerificationOutcome::Valid
@@ -167,8 +168,8 @@ mod tests {
         let mut other_public_values = public_values.clone();
         other_public_values[0] ^= 1;
         for proof_data in [
-            zkboost_mock_proof(&other_public_values, &[0xbb; 64]),
-            zkboost_mock_proof(&public_values[..public_values.len() - 1], &[0xbb; 64]),
+            mock_proof(&other_public_values, &[0xbb; 64]),
+            mock_proof(&public_values[..public_values.len() - 1], &[0xbb; 64]),
             vec![0xff; 64],
         ] {
             assert_eq!(
@@ -178,16 +179,13 @@ mod tests {
         }
 
         assert!(matches!(
-            verify(
-                ProofType::RethSP1,
-                zkboost_mock_proof(&public_values, &[0xbb; 64])
-            ),
+            verify(ProofType::RethSP1, mock_proof(&public_values, &[0xbb; 64])),
             Err(ProofEngineError::UnconfiguredProofType(ProofType::RethSP1))
         ));
     }
 
     #[test]
-    fn exact_proof_data_mock_rejects_zkboost_mock_proofs() {
+    fn exact_proof_data_mock_rejects_mock_proofs() {
         let proof = ExecutionProof::new(
             ProofData::new(vec![1]).expect("proof data within bound"),
             ProofType::RethSP1,
@@ -195,11 +193,8 @@ mod tests {
             1,
         );
         let mock_proof = ExecutionProof::new(
-            ProofData::new(zkboost_mock_proof(
-                &proof.public_input.as_ssz_bytes(),
-                &[0xbb; 64],
-            ))
-            .expect("proof data within bound"),
+            ProofData::new(mock_proof(&proof.public_input.as_ssz_bytes(), &[0xbb; 64]))
+                .expect("proof data within bound"),
             ProofType::RethSP1,
             Hash256::default(),
             1,
