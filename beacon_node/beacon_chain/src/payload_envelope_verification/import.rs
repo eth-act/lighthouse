@@ -445,7 +445,13 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             NotifyExecutionLayer::Yes,
         )?;
 
-        let payload_verification_status = payload_notifier.notify_new_payload().await?;
+        // Range sync imports without waiting for execution proofs, so a node without an
+        // execution layer has no verdict on these payloads.
+        let payload_verification_status = if self.execution_layer.is_none() {
+            PayloadVerificationStatus::Optimistic
+        } else {
+            payload_notifier.notify_new_payload().await?
+        };
 
         // Import directly — we already have all components (envelope + columns).
         let chain = self.clone();
