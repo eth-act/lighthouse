@@ -12,6 +12,7 @@ use crate::{BeaconChain, BeaconChainError, BeaconChainTypes};
 use execution_layer::NewPayloadRequestGloas;
 use parking_lot::RwLock;
 use proof_engine::{ProofEngine, ProofVerificationOutcome};
+use ssz::TryFromIter;
 use ssz_types::ProgressiveVariableList;
 use state_processing::builder_deposits_cache::OnboardBuildersCache;
 use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
@@ -203,13 +204,13 @@ fn reconstruct_execution_proof<T: BeaconChainTypes>(
         .body()
         .signed_execution_payload_bid()
         .map_err(BeaconChainError::from)?
-        .message;
-    let versioned_hashes = ProgressiveVariableList::new(
-        bid.blob_kzg_commitments
+        .message();
+    let versioned_hashes = ProgressiveVariableList::try_from_iter(
+        bid.blob_kzg_commitments()
             .iter()
-            .map(kzg_commitment_to_versioned_hash)
-            .collect(),
-    );
+            .map(kzg_commitment_to_versioned_hash),
+    )
+    .map_err(BeaconChainError::SszTypesError)?;
 
     // Without an execution engine, the store only gains the envelope after an import that waits
     // on proofs. Try the pending cache first, then the store for blocks already imported and
@@ -219,7 +220,7 @@ fn reconstruct_execution_proof<T: BeaconChainTypes>(
         .map(Ok)
         .unwrap_or_else(|| -> Result<_, Error> {
             store
-                .get_payload_envelope(&block_root)
+                .get_signed_payload_envelope(&block_root)
                 .map_err(BeaconChainError::from)?
                 .map(Arc::new)
                 .ok_or(Error::PayloadUnavailable {
@@ -301,7 +302,8 @@ mod tests {
     use proof_engine::{ProofEngine, test_utils::MockProofEngine};
     use types::execution::ProofType;
     use types::{
-        ForkName, MinimalEthSpec, SignedExecutionPayloadBid, SignedExecutionPayloadEnvelope,
+        ForkName, MinimalEthSpec, SignedExecutionPayloadBid, SignedExecutionPayloadBidGloas,
+        SignedExecutionPayloadEnvelope,
         execution::{ExecutionPayloadEnvelope, ExecutionProofEnvelope, ProofData},
     };
 
@@ -358,7 +360,7 @@ mod tests {
         assert!(
             chain
                 .store
-                .get_payload_envelope(&genesis_root)
+                .get_signed_payload_envelope(&genesis_root)
                 .expect("payload lookup succeeds")
                 .is_none(),
             "test requires a known block without a stored payload envelope"
@@ -485,10 +487,12 @@ mod tests {
         let genesis_root = chain.genesis_block_root;
 
         // The state a node is in while an executed envelope waits for its proofs.
-        chain.pending_payload_cache.insert_bid(
-            genesis_root,
-            Arc::new(SignedExecutionPayloadBid::<E>::empty()),
-        );
+        let bid = Arc::new(SignedExecutionPayloadBid::<E>::Gloas(
+            SignedExecutionPayloadBidGloas::empty(),
+        ));
+        chain
+            .pending_payload_cache
+            .insert_bid(genesis_root, bid.clone());
         let envelope = Arc::new(SignedExecutionPayloadEnvelope::<E> {
             message: ExecutionPayloadEnvelope {
                 beacon_block_root: genesis_root,
@@ -498,19 +502,22 @@ mod tests {
         });
         chain
             .pending_payload_cache
-            .put_executed_payload_envelope(AvailabilityPendingExecutedEnvelope::new(
-                envelope,
-                genesis_root,
-                PayloadVerificationOutcome {
-                    payload_verification_status: PayloadVerificationStatus::Optimistic,
-                },
-            ))
+            .put_executed_payload_envelope(
+                AvailabilityPendingExecutedEnvelope::new(
+                    envelope,
+                    genesis_root,
+                    PayloadVerificationOutcome {
+                        payload_verification_status: PayloadVerificationStatus::Optimistic,
+                    },
+                ),
+                &bid,
+            )
             .expect("the executed envelope is cached");
 
         assert!(
             chain
                 .store
-                .get_payload_envelope(&genesis_root)
+                .get_signed_payload_envelope(&genesis_root)
                 .expect("payload lookup succeeds")
                 .is_none(),
             "the envelope must still be absent from the store"

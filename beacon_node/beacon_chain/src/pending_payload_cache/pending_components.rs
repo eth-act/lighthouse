@@ -15,7 +15,9 @@ use std::sync::Arc;
 use tracing::{Span, debug, debug_span};
 use types::DataColumnSidecar;
 use types::execution::{ProofType, SignedExecutionProofEnvelope};
-use types::{ColumnIndex, EthSpec, Hash256, SignedExecutionPayloadBid};
+use types::{
+    BlockImportSource, ColumnIndex, EthSpec, Hash256, SignedBeaconBlock, SignedExecutionPayloadBid,
+};
 
 /// This represents the components of a payload pending data availability.
 ///
@@ -24,6 +26,8 @@ use types::{ColumnIndex, EthSpec, Hash256, SignedExecutionPayloadBid};
 pub struct PendingComponents<E: EthSpec> {
     pub block_root: Hash256,
     pub bid: Arc<SignedExecutionPayloadBid<E>>,
+    /// cached beacon block for serving over RPC while importing
+    pub block: Option<(Arc<SignedBeaconBlock<E>>, BlockImportSource)>,
     /// a cached post executed payload envelope
     pub envelope: Option<AvailabilityPendingExecutedEnvelope<E>>,
     /// A column entry in this map may only have some cells filled in (i.e. a partial data column)
@@ -44,7 +48,7 @@ impl<E: EthSpec> PendingComponents<E> {
     where
         T: BeaconChainTypes<EthSpec = E>,
     {
-        if custody_context.data_columns_required_for_bid(&self.bid) {
+        if custody_context.data_columns_required_for_bid(self.bid.to_ref()) {
             custody_context.num_of_data_columns_to_sample(self.bid.epoch())
         } else {
             0
@@ -53,7 +57,7 @@ impl<E: EthSpec> PendingComponents<E> {
 
     /// Returns columns that have all cells present.
     pub fn get_cached_data_columns(&self) -> Vec<Arc<DataColumnSidecar<E>>> {
-        let slot = self.bid.message.slot;
+        let slot = self.bid.message().slot();
         let block_root = self.block_root;
         self.verified_data_columns
             .iter()
@@ -63,7 +67,7 @@ impl<E: EthSpec> PendingComponents<E> {
 
     /// Returns the indices of columns that have all cells present.
     pub fn get_cached_data_columns_indices(&self) -> Vec<ColumnIndex> {
-        let slot = self.bid.message.slot;
+        let slot = self.bid.message().slot();
         let block_root = self.block_root;
         self.verified_data_columns
             .iter()
@@ -80,7 +84,7 @@ impl<E: EthSpec> PendingComponents<E> {
         &self,
     ) -> Vec<KzgVerifiedCustodyPartialDataColumnGloas<E>> {
         let block_root = self.block_root;
-        let slot = self.bid.message.slot;
+        let slot = self.bid.slot();
         self.verified_data_columns
             .iter()
             .filter_map(|(idx, col)| {
@@ -166,7 +170,7 @@ impl<E: EthSpec> PendingComponents<E> {
         outcome: PartialColumnsMergeOutcome,
         disable_get_blobs: bool,
     ) -> PartialMergeResult<E> {
-        let slot = self.bid.message.slot;
+        let slot = self.bid.slot();
 
         let full_columns = outcome
             .newly_complete
@@ -294,8 +298,12 @@ impl<E: EthSpec> PendingComponents<E> {
             }
         };
 
-        let available_envelope =
-            AvailableEnvelope::new(envelope.clone(), columns, &self.bid, custody_context)?;
+        let available_envelope = AvailableEnvelope::new(
+            envelope.clone(),
+            columns,
+            self.bid.to_ref(),
+            custody_context,
+        )?;
 
         Ok(Some(AvailableExecutedEnvelope {
             envelope: available_envelope,
@@ -311,6 +319,7 @@ impl<E: EthSpec> PendingComponents<E> {
         Self {
             block_root,
             bid,
+            block: None,
             envelope: None,
             verified_data_columns: HashMap::new(),
             execution_proofs: HashMap::new(),

@@ -8,6 +8,7 @@ use beacon_node::{
     beacon_chain::store::config::DatabaseBackend as BeaconNodeBackend,
 };
 use beacon_processor::BeaconProcessorConfig;
+use eth2_network_config::Eth2NetworkConfig;
 use lighthouse_network::PeerId;
 use network_utils::unused_port::{
     unused_tcp4_port, unused_tcp6_port, unused_udp4_port, unused_udp6_port,
@@ -797,6 +798,36 @@ fn builder_fallback_flags() {
             assert!(config.chain.builder_fallback_disable_checks);
         },
     );
+    run_payload_builder_flag_test_with_config(
+        "builder",
+        "http://meow.cats",
+        None,
+        None,
+        |config| {
+            assert_eq!(config.chain.builder_fallback_ban_slots, 32);
+        },
+    );
+    run_payload_builder_flag_test_with_config(
+        "builder",
+        "http://meow.cats",
+        Some("builder-fallback-ban-slots"),
+        Some("64"),
+        |config| {
+            assert_eq!(config.chain.builder_fallback_ban_slots, 64);
+        },
+    );
+}
+
+#[test]
+#[should_panic]
+fn builder_fallback_ban_slots_below_slots_per_epoch_is_rejected() {
+    run_payload_builder_flag_test_with_config(
+        "builder",
+        "http://meow.cats",
+        Some("builder-fallback-ban-slots"),
+        Some("31"),
+        |_| {},
+    );
 }
 
 #[test]
@@ -930,6 +961,15 @@ fn network_target_peers_flag() {
         .run_with_zero_port()
         .with_config(|config| {
             assert_eq!(config.network.target_peers, "55".parse::<usize>().unwrap());
+        });
+}
+#[test]
+fn network_unknown_root_min_peers_flag() {
+    CommandLineTest::new()
+        .flag("unknown-root-min-peers", Some("5"))
+        .run_with_zero_port()
+        .with_config(|config| {
+            assert_eq!(config.network.unknown_root_min_peers, 5);
         });
 }
 #[test]
@@ -1389,7 +1429,12 @@ fn default_backfill_rate_limiting_flag() {
 }
 #[test]
 fn default_boot_nodes() {
-    let number_of_boot_nodes = 17;
+    let number_of_boot_nodes = Eth2NetworkConfig::constant("mainnet")
+        .unwrap()
+        .unwrap()
+        .boot_enr
+        .unwrap()
+        .len();
 
     CommandLineTest::new()
         .run_with_zero_port()
@@ -2944,11 +2989,11 @@ fn invalid_block_roots_default_mainnet() {
 }
 
 #[test]
-fn disable_mplex_default() {
+fn enable_mplex_default() {
     CommandLineTest::new()
         .run_with_zero_port()
         .with_config(|config| {
-            assert!(!config.network.enable_mplex);
+            assert!(config.network.enable_mplex);
         })
 }
 
@@ -2991,12 +3036,12 @@ fn partial_columns() {
             assert!(config.network.enable_partial_columns);
             assert!(config.chain.enable_partial_columns);
         });
-    // And disabled by default on mainnet:
+    // And enabled by default on mainnet:
     CommandLineTest::new()
         .run_with_zero_port()
         .with_config(|config| {
-            assert!(!config.network.enable_partial_columns);
-            assert!(!config.chain.enable_partial_columns);
+            assert!(config.network.enable_partial_columns);
+            assert!(config.chain.enable_partial_columns);
         })
 }
 
@@ -3024,30 +3069,7 @@ fn partial_columns_default_hoodi() {
 }
 
 #[test]
-fn partial_columns_default_sepolia() {
-    CommandLineTest::new()
-        .flag("network", Some("sepolia"))
-        .run_with_zero_port()
-        .with_config(|config| {
-            assert!(config.network.enable_partial_columns);
-            assert!(config.chain.enable_partial_columns);
-        });
-}
-
-#[test]
-fn partial_columns_false_overrides_hoodi_default() {
-    CommandLineTest::new()
-        .flag("network", Some("hoodi"))
-        .flag("enable-partial-columns", Some("false"))
-        .run_with_zero_port()
-        .with_config(|config| {
-            assert!(!config.network.enable_partial_columns);
-            assert!(!config.chain.enable_partial_columns);
-        });
-}
-
-#[test]
-fn partial_columns_false_on_mainnet() {
+fn partial_columns_false_overrides_default() {
     CommandLineTest::new()
         .flag("enable-partial-columns", Some("false"))
         .run_with_zero_port()

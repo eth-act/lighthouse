@@ -72,7 +72,7 @@ impl ProofNetwork {
                 .is_some(),
             envelope_stored: chain
                 .store
-                .payload_envelope_exists(&block_root)
+                .payload_envelope_summary_exists(&block_root)
                 .map_err(|e| format!("node {node} store error: {e:?}"))?,
             payload_received,
             required_proofs: chain.pending_payload_cache.required_execution_proofs(),

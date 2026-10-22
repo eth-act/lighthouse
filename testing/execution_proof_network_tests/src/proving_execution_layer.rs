@@ -282,7 +282,7 @@ impl Inner {
                     .message()
                     .body()
                     .signed_execution_payload_bid()
-                    .map(|bid| bid.message.block_hash)
+                    .map(|bid| bid.message().block_hash())
                     .map_err(|e| format!("block {:?} has no bid: {e:?}", header.root))?;
                 if bid_hash == payload.block_hash {
                     return Ok((header.root, header.header.message.slot));
