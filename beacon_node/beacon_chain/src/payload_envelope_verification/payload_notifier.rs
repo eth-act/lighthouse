@@ -48,12 +48,12 @@ impl<T: BeaconChainTypes> PayloadNotifier<T> {
                     }
                 }
                 // No engine to execute against, and no verdict to wait on: the envelope only
-                // imports once its proofs verify. Not `Optimistic`, which Gloas import rejects
-                // outright.
+                // imports once its proofs verify, so the proofs are the verdict. Fork choice
+                // accepts only `Verified` or `Optimistic` for a revealed Gloas payload.
                 //
                 // The arm above keeps its `None`: the cheap hash check failed there and only an
                 // engine can do the slow one, so erroring beats calling it settled.
-                _ if chain.execution_layer.is_none() => Some(PayloadVerificationStatus::Irrelevant),
+                _ if chain.execution_layer.is_none() => Some(PayloadVerificationStatus::Verified),
                 _ => None,
             }
         };
@@ -156,15 +156,8 @@ mod tests {
 
         assert_eq!(
             notifier.payload_verification_status,
-            Some(PayloadVerificationStatus::Irrelevant),
+            Some(PayloadVerificationStatus::Verified),
             "a proof-only node must not defer to an engine it does not have"
-        );
-        assert_ne!(
-            notifier
-                .payload_verification_status
-                .expect("status is precomputed"),
-            PayloadVerificationStatus::Optimistic,
-            "an optimistic status would be rejected at import"
         );
     }
 
