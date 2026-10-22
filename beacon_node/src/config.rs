@@ -308,6 +308,13 @@ pub fn get_config<E: EthSpec>(
             json.parse::<ProofEngineConfig>()
                 .map_err(|e| format!("Invalid --proof-engine `{path}`: {e}"))?
         });
+        if cli_args.get_flag("proof-engine-mock-proofs") {
+            warn!("Accepting mock execution proofs without verifying them. Devnets only");
+            client_config.proof_engine = client_config
+                .proof_engine
+                .take()
+                .map(ProofEngineConfig::with_mock_proofs);
+        }
         client_config.network.enable_execution_proof = true;
     }
 

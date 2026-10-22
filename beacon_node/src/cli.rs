@@ -861,6 +861,18 @@ pub fn cli_app() -> Command {
                 .display_order(0)
         )
         .arg(
+            Arg::new("proof-engine-mock-proofs")
+                .long("proof-engine-mock-proofs")
+                .action(ArgAction::SetTrue)
+                .help_heading(FLAG_HEADER)
+                .help("DEVNETS ONLY. Accept mock proofs (an SSZ MockProof { public_values, \
+                       proof }) for the proof types of --proof-engine, in place of verifying \
+                       them with ERE. A mock proof is valid when its public values match the \
+                       proof's public input; its proof bytes are not checked.")
+                .requires("proof-engine")
+                .display_order(0)
+        )
+        .arg(
             Arg::new("execution-jwt")
                 .long("execution-jwt")
                 .value_name("EXECUTION-JWT")
