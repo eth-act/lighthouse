@@ -336,13 +336,12 @@ fn proofs_from_two_provers_combine_to_unlock_import() {
     .unwrap()
 }
 
-/// A node whose execution layer starts answering `SYNCING` stalls at the head: the next
-/// envelope gets an optimistic status, which Gloas envelope import rejects, so the payload is
-/// never received and the following block is refused. Once the execution layer answers `VALID`
-/// again the node catches up.
+/// A node whose execution layer starts answering `SYNCING` keeps following the head, importing
+/// each payload as optimistic. Once the execution layer answers `VALID` again, the head is no
+/// longer optimistic.
 #[test]
 #[cfg_attr(debug_assertions, ignore = "too slow in debug mode")]
-fn syncing_execution_layer_stalls_a_node_at_the_head_until_it_recovers() {
+fn syncing_execution_layer_imports_payloads_optimistically_until_it_recovers() {
     let config = ProofNetworkConfig::new(vec![
         NodeSpec::plain().with_validators(),
         NodeSpec::plain().with_validators(),
@@ -358,42 +357,49 @@ fn syncing_execution_layer_stalls_a_node_at_the_head_until_it_recovers() {
             .await?;
 
         net.set_execution_layer_syncing(2, true)?;
-        // The next full block imports, but its envelope is rejected as optimistic.
-        let mut stalled_root = None;
+        // The next payload imports, as optimistic.
+        let mut optimistic_root = None;
         net.wait_for(
-            "node 2 to hold a block whose payload it rejected",
+            "node 2 to import a payload its execution layer did not verify",
             STARTUP_TIMEOUT,
             |net| {
                 let head = net.head_block_root(2)?;
                 let status = net.proof_status(2, head, RETH_OPENVM)?;
-                stalled_root = (!status.payload_received).then_some(head);
-                Ok(stalled_root.is_some())
+                optimistic_root = (head != healthy_root && status.payload_received).then_some(head);
+                Ok(optimistic_root.is_some())
             },
         )
         .await?;
-        let stalled_root = stalled_root.ok_or("no stalled block")?;
-        let stalled = net.proof_status(2, stalled_root, RETH_OPENVM)?;
-        assert!(!stalled.envelope_pending, "{stalled:?}");
-        assert!(!stalled.envelope_stored, "{stalled:?}");
+        let optimistic_root = optimistic_root.ok_or("no optimistic payload")?;
+        assert_eq!(
+            net.block_is_optimistic(2, optimistic_root).await?,
+            Some(true)
+        );
 
-        // The chain moves on without node 2.
-        net.wait_for_head_slot(0, stalled.head_slot + 4, STARTUP_TIMEOUT)
+        // The node keeps following the chain.
+        let syncing_slot = net.head_slot(2)?;
+        net.wait_for_head_slot(2, syncing_slot + 2, STARTUP_TIMEOUT)
             .await?;
-        let later = net.proof_status(2, stalled_root, RETH_OPENVM)?;
-        assert_eq!(later.head_slot, stalled.head_slot, "{later:?}");
-        assert!(!later.payload_received, "{later:?}");
 
-        // With the execution layer back, node 2 catches up.
+        // With the execution layer back, the head is no longer optimistic.
         net.set_execution_layer_syncing(2, false)?;
-        net.wait_for("node 2 to catch up with node 0", RECOVERY_TIMEOUT, |net| {
+        net.wait_for("node 2 to leave optimistic sync", RECOVERY_TIMEOUT, |net| {
             Ok(net.head_slot(2)? + 1 >= net.head_slot(0)?)
         })
         .await?;
-        let recovered = net.proof_status(2, stalled_root, RETH_OPENVM)?;
-        assert!(recovered.payload_received, "{recovered:?}");
+        let recovered_slot = net.head_slot(2)?;
+        let recovered_root = net
+            .wait_for_head_slot(2, recovered_slot + 1, RECOVERY_TIMEOUT)
+            .await?;
+        net.wait_for_payload_received(&[2], recovered_root, PROPAGATION_TIMEOUT)
+            .await?;
+        assert_eq!(
+            net.block_is_optimistic(2, recovered_root).await?,
+            Some(false)
+        );
         info!(
-            ?stalled_root,
-            "Node stalled while its execution layer was syncing and recovered"
+            ?optimistic_root,
+            "Node imported optimistically while its execution layer was syncing and recovered"
         );
         Ok(())
     })
@@ -401,8 +407,8 @@ fn syncing_execution_layer_stalls_a_node_at_the_head_until_it_recovers() {
 }
 
 /// A node that joins far enough behind to range sync imports every historical payload even
-/// though its execution layer answers `SYNCING` to all of them, and then reports those blocks as
-/// not optimistic.
+/// though its execution layer answers `SYNCING` to all of them, and reports those blocks as
+/// optimistic.
 #[test]
 #[cfg_attr(debug_assertions, ignore = "too slow in debug mode")]
 fn range_sync_imports_payloads_a_syncing_execution_layer_never_verified() {
@@ -430,21 +436,19 @@ fn range_sync_imports_payloads_a_syncing_execution_layer_never_verified() {
         net.wait_for_head_slot(joiner, range_sync_head, RANGE_SYNC_TIMEOUT)
             .await?;
 
-        // Every envelope the joiner imported came through range sync: the gossip and lookup
-        // paths reject the optimistic status its execution layer produces. The historical
-        // block may be finalized and pruned from fork choice by now, so check the store for
-        // it and fork choice for the head's parent, which is still unfinalized.
+        // The historical block may be finalized and pruned from fork choice by now, so check the
+        // store for it and fork choice for the head's parent, which is still unfinalized.
         let historical_status = net.proof_status(joiner, historical, RETH_OPENVM)?;
         assert!(historical_status.envelope_stored, "{historical_status:?}");
         let recent = net.head_parent_block_root(joiner)?;
         let recent_status = net.proof_status(joiner, recent, RETH_OPENVM)?;
         assert!(recent_status.payload_received, "{recent_status:?}");
         assert!(recent_status.envelope_stored, "{recent_status:?}");
-        // Both are reported as settled even though the execution layer never validated them.
+        // The execution layer never validated either payload.
         for block_root in [historical, recent] {
             assert_eq!(
                 net.block_is_optimistic(joiner, block_root).await?,
-                Some(false)
+                Some(true)
             );
         }
         info!(
