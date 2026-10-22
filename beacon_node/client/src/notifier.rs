@@ -450,7 +450,7 @@ async fn post_bellatrix_readiness_logging<T: BeaconChainTypes>(
                 }
             }
         } else {
-            return;
+            Err("No execution endpoint".to_string())
         };
 
         if let Err(readiness) = readiness {
@@ -621,7 +621,6 @@ async fn genesis_execution_payload_logging<T: BeaconChainTypes>(beacon_chain: &B
                 "Unable to check genesis which has already occurred"
             );
         }
-        Ok(GenesisExecutionPayloadStatus::NoExecutionLayer) => {}
         Err(e) => {
             error!(
                 error = ?e,

@@ -45,7 +45,6 @@ use logging::create_test_tracing_subscriber;
 use merkle_proof::MerkleTree;
 use operation_pool::ReceivedPreCapella;
 use parking_lot::{Mutex, RwLockWriteGuard};
-use proof_engine::ProofEngine;
 use proto_array::PayloadStatus;
 use rand::Rng;
 use rand::SeedableRng;
@@ -280,7 +279,6 @@ pub struct Builder<T: BeaconChainTypes> {
     store_mutator: Option<BoxedMutator<T::EthSpec, T::HotStore, T::ColdStore>>,
     execution_layer: Option<ExecutionLayer<T::EthSpec>>,
     mock_execution_layer: Option<MockExecutionLayer<T::EthSpec>>,
-    proof_engine: Option<Arc<ProofEngine>>,
     testing_slot_clock: Option<TestingSlotClock>,
     validator_monitor_config: Option<ValidatorMonitorConfig>,
     genesis_state_builder: Option<InteropGenesisBuilder<T::EthSpec>>,
@@ -475,7 +473,6 @@ where
             store_mutator: None,
             execution_layer: None,
             mock_execution_layer: None,
-            proof_engine: None,
             testing_slot_clock: None,
             validator_monitor_config: None,
             genesis_state_builder: None,
@@ -655,16 +652,6 @@ where
         self
     }
 
-    /// Run with an EIP-8025 proof engine, which makes the proofs a payload's validity. The engine
-    /// is never contacted.
-    pub fn proof_engine(mut self) -> Self {
-        let url = SensitiveUrl::parse("http://127.0.0.1:0").expect("valid proof engine url");
-        self.proof_engine = Some(Arc::new(
-            ProofEngine::new(url).expect("build proof engine client"),
-        ));
-        self
-    }
-
     /// Instruct the mock execution engine to always return a "valid" response to any payload it is
     /// asked to execute.
     pub fn mock_execution_layer_all_payloads_valid(self) -> Self {
@@ -720,7 +707,6 @@ where
             )
             .task_executor(self.runtime.task_executor.clone())
             .execution_layer(self.execution_layer)
-            .proof_engine(self.proof_engine)
             .shutdown_sender(shutdown_tx)
             .chain_config(chain_config)
             .node_custody_type(self.node_custody_type)
@@ -1728,30 +1714,6 @@ where
         let message = epoch.signing_root(domain);
         let sk = &self.validator_keypairs[proposer_index].sk;
         sk.sign(message)
-    }
-
-    /// Only works for a builder registered from `validator_keypairs[builder_index]`.
-    pub fn sign_payload_bid(
-        &self,
-        bid: ExecutionPayloadBidGloas<E>,
-        state: &BeaconState<E>,
-    ) -> Arc<SignedExecutionPayloadBid<E>> {
-        let domain = self.spec.get_domain(
-            bid.slot.epoch(E::slots_per_epoch()),
-            Domain::BeaconBuilder,
-            &state.fork(),
-            state.genesis_validators_root(),
-        );
-        let signature = self.validator_keypairs[bid.builder_index as usize]
-            .sk
-            .sign(ExecutionPayloadBidRef::Gloas(&bid).signing_root(domain));
-
-        Arc::new(SignedExecutionPayloadBid::Gloas(
-            SignedExecutionPayloadBidGloas {
-                message: bid,
-                signature,
-            },
-        ))
     }
 
     /// Sign a beacon block using the proposer's key.

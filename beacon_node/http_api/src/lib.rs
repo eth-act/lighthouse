@@ -318,15 +318,6 @@ pub fn tracing_logging() -> warp::filters::log::Log<impl Fn(warp::filters::log::
     })
 }
 
-/// Whether the node has nothing able to tell it a payload is valid.
-async fn is_el_offline<T: BeaconChainTypes>(chain: &BeaconChain<T>) -> bool {
-    match &chain.execution_layer {
-        Some(execution_layer) => execution_layer.is_offline_or_erroring().await,
-        // Running with no execution layer is deliberate when EIP-8025 proofs decide validity.
-        None => !chain.execution_proofs_enabled(),
-    }
-}
-
 /// Creates a server that will serve requests using information from `ctx`.
 ///
 /// The server will shut down gracefully when the `shutdown` future resolves.
@@ -2373,7 +2364,11 @@ pub async fn serve<T: BeaconChainTypes>(
              network_globals: Arc<NetworkGlobals<T::EthSpec>>,
              chain: Arc<BeaconChain<T>>| {
                 async move {
-                    let el_offline = is_el_offline(&chain).await;
+                    let el_offline = if let Some(el) = &chain.execution_layer {
+                        el.is_offline_or_erroring().await
+                    } else {
+                        true
+                    };
 
                     task_spawner
                         .blocking_json_task(Priority::P0, move || {
@@ -2431,7 +2426,11 @@ pub async fn serve<T: BeaconChainTypes>(
              network_globals: Arc<NetworkGlobals<T::EthSpec>>,
              chain: Arc<BeaconChain<T>>| {
                 async move {
-                    let el_offline = is_el_offline(&chain).await;
+                    let el_offline = if let Some(el) = &chain.execution_layer {
+                        el.is_offline_or_erroring().await
+                    } else {
+                        true
+                    };
 
                     task_spawner
                         .blocking_response_task(Priority::P0, move || {

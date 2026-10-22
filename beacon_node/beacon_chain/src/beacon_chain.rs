@@ -6719,10 +6719,10 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             return Ok(None);
         }
 
-        // Nor is there anything to prepare when the node runs with no execution layer.
-        let Some(execution_layer) = self.execution_layer.clone() else {
-            return Ok(None);
-        };
+        let execution_layer = self
+            .execution_layer
+            .clone()
+            .ok_or(Error::ExecutionLayerMissing)?;
 
         // Nothing to do if there are no proposers registered with the EL, exit early to avoid
         // wasting cycles.
@@ -7058,10 +7058,10 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
         head_payload_status: fork_choice::PayloadStatus,
         override_forkchoice_update: OverrideForkchoiceUpdate,
     ) -> Result<(), Error> {
-        // There is no engine to notify when the node runs with no execution layer.
-        let Some(execution_layer) = self.execution_layer.as_ref() else {
-            return Ok(());
-        };
+        let execution_layer = self
+            .execution_layer
+            .as_ref()
+            .ok_or(Error::ExecutionLayerMissing)?;
 
         // Determine whether to override the forkchoiceUpdated message if we want to re-org
         // the current head at the next slot.

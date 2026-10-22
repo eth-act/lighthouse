@@ -95,16 +95,16 @@ impl<E: EthSpec> InteractiveTester<E> {
         use_mock_builder: bool,
         node_custody_type: NodeCustodyType,
     ) -> Self {
-        let harness_builder =
-            BeaconChainHarness::builder(E::default()).spec_or_default(spec.map(Arc::new));
+        let mut harness_builder = BeaconChainHarness::builder(E::default())
+            .spec_or_default(spec.map(Arc::new))
+            .mock_execution_layer();
 
-        let mut harness_builder = if let Some(initializer) = initializer {
+        harness_builder = if let Some(initializer) = initializer {
             // Apply custom initialization provided by the caller.
             initializer(harness_builder)
         } else {
             // Apply default initial configuration.
             harness_builder
-                .mock_execution_layer()
                 .deterministic_keypairs(validator_count)
                 .fresh_ephemeral_store()
         };

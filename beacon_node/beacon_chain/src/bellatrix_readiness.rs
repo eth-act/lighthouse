@@ -21,7 +21,6 @@ pub enum GenesisExecutionPayloadStatus {
     OtherMismatch,
     Irrelevant,
     AlreadyHappened,
-    NoExecutionLayer,
 }
 
 impl<T: BeaconChainTypes> BeaconChain<T> {
@@ -42,9 +41,10 @@ impl<T: BeaconChainTypes> BeaconChain<T> {
             return Ok(GenesisExecutionPayloadStatus::Irrelevant);
         };
 
-        let Some(execution_layer) = self.execution_layer.as_ref() else {
-            return Ok(GenesisExecutionPayloadStatus::NoExecutionLayer);
-        };
+        let execution_layer = self
+            .execution_layer
+            .as_ref()
+            .ok_or(Error::ExecutionLayerMissing)?;
         let exec_block_hash = latest_execution_payload_header.block_hash();
 
         // Use getBlockByNumber(0) to check that the block hash matches.

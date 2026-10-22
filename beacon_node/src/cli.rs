@@ -848,8 +848,8 @@ pub fn cli_app() -> Command {
                 .alias("execution-endpoints")
                 .help("Server endpoint for an execution layer JWT-authenticated HTTP \
                        JSON-RPC connection. Uses the same endpoint to populate the \
-                       deposit cache. Optional when --proof-engine-endpoint is set.")
-                .required_unless_present("proof-engine-endpoint")
+                       deposit cache.")
+                .required(true)
                 .action(ArgAction::Set)
                 .display_order(0)
         )
