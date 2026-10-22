@@ -39,6 +39,7 @@ Ethereum
 EthStaker
 Exercism
 Extractable
+FCR
 FFG
 Fulu
 Fusaka
@@ -214,6 +215,7 @@ presign
 presigned
 pubkey
 pubkeys
+punycode
 rc
 redb
 reimport

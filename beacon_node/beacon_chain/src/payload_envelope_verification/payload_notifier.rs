@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use execution_layer::{NewPayloadRequest, NewPayloadRequestGloas};
 use fork_choice::PayloadVerificationStatus;
+use ssz::TryFromIter;
 use ssz_types::ProgressiveVariableList;
 use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
 use tracing::warn;
@@ -71,9 +72,8 @@ impl<T: BeaconChainTypes> PayloadNotifier<T> {
         if let Some(precomputed_status) = self.payload_verification_status {
             Ok(precomputed_status)
         } else {
-            let parent_root = self.block.message().parent_root();
             let request = Self::build_new_payload_request(&self.envelope, &self.block)?;
-            notify_new_payload(&self.chain, self.envelope.slot(), parent_root, request).await
+            notify_new_payload(&self.chain, self.envelope.slot(), request).await
         }
     }
 
@@ -81,19 +81,23 @@ impl<T: BeaconChainTypes> PayloadNotifier<T> {
         envelope: &'a SignedExecutionPayloadEnvelope<T::EthSpec>,
         block: &'a SignedBeaconBlock<T::EthSpec>,
     ) -> Result<NewPayloadRequest<'a, T::EthSpec>, PayloadVerificationError> {
-        let bid = &block
+        let bid = block
             .message()
             .body()
             .signed_execution_payload_bid()
             .map_err(|e| PayloadVerificationError::BeaconChainError(Box::new(e.into())))?
-            .message;
+            .message();
 
-        let versioned_hashes = ProgressiveVariableList::new(
-            bid.blob_kzg_commitments
+        let versioned_hashes = ProgressiveVariableList::try_from_iter(
+            bid.blob_kzg_commitments()
                 .iter()
-                .map(kzg_commitment_to_versioned_hash)
-                .collect(),
-        );
+                .map(kzg_commitment_to_versioned_hash),
+        )
+        .map_err(|e| {
+            PayloadVerificationError::BeaconChainError(Box::new(
+                crate::BeaconChainError::SszTypesError(e),
+            ))
+        })?;
 
         Ok(NewPayloadRequest::Gloas(NewPayloadRequestGloas {
             execution_payload: &envelope.message.payload,
@@ -155,11 +159,11 @@ mod tests {
             Some(PayloadVerificationStatus::Irrelevant),
             "a proof-only node must not defer to an engine it does not have"
         );
-        assert!(
-            !notifier
+        assert_ne!(
+            notifier
                 .payload_verification_status
-                .expect("status is precomputed")
-                .is_optimistic(),
+                .expect("status is precomputed"),
+            PayloadVerificationStatus::Optimistic,
             "an optimistic status would be rejected at import"
         );
     }

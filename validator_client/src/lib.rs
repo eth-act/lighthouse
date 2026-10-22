@@ -35,7 +35,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::{
-    sync::mpsc,
+    sync::{broadcast, mpsc},
     time::{Duration, sleep},
 };
 use tracing::{debug, error, info, warn};
@@ -97,6 +97,7 @@ pub struct ProductionValidatorClient<E: EthSpec> {
     doppelganger_service: Option<Arc<DoppelgangerService>>,
     preparation_service: PreparationService<ValidatorStore<E>, SystemTimeSlotClock>,
     validator_store: Arc<ValidatorStore<E>>,
+    configured_builders: BuilderStore,
     builder_preferences_service: BuilderPreferencesService<ValidatorStore<E>, SystemTimeSlotClock>,
     slot_clock: SystemTimeSlotClock,
     http_api_listen_addr: Option<SocketAddr>,
@@ -417,14 +418,10 @@ impl<E: EthSpec> ProductionValidatorClient<E> {
 
         // Only the beacon_nodes are used for attestation duties and thus biconditionally
         // proposer_nodes do not need head_send ref.
-        let head_monitor_rx = if config.enable_beacon_head_monitor {
-            let (head_monitor_tx, head_receiver) =
-                mpsc::channel::<HeadEvent>(MAX_HEAD_EVENT_QUEUE_LEN);
-            beacon_nodes.set_head_send(Arc::new(head_monitor_tx));
-            Some(Mutex::new(head_receiver))
-        } else {
-            None
-        };
+        if config.enable_beacon_head_monitor {
+            let (head_monitor_tx, _) = broadcast::channel::<HeadEvent>(MAX_HEAD_EVENT_QUEUE_LEN);
+            beacon_nodes.set_head_send(head_monitor_tx);
+        }
 
         let payload_available_rx = if config.enable_payload_available_monitor {
             let (payload_available_tx, payload_available_receiver) =
@@ -436,6 +433,12 @@ impl<E: EthSpec> ProductionValidatorClient<E> {
         };
 
         let beacon_nodes = Arc::new(beacon_nodes);
+
+        // Subscribe before the head monitor starts so that no events are sent while the
+        // channel has no receivers.
+        let attestation_head_monitor_rx = beacon_nodes.subscribe_to_head_events();
+        let sync_head_monitor_rx = beacon_nodes.subscribe_to_head_events();
+
         start_fallback_updater_service::<_, E>(context.executor.clone(), beacon_nodes.clone())?;
 
         let proposer_nodes = Arc::new(proposer_nodes);
@@ -543,7 +546,8 @@ impl<E: EthSpec> ProductionValidatorClient<E> {
             .graffiti_file(config.graffiti_file.clone())
             .graffiti_policy(config.graffiti_policy)
             .configured_builders(configured_builders.clone())
-            .request_auth_cache(request_auth_cache.clone());
+            .request_auth_cache(request_auth_cache.clone())
+            .stateless_block_production(config.stateless_block_production);
 
         // If we have proposer nodes, add them to the block service builder.
         if proposer_nodes_num > 0 {
@@ -558,7 +562,7 @@ impl<E: EthSpec> ProductionValidatorClient<E> {
             .validator_store(validator_store.clone())
             .beacon_nodes(beacon_nodes.clone())
             .executor(context.executor.clone())
-            .head_monitor_rx(head_monitor_rx)
+            .head_monitor_rx(attestation_head_monitor_rx)
             .chain_spec(context.eth2_config.spec.clone())
             .disable(config.disable_attesting);
 
@@ -579,6 +583,7 @@ impl<E: EthSpec> ProductionValidatorClient<E> {
             slot_clock.clone(),
             beacon_nodes.clone(),
             context.executor.clone(),
+            sync_head_monitor_rx,
         );
 
         let payload_attestation_service = PayloadAttestationService::new(
@@ -622,6 +627,7 @@ impl<E: EthSpec> ProductionValidatorClient<E> {
             doppelganger_service,
             preparation_service,
             validator_store,
+            configured_builders: configured_builders.clone(),
             builder_preferences_service,
             config,
             slot_clock,
@@ -646,6 +652,7 @@ impl<E: EthSpec> ProductionValidatorClient<E> {
                 block_service: Some(self.block_service.clone()),
                 validator_store: Some(self.validator_store.clone()),
                 validator_dir: Some(self.config.validator_dir.clone()),
+                configured_builders: self.configured_builders.clone(),
                 secrets_dir: Some(self.config.secrets_dir.clone()),
                 graffiti_file: self.config.graffiti_file.clone(),
                 graffiti_flag: self.config.graffiti,

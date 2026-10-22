@@ -9,9 +9,9 @@ use beacon_chain::{
 use execution_layer::{PayloadStatusV1, PayloadStatusV1Status};
 use http_api::test_utils::InteractiveTester;
 use reqwest::StatusCode;
-use types::{EthSpec, ExecPayload, MinimalEthSpec, Slot, Uint256};
+use types::{EthSpec, ExecPayload, Slot, Spec, Uint256};
 
-type E = MinimalEthSpec;
+type E = Spec;
 
 /// Create a new test environment that is post-merge with `chain_depth` blocks.
 async fn post_merge_tester(chain_depth: u64, validator_count: u64) -> InteractiveTester<E> {
@@ -141,6 +141,7 @@ async fn el_error_on_new_payload() {
             status: PayloadStatusV1Status::Valid,
             latest_valid_hash: Some(block_hash),
             validation_error: None,
+            inclusion_list_satisfied: None,
         },
     );
     harness.process_block_result((block, blobs)).await.unwrap();

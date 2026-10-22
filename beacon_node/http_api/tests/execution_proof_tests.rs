@@ -61,7 +61,7 @@ impl ProofTester {
                 .harness
                 .chain
                 .store
-                .get_payload_envelope(&block_root)
+                .get_signed_payload_envelope(&block_root)
                 .unwrap()
                 .is_some(),
             "precondition: the head payload envelope is stored"

@@ -4,11 +4,11 @@ use beacon_chain::{
 };
 use std::sync::Arc;
 use types::{
-    Address, Epoch, ExecutionRequests, ExecutionRequestsGloas, Hash256, MinimalEthSpec, Slot,
+    Address, Epoch, ExecutionRequests, ExecutionRequestsGloas, Hash256, Slot, Spec,
     WithdrawalRequest,
 };
 
-type E = MinimalEthSpec;
+type E = Spec;
 
 /// Parent partial withdrawals must be accounted for when packing voluntary exits.
 /// https://github.com/sigp/lighthouse/issues/9981
@@ -46,11 +46,14 @@ async fn gloas_block_production_filters_exits_with_parent_partial_withdrawals() 
     harness.extend_to_slot(Slot::new(1)).await;
 
     let mut requests = ExecutionRequestsGloas::<E>::default();
-    requests.withdrawals.push(WithdrawalRequest {
-        source_address: withdrawal_address,
-        validator_pubkey: harness.get_current_state().get_validator(0).unwrap().pubkey,
-        amount: withdrawal_amount,
-    });
+    requests
+        .withdrawals
+        .push(WithdrawalRequest {
+            source_address: withdrawal_address,
+            validator_pubkey: harness.get_current_state().get_validator(0).unwrap().pubkey,
+            amount: withdrawal_amount,
+        })
+        .unwrap();
     harness
         .execution_block_generator()
         .set_next_execution_requests(ExecutionRequests::Gloas(requests.clone()));
