@@ -3401,12 +3401,12 @@ where
             .expect("Gloas block should have a payload bid")
             .message();
 
-        let versioned_hashes = ProgressiveVariableList::try_from_iter(
+        let versioned_hashes = VariableList::try_from_iter(
             bid.blob_kzg_commitments()
                 .iter()
                 .map(kzg_commitment_to_versioned_hash),
         )
-        .expect("versioned hashes are unbounded");
+        .expect("versioned hashes are within the blob commitment bound");
         let request = NewPayloadRequest::Gloas(NewPayloadRequestGloas {
             execution_payload: &signed_envelope.message.payload,
             versioned_hashes,
