@@ -51,7 +51,9 @@ impl ProofEngineT for EreProofEngine {
         let expected_public_values = proof.public_input.as_ssz_bytes();
         let public_values = match verifier.verify(proof.proof_data.as_ref()) {
             Ok(public_values) => public_values,
-            Err(EreVerifierError::DecodeProof | EreVerifierError::Verify) => {
+            Err(
+                EreVerifierError::DecodeProof | EreVerifierError::Verify | EreVerifierError::Panic,
+            ) => {
                 return Ok(ProofVerificationOutcome::Invalid);
             }
             Err(error) => {
@@ -77,8 +79,8 @@ impl ProofEngineT for EreProofEngine {
 /// padding that the zkVM's ERE output contract adds.
 ///
 /// OpenVM reveals a fixed-size public-value buffer and Zisk a fixed public-word count, so both
-/// zero-pad a shorter guest commitment. SP1 returns the committed bytes verbatim, so `expected` is
-/// the whole of its output.
+/// zero-pad a shorter guest commitment. SP1 and Pico return the committed bytes verbatim, so
+/// `expected` is the whole of their output.
 fn verify_public_values(
     public_values: &[u8],
     expected: &[u8],
@@ -90,7 +92,7 @@ fn verify_public_values(
             .is_some_and(|(value, padding)| {
                 value == expected && padding.iter().all(|byte| *byte == 0)
             }),
-        ZkvmKind::Sp1 => public_values == expected,
+        ZkvmKind::Sp1 | ZkvmKind::Pico => public_values == expected,
     };
 
     if proven {
@@ -198,6 +200,7 @@ mod tests {
             (ZkvmKind::Openvm, ProofVerificationOutcome::Valid),
             (ZkvmKind::Zisk, ProofVerificationOutcome::Valid),
             (ZkvmKind::Sp1, ProofVerificationOutcome::Invalid),
+            (ZkvmKind::Pico, ProofVerificationOutcome::Invalid),
         ] {
             assert_eq!(
                 verify_public_values(&padded, &expected, zkvm_kind),

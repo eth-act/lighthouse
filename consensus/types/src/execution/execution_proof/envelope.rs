@@ -109,7 +109,7 @@ mod tests {
             "located the proof type byte"
         );
 
-        for unassigned in [0u8, 13, u8::MAX] {
+        for unassigned in [0u8, 16, u8::MAX] {
             let mut corrupted = encoded.clone();
             corrupted[offset] = unassigned;
             assert!(

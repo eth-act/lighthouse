@@ -1,6 +1,6 @@
 //! Safe ownership wrapper around the minimal ERE verifier C API.
 //!
-//! The declarations below mirror `ere_verifier.h` as published in ERE v0.19.6, the release
+//! The declarations below mirror `ere_verifier.h` as published in ERE v0.20.2, the release
 //! pinned by `build/ere_verifier.rs`. `ere_verifier_zkvm_kind` is the only other function the
 //! library exports and is deliberately left undeclared: it echoes back the `zkvm_kind`
 //! argument the handle was constructed with, which the caller derives from the proof type.
@@ -19,6 +19,7 @@ pub(super) enum EreVerifierError {
     DecodeProof,
     Verify,
     Internal,
+    Panic,
     Unknown(i32),
 }
 
@@ -31,6 +32,7 @@ impl EreVerifierError {
             Self::DecodeProof => "decode_proof",
             Self::Verify => "verify",
             Self::Internal => "internal",
+            Self::Panic => "panic",
             Self::Unknown(_) => "unknown",
         }
     }
@@ -43,6 +45,7 @@ impl EreVerifierError {
             4 => Self::DecodeProof,
             5 => Self::Verify,
             6 => Self::Internal,
+            7 => Self::Panic,
             code => Self::Unknown(code),
         }
     }
@@ -91,6 +94,7 @@ impl Verifier {
                     ZkvmKind::Openvm => 0,
                     ZkvmKind::Sp1 => 1,
                     ZkvmKind::Zisk => 2,
+                    ZkvmKind::Pico => 4,
                 },
                 encoded_program_vk.as_ptr(),
                 encoded_program_vk.len(),
@@ -160,6 +164,7 @@ mod tests {
             (4, EreVerifierError::DecodeProof, "decode_proof"),
             (5, EreVerifierError::Verify, "verify"),
             (6, EreVerifierError::Internal, "internal"),
+            (7, EreVerifierError::Panic, "panic"),
             (99, EreVerifierError::Unknown(99), "unknown"),
         ];
 
