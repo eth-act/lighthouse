@@ -861,10 +861,10 @@ pub fn cli_app() -> Command {
                 .num_args(0..=1)
                 .default_missing_value("")
                 .help("Enable the experimental in-process EIP-8025 proof engine. If PATH is \
-                       omitted, use the built-in reth verifier configuration for OpenVM, SP1, \
-                       and Zisk. Otherwise, PATH must contain a JSON ProofEngineConfig. \
-                       Supplying this flag without --execution-endpoint runs a proof-only node \
-                       that has no execution layer.")
+                       omitted, use the built-in verifier configuration for the eth-act/ere-guests \
+                       guests. Otherwise, PATH must contain a JSON ProofEngineConfig. Supplying \
+                       this flag without --execution-endpoint runs a proof-only node that has no \
+                       execution layer.")
                 .action(ArgAction::Set)
                 .display_order(0)
         )

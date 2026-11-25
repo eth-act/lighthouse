@@ -13,7 +13,7 @@ use execution_layer::NewPayloadRequestGloas;
 use parking_lot::RwLock;
 use proof_engine::{ProofEngine, ProofVerificationOutcome};
 use ssz::TryFromIter;
-use ssz_types::ProgressiveVariableList;
+use ssz_types::VariableList;
 use state_processing::builder_deposits_cache::OnboardBuildersCache;
 use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
 use std::sync::Arc;
@@ -205,7 +205,7 @@ fn reconstruct_execution_proof<T: BeaconChainTypes>(
         .signed_execution_payload_bid()
         .map_err(BeaconChainError::from)?
         .message();
-    let versioned_hashes = ProgressiveVariableList::try_from_iter(
+    let versioned_hashes = VariableList::try_from_iter(
         bid.blob_kzg_commitments()
             .iter()
             .map(kzg_commitment_to_versioned_hash),

@@ -17,6 +17,8 @@ pub enum ZkvmKind {
     Sp1,
     /// Zisk.
     Zisk,
+    /// Pico.
+    Pico,
 }
 
 /// Identifier for an immutable proof-system, guest-program, and version tuple.
@@ -58,6 +60,22 @@ pub enum ProofType {
     RethZisk = 6,
     /// Zesu stateless validator proven on Zisk.
     ZesuZisk = 7,
+    /// Nimbus stateless validator proven on SP1.
+    NimbusSP1 = 8,
+    /// Nimbus stateless validator proven on Zisk.
+    NimbusZisk = 9,
+    /// Nethermind stateless validator proven on SP1.
+    NethermindSP1 = 10,
+    /// Nethermind stateless validator proven on Zisk.
+    NethermindZisk = 11,
+    /// Zilkworm stateless validator proven on SP1.
+    ZilkwormSP1 = 12,
+    /// Zesu stateless validator proven on OpenVM.
+    ZesuOpenVM = 13,
+    /// Zesu stateless validator proven on SP1.
+    ZesuSP1 = 14,
+    /// reth stateless validator proven on Pico.
+    RethPico = 15,
 }
 
 impl ProofType {
@@ -69,9 +87,19 @@ impl ProofType {
     /// The proof system this proof type is verified with.
     pub const fn zkvm(self) -> ZkvmKind {
         match self {
-            Self::EthrexOpenVM | Self::RethOpenVM => ZkvmKind::Openvm,
-            Self::EthrexSP1 | Self::RethSP1 => ZkvmKind::Sp1,
-            Self::EthrexZisk | Self::RethZisk | Self::ZesuZisk => ZkvmKind::Zisk,
+            Self::EthrexOpenVM | Self::RethOpenVM | Self::ZesuOpenVM => ZkvmKind::Openvm,
+            Self::EthrexSP1
+            | Self::RethSP1
+            | Self::NimbusSP1
+            | Self::NethermindSP1
+            | Self::ZilkwormSP1
+            | Self::ZesuSP1 => ZkvmKind::Sp1,
+            Self::EthrexZisk
+            | Self::RethZisk
+            | Self::ZesuZisk
+            | Self::NimbusZisk
+            | Self::NethermindZisk => ZkvmKind::Zisk,
+            Self::RethPico => ZkvmKind::Pico,
         }
     }
 
@@ -192,6 +220,14 @@ mod tests {
                 ProofType::RethSP1,
                 ProofType::RethZisk,
                 ProofType::ZesuZisk,
+                ProofType::NimbusSP1,
+                ProofType::NimbusZisk,
+                ProofType::NethermindSP1,
+                ProofType::NethermindZisk,
+                ProofType::ZilkwormSP1,
+                ProofType::ZesuOpenVM,
+                ProofType::ZesuSP1,
+                ProofType::RethPico,
             ]
         );
 
@@ -202,7 +238,7 @@ mod tests {
             assert_eq!(ProofType::try_from(encoding), Ok(*proof_type));
         }
 
-        for unassigned in [0, 8, u8::MAX] {
+        for unassigned in [0, 16, u8::MAX] {
             assert_eq!(
                 ProofType::try_from(unassigned),
                 Err(UnassignedProofType(unassigned))
@@ -219,6 +255,14 @@ mod tests {
         assert_eq!(ProofType::RethSP1.to_string(), "RethSP1");
         assert_eq!(ProofType::RethZisk.to_string(), "RethZisk");
         assert_eq!(ProofType::ZesuZisk.to_string(), "ZesuZisk");
+        assert_eq!(ProofType::NimbusSP1.to_string(), "NimbusSP1");
+        assert_eq!(ProofType::NimbusZisk.to_string(), "NimbusZisk");
+        assert_eq!(ProofType::NethermindSP1.to_string(), "NethermindSP1");
+        assert_eq!(ProofType::NethermindZisk.to_string(), "NethermindZisk");
+        assert_eq!(ProofType::ZilkwormSP1.to_string(), "ZilkwormSP1");
+        assert_eq!(ProofType::ZesuOpenVM.to_string(), "ZesuOpenVM");
+        assert_eq!(ProofType::ZesuSP1.to_string(), "ZesuSP1");
+        assert_eq!(ProofType::RethPico.to_string(), "RethPico");
     }
 
     #[test]
@@ -231,6 +275,14 @@ mod tests {
             (ProofType::RethSP1, ZkvmKind::Sp1),
             (ProofType::RethZisk, ZkvmKind::Zisk),
             (ProofType::ZesuZisk, ZkvmKind::Zisk),
+            (ProofType::NimbusSP1, ZkvmKind::Sp1),
+            (ProofType::NimbusZisk, ZkvmKind::Zisk),
+            (ProofType::NethermindSP1, ZkvmKind::Sp1),
+            (ProofType::NethermindZisk, ZkvmKind::Zisk),
+            (ProofType::ZilkwormSP1, ZkvmKind::Sp1),
+            (ProofType::ZesuOpenVM, ZkvmKind::Openvm),
+            (ProofType::ZesuSP1, ZkvmKind::Sp1),
+            (ProofType::RethPico, ZkvmKind::Pico),
         ];
         for (proof_type, zkvm) in expected {
             assert_eq!(proof_type.zkvm(), zkvm);
@@ -249,7 +301,7 @@ mod tests {
         }
 
         // Unassigned encodings are rejected by the codec, and the tree hash matches the `u8`.
-        for unassigned in [0u8, 8, u8::MAX] {
+        for unassigned in [0u8, 16, u8::MAX] {
             assert!(ProofType::from_ssz_bytes(&[unassigned]).is_err());
         }
         assert_eq!(

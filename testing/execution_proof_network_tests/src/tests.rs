@@ -412,10 +412,14 @@ fn syncing_execution_layer_imports_payloads_optimistically_until_it_recovers() {
 #[test]
 #[cfg_attr(debug_assertions, ignore = "too slow in debug mode")]
 fn range_sync_imports_payloads_a_syncing_execution_layer_never_verified() {
-    let config = ProofNetworkConfig::new(vec![
-        NodeSpec::plain().with_validators(),
-        NodeSpec::plain().with_validators(),
-    ]);
+    let config = ProofNetworkConfig {
+        // The joiner.
+        extra_nodes: 1,
+        ..ProofNetworkConfig::new(vec![
+            NodeSpec::plain().with_validators(),
+            NodeSpec::plain().with_validators(),
+        ])
+    };
     ProofNetwork::run(config, |mut net| async move {
         net.wait_for_genesis().await?;
         net.wait_for_peers(&[0, 1], 1, STARTUP_TIMEOUT).await?;

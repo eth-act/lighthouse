@@ -1,8 +1,8 @@
 # Gloas stateless request fixtures
 
 These are SSZ-encoded `NewPayloadRequestGloas` values generated with
-[ere-guests v0.17.0](https://github.com/eth-act/ere-guests/tree/0bfcdd9f318774761de8b8c13dcebf425673285f),
-which implements the execution-specs `tests-zkevm@v0.8.4` stateless schema.
+[ere-guests v0.20.0](https://github.com/eth-act/ere-guests/tree/d8682fa53fd960c42ca0ac1eefccda0d80fe59e0),
+which implements the execution-specs `tests-zkevm@v21.0.7` stateless schema.
 The expected roots in the test come from that crate's `HashTreeRoot` implementation.
 
 | Fixture | Coverage |

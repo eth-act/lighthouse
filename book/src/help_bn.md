@@ -331,10 +331,10 @@ Options:
           1/3 of a slot.
       --proof-engine [<PATH>]
           Enable the experimental in-process EIP-8025 proof engine. If PATH is
-          omitted, use the built-in reth verifier configuration for OpenVM, SP1,
-          and Zisk. Otherwise, PATH must contain a JSON ProofEngineConfig.
-          Supplying this flag without --execution-endpoint runs a proof-only
-          node that has no execution layer.
+          omitted, use the built-in verifier configuration for the
+          eth-act/ere-guests guests. Otherwise, PATH must contain a JSON
+          ProofEngineConfig. Supplying this flag without --execution-endpoint
+          runs a proof-only node that has no execution layer.
       --proposer-reorg-cutoff <MILLISECONDS>
           DEPRECATED. This flag has no effect.
       --proposer-reorg-disallowed-offsets <N1,N2,...>
@@ -571,6 +571,11 @@ Flags:
           Enable the Prometheus metrics HTTP server. Disabled by default.
       --private
           Prevents sending various client identification information.
+      --proof-engine-mock-proofs
+          DEVNETS ONLY. Accept mock proofs (an SSZ MockProof { public_values,
+          proof }) for the proof types of --proof-engine, in place of verifying
+          them with ERE. A mock proof is valid when its public values match the
+          proof's public input; its proof bytes are not checked.
       --proposer-only
           Sets this beacon node at be a block proposer only node. This will run
           the beacon node in a minimal configuration that is sufficient for

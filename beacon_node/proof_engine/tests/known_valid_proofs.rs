@@ -1,11 +1,11 @@
 //! End-to-end verification of known-valid execution proofs.
 //!
-//! The fixtures are Ethrex v26.0.0 and reth v0.1.0-rc.3 guest artifacts copied from
-//! `eth-act/zkboost` at commit `7f99d70a679bd0c0e8951f9d2797183340f80262`. Their program
-//! verification keys are registered by `eth-act/ere-guests` v0.17.0 and verified here with ERE
-//! v0.17.2, the verifier release pinned by this crate. zkBoost does not publish a Zesu proof
-//! fixture at that commit, so Zesu is covered by configuration tests but not by this known-valid
-//! proof suite.
+//! The fixtures are proofs of the ethrex v32.0.0-rc.1, reth v0.1.0-rc.9, zesu-zkvm
+//! tests@v21.0.7, nimbus-zkvm-guests v0.4.0-alpha, nethermind zkvm-guests-2.3.0-preview+6, and
+//! zilkworm v0.1.0-alpha.8 guests, copied from `eth-act/zkboost` at commit
+//! `dfa7c04a7429d255d95d1a06aea2520f3a69f2be`. Their program verification keys are registered by
+//! `eth-act/ere-guests` v0.20.0 and verified here with ERE v0.20.2, the verifier release pinned by
+//! this crate.
 #![cfg(feature = "ere-verifier")]
 
 use proof_engine::ere::EreProofEngine;
@@ -16,18 +16,18 @@ use types::Hash256;
 use types::execution::{ExecutionProof, ProofData, ProofType, PublicInput};
 
 /// The proof fixture for each proof type, alongside the guest that produced it.
-const PROOFS: [(ProofType, &str); 6] = [
+const PROOFS: [(ProofType, &str); 15] = [
     (
         ProofType::EthrexOpenVM,
         "stateless-validator-ethrex-openvm-v2.1.0-preview.proof",
     ),
     (
         ProofType::EthrexSP1,
-        "stateless-validator-ethrex-sp1-v6.4.0.proof",
+        "stateless-validator-ethrex-sp1-v6.9.0.proof",
     ),
     (
         ProofType::EthrexZisk,
-        "stateless-validator-ethrex-zisk-v1.1.0-alpha.proof",
+        "stateless-validator-ethrex-zisk-v1.4.0-alpha.proof",
     ),
     (
         ProofType::RethOpenVM,
@@ -35,11 +35,47 @@ const PROOFS: [(ProofType, &str); 6] = [
     ),
     (
         ProofType::RethSP1,
-        "stateless-validator-reth-sp1-v6.4.0.proof",
+        "stateless-validator-reth-sp1-v6.9.0.proof",
     ),
     (
         ProofType::RethZisk,
-        "stateless-validator-reth-zisk-v1.1.0-alpha.proof",
+        "stateless-validator-reth-zisk-v1.4.0-alpha.proof",
+    ),
+    (
+        ProofType::ZesuZisk,
+        "stateless-validator-zesu-zisk-v1.4.0-alpha.proof",
+    ),
+    (
+        ProofType::NimbusSP1,
+        "stateless-validator-nimbus-sp1-v6.9.0.proof",
+    ),
+    (
+        ProofType::NimbusZisk,
+        "stateless-validator-nimbus-zisk-v1.4.0-alpha.proof",
+    ),
+    (
+        ProofType::NethermindSP1,
+        "stateless-validator-nethermind-sp1-v6.9.0.proof",
+    ),
+    (
+        ProofType::NethermindZisk,
+        "stateless-validator-nethermind-zisk-v1.4.0-alpha.proof",
+    ),
+    (
+        ProofType::ZilkwormSP1,
+        "stateless-validator-zilkworm-sp1-v6.9.0.proof",
+    ),
+    (
+        ProofType::ZesuOpenVM,
+        "stateless-validator-zesu-openvm-v2.1.0-preview.proof",
+    ),
+    (
+        ProofType::ZesuSP1,
+        "stateless-validator-zesu-sp1-v6.9.0.proof",
+    ),
+    (
+        ProofType::RethPico,
+        "stateless-validator-reth-pico-v3.1.5.proof",
     ),
 ];
 
@@ -54,7 +90,7 @@ fn fixture(name: &str) -> Vec<u8> {
 fn public_input() -> PublicInput {
     PublicInput {
         new_payload_request_root: Hash256::from_slice(
-            &hex::decode("68e2250786a622ab175a8149c63d220704e7ed9610a12b7864047510235e7bb7")
+            &hex::decode("52c1bb9fa385915dd4710fd10bf25e2cea436aa42f498e9e8619a34ba4721b03")
                 .expect("fixture root is valid hex"),
         ),
         successful_validation: true,
@@ -168,7 +204,7 @@ fn known_valid_proofs_reject_a_foreign_proof_type() {
 #[test]
 fn corrupted_sp1_nested_lengths_are_rejected() {
     let engine = EreProofEngine::new(ProofEngineConfig::default()).expect("engine initializes");
-    let valid = fixture("stateless-validator-reth-sp1-v6.4.0.proof");
+    let valid = fixture("stateless-validator-reth-sp1-v6.9.0.proof");
 
     // Offsets inside the decoded structure, past the outer enum selector, set to lengths far
     // larger than the input. A bounded decoder answers `Invalid`; an unbounded one aborts.

@@ -23,7 +23,7 @@ use crate::{
     ExecutionPayloadError, PayloadVerificationError, PayloadVerificationOutcome,
 };
 use ssz::TryFromIter;
-use ssz_types::ProgressiveVariableList;
+use ssz_types::VariableList;
 use state_processing::envelope_processing::EnvelopeProcessingError;
 use state_processing::per_block_processing::deneb::kzg_commitment_to_versioned_hash;
 use std::collections::HashSet;
@@ -414,7 +414,7 @@ pub fn build_new_payload_request<'a, E: EthSpec>(
         .map_err(|e| EnvelopeError::BeaconChainError(Box::new(BeaconChainError::from(e))))?
         .message();
 
-    let versioned_hashes = ProgressiveVariableList::try_from_iter(
+    let versioned_hashes = VariableList::try_from_iter(
         bid.blob_kzg_commitments()
             .iter()
             .map(kzg_commitment_to_versioned_hash),
