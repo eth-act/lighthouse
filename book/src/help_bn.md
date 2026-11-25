@@ -571,6 +571,11 @@ Flags:
           Enable the Prometheus metrics HTTP server. Disabled by default.
       --private
           Prevents sending various client identification information.
+      --proof-engine-mock-proofs
+          DEVNETS ONLY. Accept mock proofs (an SSZ MockProof { public_values,
+          proof }) for the proof types of --proof-engine, in place of verifying
+          them with ERE. A mock proof is valid when its public values match the
+          proof's public input; its proof bytes are not checked.
       --proposer-only
           Sets this beacon node at be a block proposer only node. This will run
           the beacon node in a minimal configuration that is sufficient for

@@ -145,6 +145,9 @@ impl NodeSpec {
 pub struct ProofNetworkConfig {
     /// Nodes to start, in index order. The first node is the boot node.
     pub nodes: Vec<NodeSpec>,
+    /// Nodes the test adds later with [`ProofNetwork::add_node`]. Every node counts them in its
+    /// target peer count.
+    pub extra_nodes: usize,
     /// Genesis validators, split evenly across the nodes with `validators` set.
     pub validator_count: usize,
     pub slot_duration_ms: u64,
@@ -164,6 +167,7 @@ impl ProofNetworkConfig {
     pub fn new(nodes: Vec<NodeSpec>) -> Self {
         Self {
             nodes,
+            extra_nodes: 0,
             validator_count: 16,
             slot_duration_ms: 2000,
             genesis_delay_secs: 60,
@@ -238,6 +242,7 @@ impl ProofNetwork {
     ) -> Result<Self, String> {
         let ProofNetworkConfig {
             nodes,
+            extra_nodes,
             validator_count,
             genesis_delay_secs,
             ..
@@ -250,7 +255,7 @@ impl ProofNetwork {
             validator_count,
             node_count: nodes.len(),
             proposer_nodes: 0,
-            extra_nodes: 0,
+            extra_nodes,
             genesis_delay: genesis_delay_secs,
         };
         // Node start-up futures are large; box them so `build` keeps a small stack frame.
